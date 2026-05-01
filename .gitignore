@@ -1,0 +1,31 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xccheckout
+*.moved-aside
+*.pbxproj.moved
+*.xcscmblueprint
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+.build/
+.swiftpm/
+*.resolved
+
+# Build artifacts
+build/
+
+# Secrets — never commit
+*.p8
+*.pem
+*.cer
+*.p12
+GoogleService-Info.plist
+
+# CocoaPods (not using but just in case)
+Pods/
