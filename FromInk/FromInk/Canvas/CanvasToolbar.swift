@@ -6,6 +6,14 @@ struct CanvasToolbar: View {
     let side: ToolbarSide
     let isHandlePressed: Bool
     let undoManager: UndoManager?
+    var toolSettings: [CanvasTool: PenSettings] = [:]
+    var isPageReady: Bool = false
+    var onAnalyze: () -> Void = {}
+    var onCustomize: (CanvasTool) -> Void = { _ in }
+    var onTemplate: () -> Void = {}
+
+    @State private var boltExpanded = false
+    @State private var boltVisible = false
 
     private let writingTools: [CanvasTool] = [
         .pen, .fountain, .pencil, .marker, .highlighter, .eraser, .lasso
@@ -15,6 +23,31 @@ struct CanvasToolbar: View {
         VStack(spacing: 0) {
             // Drag handle
             dragHandle
+
+            // Ink-to-execution bolt — opacity fades first on exit, then height collapses
+            boltZone
+                .frame(height: boltExpanded ? 56 : 0)
+                .opacity(boltVisible ? 1 : 0)
+                .clipped()
+                .onChange(of: isPageReady) { _, ready in
+                    if ready {
+                        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                            boltExpanded = true
+                        }
+                        withAnimation(.easeOut(duration: 0.2).delay(0.08)) {
+                            boltVisible = true
+                        }
+                    } else {
+                        withAnimation(.easeIn(duration: 0.15)) {
+                            boltVisible = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                                boltExpanded = false
+                            }
+                        }
+                    }
+                }
 
             // Writing tools
             ForEach(writingTools, id: \.self) { tool in
@@ -29,9 +62,7 @@ struct CanvasToolbar: View {
             // Actions
             actionButton(icon: "arrow.uturn.backward") { undoManager?.undo() }
             actionButton(icon: "arrow.uturn.forward") { undoManager?.redo() }
-
-            // Layers placeholder (V2)
-            actionButton(icon: "square.3.layers.3d") {}
+            actionButton(icon: "square.grid.3x3") { onTemplate() }
 
             // Appearance toggle
             actionButton(icon: colorScheme == .dark ? "moon" : "sun.max") {
@@ -65,11 +96,15 @@ struct CanvasToolbar: View {
     private func toolButton(_ tool: CanvasTool) -> some View {
         let isActive = activeTool == tool
         Button {
-            withAnimation(.linear(duration: 0.08)) {
-                activeTool = tool
+            if isActive {
+                onCustomize(tool)
+            } else {
+                withAnimation(.linear(duration: 0.08)) {
+                    activeTool = tool
+                }
             }
         } label: {
-            Image(systemName: tool.icon)
+            Image(systemName: toolSettings[tool]?.penType.icon ?? tool.icon)
                 .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(isActive ? Color.inkOnDark : Color.inkSecondary)
                 .frame(width: 48, height: 54)
@@ -77,6 +112,14 @@ struct CanvasToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var boltZone: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Color.bolt.opacity(0.25)).frame(height: 1)
+            BoltButton(isReady: isPageReady, action: onAnalyze)
+            Rectangle().fill(Color.bolt.opacity(0.25)).frame(height: 1)
+        }
     }
 
     @ViewBuilder

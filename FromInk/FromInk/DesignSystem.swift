@@ -41,6 +41,8 @@ extension Color {
         light: .white,
         dark:  Color(red: 0.09, green: 0.09, blue: 0.09)
     )
+    /// Ink-to-execution bolt — amber accent
+    static let bolt = Color(red: 1.0, green: 0.72, blue: 0.08)
     /// Ruled-line template guides
     static let ruleLine = Color(
         light: Color(red: 0.84, green: 0.83, blue: 0.88),

@@ -3,8 +3,12 @@ import PencilKit
 
 struct CanvasView: UIViewRepresentable {
     @Binding var tool: CanvasTool
+    var penSettings: PenSettings = .default
     var onTwoFingerHoldBegan: () -> Void = {}
     var onTwoFingerHoldEnded: () -> Void = {}
+    var onPencilDoubleTap: () -> Void = {}
+    var onStrokeCountChanged: (Int) -> Void = { _ in }
+    var onDrawingChanged: (PKDrawing) -> Void = { _ in }
     var onLassoCompleted: (UIImage) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -12,10 +16,11 @@ struct CanvasView: UIViewRepresentable {
     func makeUIView(context: Context) -> PKCanvasView {
         let canvas = PKCanvasView()
         canvas.drawingPolicy = .pencilOnly
-        canvas.backgroundColor = UIColor(Color.canvas)
-        canvas.tool = tool.pkTool
+        canvas.backgroundColor = .clear
+        canvas.tool = tool.pkTool(settings: penSettings)
         canvas.delegate = context.coordinator
         context.coordinator.currentTool = tool
+        context.coordinator.currentPenSettings = penSettings
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
         context.coordinator.onLassoCompleted = onLassoCompleted
@@ -46,24 +51,41 @@ struct CanvasView: UIViewRepresentable {
         lassoPan.delegate = context.coordinator
         canvas.addGestureRecognizer(lassoPan)
 
+        // Apple Pencil double-tap
+        let pencilInteraction = UIPencilInteraction()
+        pencilInteraction.delegate = context.coordinator
+        canvas.addInteraction(pencilInteraction)
+
         return canvas
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
-        if context.coordinator.currentTool != tool {
-            canvas.tool = tool.pkTool
+        if context.coordinator.currentTool != tool || context.coordinator.currentPenSettings != penSettings {
+            canvas.tool = tool.pkTool(settings: penSettings)
             context.coordinator.currentTool = tool
+            context.coordinator.currentPenSettings = penSettings
         }
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
         context.coordinator.onLassoCompleted = onLassoCompleted
+        context.coordinator.onPencilDoubleTap = onPencilDoubleTap
+        context.coordinator.onStrokeCountChanged = onStrokeCountChanged
+        context.coordinator.onDrawingChanged = onDrawingChanged
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate, PKCanvasViewDelegate {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate, PKCanvasViewDelegate, UIPencilInteractionDelegate {
         var currentTool: CanvasTool = .pen
+        var currentPenSettings: PenSettings = .default
         var onTwoFingerHoldBegan: () -> Void = {}
         var onTwoFingerHoldEnded: () -> Void = {}
         var onLassoCompleted: (UIImage) -> Void = { _ in }
+        var onPencilDoubleTap: () -> Void = {}
+        var onStrokeCountChanged: (Int) -> Void = { _ in }
+        var onDrawingChanged: (PKDrawing) -> Void = { _ in }
+
+        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+            onPencilDoubleTap()
+        }
 
         // Bounding rect accumulated from pencil touch points during lasso
         private var lassoMinX: CGFloat = .infinity
@@ -127,6 +149,11 @@ struct CanvasView: UIViewRepresentable {
         }
 
         // MARK: - PKCanvasViewDelegate
+
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            onStrokeCountChanged(canvasView.drawing.strokes.count)
+            onDrawingChanged(canvasView.drawing)
+        }
 
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             print("[Lasso] canvasViewDidEndUsingTool — awaitingLasso=\(awaitingLassoSelection), tool=\(type(of: canvasView.tool))")

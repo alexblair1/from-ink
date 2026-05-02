@@ -1,18 +1,21 @@
 import SwiftUI
 
-struct LassoActionSheet: View {
+struct BriefSheet: View {
     var isLoading: Bool = false
-    var recognizedText: String = ""
+    var summary: String = ""
+    @Binding var tasks: [ExtractedTask]
+    var openQuestion: String? = nil
     var onDismiss: () -> Void = {}
-    var onSend: (ExtractedTask) -> Void = { _ in }
+    var onSendAll: () -> Void = {}
 
-    @State private var task = ExtractedTask(title: "", detail: "")
+    private var selectedDestinationCount: Int {
+        Set(tasks.flatMap(\.destinations)).count
+    }
 
-    private var selectedCount: Int { task.destinations.count }
     private var primaryLabel: String {
-        selectedCount == 0
-            ? "Send"
-            : "Send → \(selectedCount) Destination\(selectedCount == 1 ? "" : "s")"
+        selectedDestinationCount == 0
+            ? "Send All"
+            : "Send All → \(selectedDestinationCount) Destination\(selectedDestinationCount == 1 ? "" : "s")"
     }
 
     var body: some View {
@@ -25,20 +28,31 @@ struct LassoActionSheet: View {
             } else {
                 ScrollView {
                     VStack(spacing: 0) {
+                        if !summary.isEmpty {
+                            summaryBlock
+                            Rectangle().fill(Color.border).frame(height: 1)
+                        }
                         taskListHeader
                         Rectangle().fill(Color.border).frame(height: 1)
-                        taskRow
-                        Rectangle().fill(Color.border).frame(height: 1)
+                        ForEach($tasks) { $task in
+                            TaskRow(index: tasks.firstIndex(where: { $0.id == task.id })! + 1,
+                                    task: $task)
+                            Rectangle().fill(Color.border).frame(height: 1)
+                        }
                     }
+                }
+
+                if let q = openQuestion {
+                    openQuestionBar(q)
                 }
             }
 
             SheetActionFooter(
-                secondary: "Cancel",
+                secondary: "Edit Brief",
                 primary: primaryLabel,
                 secondaryAction: onDismiss,
-                primaryAction: { onSend(task) },
-                primaryDisabled: task.destinations.isEmpty || isLoading
+                primaryAction: onSendAll,
+                primaryDisabled: tasks.isEmpty || isLoading
             )
         }
         .background(Color.surface)
@@ -46,23 +60,21 @@ struct LassoActionSheet: View {
         .presentationCornerRadius(0)
         .presentationDragIndicator(.hidden)
         .presentationDetents([.large])
-        .onAppear { task.title = recognizedText }
-        .onChange(of: recognizedText) { _, newText in task.title = newText }
     }
 
     // MARK: - Header
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
-            Image(systemName: "lasso")
+            Image(systemName: "bolt.fill")
                 .font(.system(size: 13))
-                .foregroundStyle(Color.ink)
-            Text("Task Brief")
+                .foregroundStyle(Color.bolt)
+            Text("Page Brief")
                 .font(.canvasTitle)
                 .foregroundStyle(Color.ink)
             Spacer()
             if !isLoading {
-                Text(Date.now.formatted(date: .abbreviated, time: .omitted).uppercased() + " · SELECTED")
+                Text(Date.now.formatted(date: .abbreviated, time: .omitted).uppercased() + " · GENERATED")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.inkSecondary)
                     .kerning(0.3)
@@ -86,12 +98,30 @@ struct LassoActionSheet: View {
         VStack(spacing: 12) {
             Spacer()
             ProgressView()
-            Text("Reading your ink…")
+            Text("Reading your notes…")
                 .font(.system(size: 15))
                 .foregroundStyle(Color.inkSecondary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Summary
+
+    private var summaryBlock: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Rectangle()
+                .fill(Color.ink)
+                .frame(width: 3)
+                .padding(.vertical, 2)
+            Text(summary)
+                .font(.system(size: 15))
+                .foregroundStyle(Color.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     // MARK: - Task list header
@@ -116,20 +146,52 @@ struct LassoActionSheet: View {
         .background(Color.canvas.opacity(0.5))
     }
 
-    // MARK: - Task row
+    // MARK: - Open question
 
-    private var taskRow: some View {
+    private func openQuestionBar(_ question: String) -> some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Color.border).frame(height: 1)
+            HStack(spacing: 6) {
+                Text("Open question:")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.inkSecondary)
+                Text("\(question)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.inkSecondary)
+                    .italic()
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 40)
+        }
+    }
+}
+
+// MARK: - Task Row
+
+private struct TaskRow: View {
+    let index: Int
+    @Binding var task: ExtractedTask
+
+    var body: some View {
         HStack(spacing: 0) {
-            Text("01")
+            Text(String(format: "%02d", index))
                 .font(.system(size: 12, weight: .regular).monospacedDigit())
                 .foregroundStyle(Color.inkSecondary)
                 .frame(width: 36, alignment: .leading)
 
-            Text(task.title.isEmpty ? "No text recognized" : task.title)
-                .font(.system(size: 15))
-                .foregroundStyle(task.title.isEmpty ? Color.inkSecondary : Color.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.title)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.ink)
+                if !task.detail.isEmpty {
+                    Text(task.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.inkSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             IntegrationButtonRow(destinations: $task.destinations)
                 .frame(width: 148, alignment: .center)
@@ -145,15 +207,4 @@ struct LassoActionSheet: View {
         .padding(.vertical, 14)
         .contentShape(Rectangle())
     }
-}
-
-// MARK: - Preview
-
-#Preview {
-    Color.canvas.ignoresSafeArea()
-        .sheet(isPresented: .constant(true)) {
-            LassoActionSheet(
-                recognizedText: "Call John about the Q3 report by Friday"
-            )
-        }
 }

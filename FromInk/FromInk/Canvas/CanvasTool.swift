@@ -1,4 +1,5 @@
 import PencilKit
+import SwiftUI
 
 // MARK: - Tool
 
@@ -11,18 +12,10 @@ enum CanvasTool: String, CaseIterable, Equatable {
     case eraser
     case lasso
 
-    var pkTool: PKTool {
+    func pkTool(settings: PenSettings = .default) -> PKTool {
         switch self {
-        case .pen:
-            return PKInkingTool(.pen, color: .black, width: 2)
-        case .fountain:
-            return PKInkingTool(.fountainPen, color: .black, width: 3)
-        case .pencil:
-            return PKInkingTool(.pencil, color: .black, width: 3)
-        case .marker:
-            return PKInkingTool(.marker, color: .black, width: 10)
-        case .highlighter:
-            return PKInkingTool(.marker, color: .systemYellow.withAlphaComponent(0.4), width: 18)
+        case .pen, .fountain, .pencil, .marker, .highlighter:
+            return settings.pkTool
         case .eraser:
             return PKEraserTool(.bitmap)
         case .lasso:

@@ -2,6 +2,12 @@ import Vision
 import UIKit
 import FoundationModels
 
+@Generable
+private struct CorrectedText {
+    @Guide(description: "The corrected text with handwriting OCR errors fixed. Only the corrected text, nothing else.")
+    var text: String
+}
+
 enum LassoOCR {
     /// Composite `image` onto a white background so Vision can see the ink.
     private static func whiteBackground(_ image: UIImage) -> UIImage {
@@ -70,21 +76,29 @@ enum LassoOCR {
     // MARK: - Foundation Models correction
 
     private static func foundationModelsCorrect(_ rawText: String) async -> String {
-        do {
-            let session = LanguageModelSession()
-            let response = try await session.respond(
-                to: """
-                Fix any handwriting OCR errors in the text below. \
-                Correct misread characters and broken words while preserving the original meaning exactly. \
-                Return only the corrected text with no explanation.
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                do {
+                    let session = LanguageModelSession()
+                    let response = try await session.respond(
+                        to: "Fix any handwriting OCR errors in this text, correcting misread characters and broken words while preserving the original meaning: \(rawText)",
+                        generating: CorrectedText.self
+                    )
+                    return response.content.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                } catch {
+                    print("[OCR] Foundation Models error: \(error)")
+                    return nil
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(8))
+                print("[OCR] Foundation Models timed out — using raw text")
+                return nil
+            }
 
-                \(rawText)
-                """
-            )
-            return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            print("[OCR] Foundation Models correction failed: \(error) — using raw text")
-            return rawText
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result ?? rawText
         }
     }
 }
