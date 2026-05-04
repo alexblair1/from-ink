@@ -13,7 +13,7 @@ struct CanvasView: UIViewRepresentable {
     var onStrokeCountChanged: (Int) -> Void = { _ in }
     var onDrawingChanged: (PKDrawing) -> Void = { _ in }
     var onScrolledNearBottom: () -> Void = {}
-    var onLassoCompleted: (UIImage) -> Void = { _ in }
+    var onLassoReady: (UIImage, CGRect) -> Void = { _, _ in }
     var onScrolledAwayFromBottom: () -> Void = {}
 
     /// The fixed page height used across all devices.
@@ -37,7 +37,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.currentPenSettings = penSettings
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
-        context.coordinator.onLassoCompleted = onLassoCompleted
+        context.coordinator.onLassoReady = onLassoReady
         context.coordinator.onScrolledNearBottom = onScrolledNearBottom
         context.coordinator.onScrolledAwayFromBottom = onScrolledAwayFromBottom
 
@@ -109,7 +109,7 @@ struct CanvasView: UIViewRepresentable {
 
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
-        context.coordinator.onLassoCompleted = onLassoCompleted
+        context.coordinator.onLassoReady = onLassoReady
         context.coordinator.onPencilDoubleTap = onPencilDoubleTap
         context.coordinator.onStrokeCountChanged = onStrokeCountChanged
         context.coordinator.onDrawingChanged = onDrawingChanged
@@ -122,7 +122,7 @@ struct CanvasView: UIViewRepresentable {
         var currentPenSettings: PenSettings = .default
         var onTwoFingerHoldBegan: () -> Void = {}
         var onTwoFingerHoldEnded: () -> Void = {}
-        var onLassoCompleted: (UIImage) -> Void = { _ in }
+        var onLassoReady: (UIImage, CGRect) -> Void = { _, _ in }
         var onPencilDoubleTap: () -> Void = {}
         var onStrokeCountChanged: (Int) -> Void = { _ in }
         var onDrawingChanged: (PKDrawing) -> Void = { _ in }
@@ -249,8 +249,23 @@ struct CanvasView: UIViewRepresentable {
 
             print("[Lasso] rendering region: \(region)")
             let image = drawing.image(from: region, scale: 4)
-            print("[Lasso] image size: \(image.size), firing onLassoCompleted")
-            onLassoCompleted(image)
+            print("[Lasso] image size: \(image.size), firing onLassoReady")
+
+            // Content bounds: union of renderBounds of strokes inside the lasso region.
+            // This is tighter than `region` (which pads the lasso path itself) and gives
+            // a highlight that matches the actual ink rather than the drawn selection loop.
+            let selectedStrokes = drawing.strokes.filter { region.intersects($0.renderBounds) }
+            let contentBounds = selectedStrokes.isEmpty ? region :
+                selectedStrokes.map { $0.renderBounds }.reduce(CGRect.null) { $0.union($1) }
+
+            // Convert content bounds from content space → view space (accounts for scroll).
+            let viewRect = CGRect(
+                x: contentBounds.minX - canvasView.contentOffset.x,
+                y: contentBounds.minY - canvasView.contentOffset.y,
+                width: contentBounds.width,
+                height: contentBounds.height
+            )
+            onLassoReady(image, viewRect)
         }
 
         // MARK: - UIGestureRecognizerDelegate

@@ -43,8 +43,39 @@ struct CanvasScreen: View {
     @State private var briefOpenQuestion: String? = nil
     @State private var lassoTask: InkTask? = nil
     @State private var isRecognizing = false
+    @State private var lassoMenuImage: UIImage? = nil
+    @State private var lassoMenuRect: CGRect = .zero
+    @State private var showLassoMenu = false
 
     private let pageReadyThreshold = 10
+
+    @ViewBuilder
+    private func lassoMenu(in geo: GeometryProxy) -> some View {
+        let menuBarHeight: CGFloat = 48
+        let gap: CGFloat = 12
+        let menuY = lassoMenuRect.minY > menuBarHeight + gap + 20
+            ? lassoMenuRect.minY - gap - menuBarHeight / 2
+            : lassoMenuRect.maxY + gap + menuBarHeight / 2
+        let menuX = min(max(lassoMenuRect.midX, 120), geo.size.width - 120)
+        LassoMenuBar(
+            onTaskBrief: {
+                guard let image = lassoMenuImage else { return }
+                showLassoMenu = false
+                lassoTask = nil
+                isRecognizing = true
+                activeSheet = .lasso
+                Task {
+                    defer { isRecognizing = false }
+                    let result = await InkTaskExtractor.extract(image: image, scope: .single)
+                    lassoTask = result.tasks.first
+                }
+            },
+            onCopyText: { showLassoMenu = false },
+            onSearch: { showLassoMenu = false },
+            onShare: { showLassoMenu = false }
+        )
+        .position(x: menuX, y: menuY)
+    }
 
     private var activeSettings: PenSettings {
         toolSettings[activeTool] ?? .default
@@ -99,15 +130,10 @@ struct CanvasScreen: View {
                     onStrokeCountChanged: { strokeCount = $0 },
                     onDrawingChanged: { currentDrawing = $0 },
                     onScrolledNearBottom: onNearBottom,
-                    onLassoCompleted: { image in
-                        lassoTask = nil
-                        isRecognizing = true
-                        activeSheet = .lasso
-                        Task {
-                            defer { isRecognizing = false }
-                            let result = await InkTaskExtractor.extract(image: image, scope: .single)
-                            lassoTask = result.tasks.first
-                        }
+                    onLassoReady: { image, rect in
+                        lassoMenuImage = image
+                        lassoMenuRect = rect
+                        showLassoMenu = true
                     },
                     onScrolledAwayFromBottom: onAwayFromBottom
                 )
@@ -254,6 +280,31 @@ struct CanvasScreen: View {
                             : toolbarX - 8 - 130,
                         y: geo.size.height / 2
                     )
+                }
+
+                if showLassoMenu {
+                    // Selection highlight — stays visible while menu is up
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.gray.opacity(0.08))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                        }
+                        .frame(width: lassoMenuRect.width, height: lassoMenuRect.height)
+                        .position(x: lassoMenuRect.midX, y: lassoMenuRect.midY)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.linear(duration: 0.08)) { showLassoMenu = false }
+                        }
+
+                    lassoMenu(in: geo)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
                 }
             }
             .onAppear {
