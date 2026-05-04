@@ -13,7 +13,13 @@ struct CanvasView: UIViewRepresentable {
     var onStrokeCountChanged: (Int) -> Void = { _ in }
     var onDrawingChanged: (PKDrawing) -> Void = { _ in }
     var onScrolledNearBottom: () -> Void = {}
-    var onLassoReady: (UIImage, CGRect) -> Void = { _, _ in }
+    /// Called when a lasso stroke completes.
+    /// - Parameters:
+    ///   - image: Rendered image of the selected region (scale 4).
+    ///   - viewRect: Selected content bounds in view coordinates (scroll-adjusted) — use for UI positioning.
+    ///   - contentRect: Selected content bounds in canvas content coordinates — use for persistence.
+    var onLassoReady: (UIImage, CGRect, CGRect) -> Void = { _, _, _ in }
+    var onScrollOffsetChanged: (CGPoint) -> Void = { _ in }
     var onScrolledAwayFromBottom: () -> Void = {}
 
     /// The fixed page height used across all devices.
@@ -38,6 +44,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
         context.coordinator.onLassoReady = onLassoReady
+        context.coordinator.onScrollOffsetChanged = onScrollOffsetChanged
         context.coordinator.onScrolledNearBottom = onScrolledNearBottom
         context.coordinator.onScrolledAwayFromBottom = onScrolledAwayFromBottom
 
@@ -110,6 +117,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
         context.coordinator.onTwoFingerHoldEnded = onTwoFingerHoldEnded
         context.coordinator.onLassoReady = onLassoReady
+        context.coordinator.onScrollOffsetChanged = onScrollOffsetChanged
         context.coordinator.onPencilDoubleTap = onPencilDoubleTap
         context.coordinator.onStrokeCountChanged = onStrokeCountChanged
         context.coordinator.onDrawingChanged = onDrawingChanged
@@ -122,7 +130,8 @@ struct CanvasView: UIViewRepresentable {
         var currentPenSettings: PenSettings = .default
         var onTwoFingerHoldBegan: () -> Void = {}
         var onTwoFingerHoldEnded: () -> Void = {}
-        var onLassoReady: (UIImage, CGRect) -> Void = { _, _ in }
+        var onLassoReady: (UIImage, CGRect, CGRect) -> Void = { _, _, _ in }
+        var onScrollOffsetChanged: (CGPoint) -> Void = { _ in }
         var onPencilDoubleTap: () -> Void = {}
         var onStrokeCountChanged: (Int) -> Void = { _ in }
         var onDrawingChanged: (PKDrawing) -> Void = { _ in }
@@ -203,6 +212,8 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - UIScrollViewDelegate
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            onScrollOffsetChanged(scrollView.contentOffset)
+
             let distanceFromBottom = scrollView.contentSize.height
                 - scrollView.contentOffset.y
                 - scrollView.bounds.height
@@ -265,7 +276,7 @@ struct CanvasView: UIViewRepresentable {
                 width: contentBounds.width,
                 height: contentBounds.height
             )
-            onLassoReady(image, viewRect)
+            onLassoReady(image, viewRect, contentBounds)
         }
 
         // MARK: - UIGestureRecognizerDelegate

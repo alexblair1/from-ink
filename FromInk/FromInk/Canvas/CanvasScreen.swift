@@ -9,10 +9,12 @@ private struct HandleState {
 private enum ActiveSheet: Identifiable {
     case lasso
     case brief
+    case link
     var id: String {
         switch self {
         case .lasso: return "lasso"
         case .brief: return "brief"
+        case .link: return "link"
         }
     }
 }
@@ -45,7 +47,16 @@ struct CanvasScreen: View {
     @State private var isRecognizing = false
     @State private var lassoMenuImage: UIImage? = nil
     @State private var lassoMenuRect: CGRect = .zero
+    @State private var lassoContentRect: CGRect = .zero
     @State private var showLassoMenu = false
+    @State private var scrollOffset: CGPoint = .zero
+
+    // Links
+    @State private var links: [CanvasLink] = []
+    @State private var pendingLinkContentRect: CGRect = .zero
+    @State private var pendingLinkOCRText: String = ""
+    @State private var isRecognizingLink = false
+    @State private var activeLinkURL: URL? = nil
 
     private let pageReadyThreshold = 10
 
@@ -68,6 +79,18 @@ struct CanvasScreen: View {
                     defer { isRecognizing = false }
                     let result = await InkTaskExtractor.extract(image: image, scope: .single)
                     lassoTask = result.tasks.first
+                }
+            },
+            onLink: {
+                guard let image = lassoMenuImage else { return }
+                showLassoMenu = false
+                pendingLinkContentRect = lassoContentRect
+                pendingLinkOCRText = ""
+                isRecognizingLink = true
+                activeSheet = .link
+                Task {
+                    defer { isRecognizingLink = false }
+                    pendingLinkOCRText = await LassoOCR.recognize(image: image, correct: true)
                 }
             },
             onCopyText: { showLassoMenu = false },
@@ -130,14 +153,26 @@ struct CanvasScreen: View {
                     onStrokeCountChanged: { strokeCount = $0 },
                     onDrawingChanged: { currentDrawing = $0 },
                     onScrolledNearBottom: onNearBottom,
-                    onLassoReady: { image, rect in
+                    onLassoReady: { image, viewRect, contentRect in
                         lassoMenuImage = image
-                        lassoMenuRect = rect
+                        lassoMenuRect = viewRect
+                        lassoContentRect = contentRect
                         showLassoMenu = true
                     },
+                    onScrollOffsetChanged: { scrollOffset = $0 },
                     onScrolledAwayFromBottom: onAwayFromBottom
                 )
                 .ignoresSafeArea()
+
+                // Link indicators — positioned in view space using scroll offset
+                ForEach(links) { link in
+                    let viewX = link.contentRect.midX - scrollOffset.x
+                    let viewY = link.contentRect.midY - scrollOffset.y
+                    LinkIndicator(link: link) {
+                        activeLinkURL = link.url
+                    }
+                    .position(x: viewX, y: viewY)
+                }
 
                 CanvasToolbar(
                     activeTool: $activeTool,
@@ -316,6 +351,15 @@ struct CanvasScreen: View {
         }
         .ignoresSafeArea()
         .preferredColorScheme(colorScheme)
+        .sheet(isPresented: Binding(
+            get: { activeLinkURL != nil },
+            set: { if !$0 { activeLinkURL = nil } }
+        )) {
+            if let url = activeLinkURL {
+                SafariView(url: url)
+                    .ignoresSafeArea()
+            }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .lasso:
@@ -333,6 +377,21 @@ struct CanvasScreen: View {
                     openQuestion: briefOpenQuestion,
                     onDismiss: { activeSheet = nil },
                     onSendAll: { activeSheet = nil }
+                )
+            case .link:
+                LinkInputSheet(
+                    isLoading: isRecognizingLink,
+                    recognizedText: pendingLinkOCRText,
+                    onConfirm: { url in
+                        let link = CanvasLink(
+                            contentRect: pendingLinkContentRect,
+                            recognizedText: pendingLinkOCRText,
+                            url: url
+                        )
+                        links.append(link)
+                        activeSheet = nil
+                    },
+                    onDismiss: { activeSheet = nil }
                 )
             }
         }
