@@ -11,6 +11,7 @@ struct CanvasToolbar: View {
     var onAnalyze: () -> Void = {}
     var onCustomize: (CanvasTool) -> Void = { _ in }
     var onTemplate: () -> Void = {}
+    var onSettings: () -> Void = {}
 
     @State private var boltExpanded = false
     @State private var boltVisible = false
@@ -70,6 +71,7 @@ struct CanvasToolbar: View {
                     colorScheme = colorScheme == .dark ? .light : .dark
                 }
             }
+            actionButton(icon: "gearshape") { onSettings() }
         }
         .frame(width: 48)
         .background(Color.surface)

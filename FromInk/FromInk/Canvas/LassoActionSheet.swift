@@ -6,7 +6,7 @@ struct LassoActionSheet: View {
     var onDismiss: () -> Void = {}
     var onSend: (ExtractedTask) -> Void = { _ in }
 
-    @State private var task = ExtractedTask(title: "", detail: "")
+    @State private var task = InkTask(title: "")
 
     private var selectedCount: Int { task.destinations.count }
     private var primaryLabel: String {

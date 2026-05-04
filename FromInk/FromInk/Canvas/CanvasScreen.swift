@@ -6,7 +6,21 @@ private struct HandleState {
     var offset: CGFloat = 0
 }
 
+private enum ActiveSheet: Identifiable {
+    case lasso
+    case brief
+    var id: String {
+        switch self {
+        case .lasso: return "lasso"
+        case .brief: return "brief"
+        }
+    }
+}
+
 struct CanvasScreen: View {
+    var onNearBottom: () -> Void = {}
+    var onAwayFromBottom: () -> Void = {}
+
     @State private var activeTool: CanvasTool = .pen
     @State private var previousTool: CanvasTool = .pen
     @State private var toolSettings: [CanvasTool: PenSettings] = [:]
@@ -15,13 +29,17 @@ struct CanvasScreen: View {
     @State private var showTemplatePanel = false
     @State private var strokeCount: Int = 0
     @State private var currentDrawing = PKDrawing()
+    @AppStorage("correctHandwriting") private var correctHandwriting = true
+    @State private var showSettingsPanel = false
 
-    // Brief sheet
-    @State private var showBriefSheet = false
+    // Sheets
+    @State private var activeSheet: ActiveSheet? = nil
     @State private var isAnalyzing = false
     @State private var briefSummary: String = ""
-    @State private var briefTasks: [ExtractedTask] = []
+    @State private var briefTasks: [InkTask] = []
     @State private var briefOpenQuestion: String? = nil
+    @State private var lassoRecognizedText: String = ""
+    @State private var isRecognizing = false
 
     private let pageReadyThreshold = 10
 
@@ -35,9 +53,7 @@ struct CanvasScreen: View {
             set: { toolSettings[tool] = $0 }
         )
     }
-    @State private var lassoRecognizedText: String = ""
-    @State private var showLassoSheet = false
-    @State private var isRecognizing = false
+
     @State private var toolbarSide: ToolbarSide = {
         ToolbarSide(rawValue: UserDefaults.standard.string(forKey: "toolbarSide") ?? "") ?? .left
     }()
@@ -52,12 +68,11 @@ struct CanvasScreen: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Color.canvas.ignoresSafeArea()
-                TemplateView(template: activeTemplate)
-                    .ignoresSafeArea()
 
                 CanvasView(
                     tool: $activeTool,
                     penSettings: activeSettings,
+                    template: activeTemplate,
                     onTwoFingerHoldBegan: {
                         previousTool = activeTool
                         activeTool = .lasso
@@ -77,17 +92,19 @@ struct CanvasScreen: View {
                     },
                     onStrokeCountChanged: { strokeCount = $0 },
                     onDrawingChanged: { currentDrawing = $0 },
+                    onScrolledNearBottom: onNearBottom,
                     onLassoCompleted: { image in
                         lassoRecognizedText = ""
                         isRecognizing = true
-                        showLassoSheet = true
+                        activeSheet = .lasso
                         Task {
                             defer { isRecognizing = false }
                             print("[Screen] onLassoCompleted — running OCR")
-                            lassoRecognizedText = await LassoOCR.recognize(image: image)
+                            lassoRecognizedText = await LassoOCR.recognize(image: image, correct: correctHandwriting)
                             print("[Screen] OCR done → \"\(lassoRecognizedText)\"")
                         }
-                    }
+                    },
+                    onScrolledAwayFromBottom: onAwayFromBottom
                 )
                 .ignoresSafeArea()
 
@@ -104,14 +121,12 @@ struct CanvasScreen: View {
                         briefSummary = ""
                         briefOpenQuestion = nil
                         isAnalyzing = true
-                        showBriefSheet = true
+                        activeSheet = .brief
                         Task {
                             defer { isAnalyzing = false }
                             let result = await PageAnalyzer.analyze(drawing: currentDrawing)
                             briefSummary = result.summary
-                            briefTasks = result.tasks.map {
-                                ExtractedTask(title: $0.title, detail: $0.detail)
-                            }
+                            briefTasks = result.tasks
                             briefOpenQuestion = result.openQuestion
                         }
                     },
@@ -125,6 +140,14 @@ struct CanvasScreen: View {
                         withAnimation(.linear(duration: 0.08)) {
                             showTemplatePanel.toggle()
                             customizingTool = nil
+                            showSettingsPanel = false
+                        }
+                    },
+                    onSettings: {
+                        withAnimation(.linear(duration: 0.08)) {
+                            showSettingsPanel.toggle()
+                            customizingTool = nil
+                            showTemplatePanel = false
                         }
                     }
                 )
@@ -179,6 +202,25 @@ struct CanvasScreen: View {
                     )
                 }
 
+                if showSettingsPanel {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.linear(duration: 0.08)) { showSettingsPanel = false }
+                        }
+
+                    CanvasSettingsPanel(onDismiss: {
+                        withAnimation(.linear(duration: 0.08)) { showSettingsPanel = false }
+                    })
+                    .position(
+                        x: toolbarSide == .left
+                            ? toolbarX + 48 + 8 + 140
+                            : toolbarX - 8 - 140,
+                        y: geo.size.height - 120
+                    )
+                }
+
                 if let activePanelTool = customizingTool {
                     Color.clear
                         .ignoresSafeArea()
@@ -197,11 +239,11 @@ struct CanvasScreen: View {
                         }
                     )
                     .position(
-                            x: toolbarSide == .left
-                                ? toolbarX + 48 + 8 + 130
-                                : toolbarX - 8 - 130,
-                            y: geo.size.height / 2
-                        )
+                        x: toolbarSide == .left
+                            ? toolbarX + 48 + 8 + 130
+                            : toolbarX - 8 - 130,
+                        y: geo.size.height / 2
+                    )
                 }
             }
             .onAppear {
@@ -213,23 +255,25 @@ struct CanvasScreen: View {
         }
         .ignoresSafeArea()
         .preferredColorScheme(colorScheme)
-        .sheet(isPresented: $showLassoSheet) {
-            LassoActionSheet(
-                isLoading: isRecognizing,
-                recognizedText: lassoRecognizedText,
-                onDismiss: { showLassoSheet = false },
-                onSend: { _ in showLassoSheet = false }
-            )
-        }
-        .sheet(isPresented: $showBriefSheet) {
-            BriefSheet(
-                isLoading: isAnalyzing,
-                summary: briefSummary,
-                tasks: $briefTasks,
-                openQuestion: briefOpenQuestion,
-                onDismiss: { showBriefSheet = false },
-                onSendAll: { showBriefSheet = false }
-            )
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .lasso:
+                LassoActionSheet(
+                    isLoading: isRecognizing,
+                    recognizedText: lassoRecognizedText,
+                    onDismiss: { activeSheet = nil },
+                    onSend: { _ in activeSheet = nil }
+                )
+            case .brief:
+                BriefSheet(
+                    isLoading: isAnalyzing,
+                    summary: briefSummary,
+                    tasks: $briefTasks,
+                    openQuestion: briefOpenQuestion,
+                    onDismiss: { activeSheet = nil },
+                    onSendAll: { activeSheet = nil }
+                )
+            }
         }
     }
 }

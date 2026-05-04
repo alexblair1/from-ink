@@ -1,8 +1,2 @@
-import Foundation
-
-struct ExtractedTask: Identifiable {
-    let id = UUID()
-    var title: String
-    var detail: String
-    var destinations: Set<Integration> = []
-}
+/// Backward-compatibility alias. Prefer `InkTask` for new code.
+typealias ExtractedTask = InkTask

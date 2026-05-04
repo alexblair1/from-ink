@@ -21,12 +21,12 @@ enum LassoOCR {
         }
     }
 
-    static func recognize(image: UIImage) async -> String {
+    static func recognize(image: UIImage, correct: Bool = true) async -> String {
         let flatImage = whiteBackground(image)
         print("[OCR] starting recognition, image=\(flatImage.size) scale=\(flatImage.scale)")
         let raw = await visionRecognize(flatImage)
         print("[OCR] vision raw → \"\(raw)\"")
-        guard !raw.isEmpty else { return raw }
+        guard !raw.isEmpty, correct else { return raw }
         let corrected = await foundationModelsCorrect(raw)
         print("[OCR] corrected → \"\(corrected)\"")
         return corrected

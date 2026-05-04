@@ -5,8 +5,12 @@ import FoundationModels
 
 struct PageAnalysisResult {
     var summary: String
-    var tasks: [(title: String, detail: String)]
+    var tasks: [InkTask]
     var openQuestion: String?
+    /// Normalized OCR text — stored with cache entries to enable change detection.
+    var normalizedOCR: String
+    /// SHA256 of normalizedOCR — cache key.
+    var ocrHash: String
 }
 
 @Generable
@@ -26,26 +30,34 @@ private struct BriefTask {
     @Guide(description: "Short, actionable task title as written in the notes.")
     var title: String
 
-    @Guide(description: "Optional context such as a deadline, project, or category. Empty string if none.")
+    @Guide(description: "Additional context shown as a subtitle in the UI — deadline, project, or category. Empty string if none.")
     var detail: String
+
+    @Guide(description: "Full description or notes for this task. May be multi-sentence. Empty string if none.")
+    var body: String
+
+    @Guide(description: "Due date as ISO 8601 string (YYYY-MM-DD) if a specific date or day is mentioned. Empty string if none.")
+    var dueDateString: String
+
+    @Guide(description: "Priority: urgent, high, medium, low, or none.")
+    var priorityString: String
 }
 
 enum PageAnalyzer {
 
     static func analyze(drawing: PKDrawing) async -> PageAnalysisResult {
-        guard !drawing.strokes.isEmpty else {
-            return PageAnalysisResult(summary: "", tasks: [], openQuestion: nil)
-        }
+        let empty = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil, normalizedOCR: "", ocrHash: "")
+        guard !drawing.strokes.isEmpty else { return empty }
 
         let image = render(drawing)
         let rawText = await visionRecognize(image)
         print("[PageAnalyzer] vision raw → \"\(rawText)\"")
+        guard !rawText.isEmpty else { return empty }
 
-        guard !rawText.isEmpty else {
-            return PageAnalysisResult(summary: "", tasks: [], openQuestion: nil)
-        }
+        let normalized = OCRNormalizer.normalize(rawText)
+        let hash = OCRNormalizer.hash(normalized)
 
-        return await foundationModelsExtract(rawText)
+        return await foundationModelsExtract(rawText, normalized: normalized, hash: hash)
     }
 
     // MARK: - Render
@@ -98,23 +110,41 @@ enum PageAnalyzer {
 
     // MARK: - Foundation Models
 
-    private static func foundationModelsExtract(_ rawText: String) async -> PageAnalysisResult {
-        await withTaskGroup(of: PageAnalysisResult?.self) { group in
+    private static func foundationModelsExtract(
+        _ rawText: String,
+        normalized: String,
+        hash: String
+    ) async -> PageAnalysisResult {
+        let prompt = """
+        The following text was extracted via OCR from handwritten notes. \
+        Extract a brief summary, all action items/tasks, and any open question.
+
+        Notes:
+        \(rawText)
+        """
+        let fallback = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil,
+                                          normalizedOCR: normalized, ocrHash: hash)
+
+        return await withTaskGroup(of: PageAnalysisResult?.self) { group in
             group.addTask {
                 do {
                     let session = LanguageModelSession()
-                    let prompt = """
-                    The following text was extracted via OCR from handwritten notes. \
-                    Extract a brief summary, all action items/tasks, and any open question.
-
-                    Notes:
-                    \(rawText)
-                    """
                     let response = try await session.respond(to: prompt, generating: PageBrief.self)
                     let brief = response.content
-                    let tasks = brief.tasks.map { (title: $0.title, detail: $0.detail) }
+                    let tasks = brief.tasks.map { t -> InkTask in
+                        InkTask(
+                            title: t.title,
+                            body: t.body,
+                            detail: t.detail,
+                            dueDate: parseDate(t.dueDateString),
+                            priority: TaskPriority.from(t.priorityString),
+                            sourceOCRHash: hash
+                        )
+                    }
                     let question: String? = brief.openQuestion.isEmpty ? nil : brief.openQuestion
-                    return PageAnalysisResult(summary: brief.summary, tasks: tasks, openQuestion: question)
+                    return PageAnalysisResult(summary: brief.summary, tasks: tasks,
+                                             openQuestion: question,
+                                             normalizedOCR: normalized, ocrHash: hash)
                 } catch {
                     print("[PageAnalyzer] Foundation Models error: \(error)")
                     return nil
@@ -128,7 +158,16 @@ enum PageAnalyzer {
 
             let result = await group.next() ?? nil
             group.cancelAll()
-            return result ?? PageAnalysisResult(summary: "", tasks: [], openQuestion: nil)
+            return result ?? fallback
         }
+    }
+
+    // MARK: - Helpers
+
+    private static func parseDate(_ iso: String) -> Date? {
+        guard !iso.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return formatter.date(from: iso)
     }
 }

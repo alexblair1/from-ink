@@ -1,6 +1,6 @@
 import Foundation
 
-enum Integration: String, CaseIterable, Hashable {
+enum Integration: String, CaseIterable, Codable, Hashable {
     case linear
     case github
     case reminders
