@@ -25,11 +25,6 @@ struct InkTask: Identifiable, Codable, Hashable {
     /// Destination-specific overrides that don't fit the universal fields above.
     var context: DestinationContext
 
-    // MARK: - ML provenance (used by caching layer)
-
-    /// SHA256 of the normalized OCR text this task was extracted from.
-    /// Used to detect stale cache entries.
-    var sourceOCRHash: String?
     let extractedAt: Date
     var completedAt: Date?
 
@@ -45,7 +40,6 @@ struct InkTask: Identifiable, Codable, Hashable {
         labels: [String] = [],
         destinations: Set<Integration> = [],
         context: DestinationContext = DestinationContext(),
-        sourceOCRHash: String? = nil,
         extractedAt: Date = .now,
         completedAt: Date? = nil
     ) {
@@ -58,7 +52,6 @@ struct InkTask: Identifiable, Codable, Hashable {
         self.labels = labels
         self.destinations = destinations
         self.context = context
-        self.sourceOCRHash = sourceOCRHash
         self.extractedAt = extractedAt
         self.completedAt = completedAt
     }

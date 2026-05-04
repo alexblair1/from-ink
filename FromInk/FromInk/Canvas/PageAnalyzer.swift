@@ -7,10 +7,6 @@ struct PageAnalysisResult {
     var summary: String
     var tasks: [InkTask]
     var openQuestion: String?
-    /// Normalized OCR text — stored with cache entries to enable change detection.
-    var normalizedOCR: String
-    /// SHA256 of normalizedOCR — cache key.
-    var ocrHash: String
 }
 
 @Generable
@@ -46,7 +42,7 @@ private struct BriefTask {
 enum PageAnalyzer {
 
     static func analyze(drawing: PKDrawing) async -> PageAnalysisResult {
-        let empty = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil, normalizedOCR: "", ocrHash: "")
+        let empty = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil)
         guard !drawing.strokes.isEmpty else { return empty }
 
         let image = render(drawing)
@@ -54,10 +50,7 @@ enum PageAnalyzer {
         print("[PageAnalyzer] vision raw → \"\(rawText)\"")
         guard !rawText.isEmpty else { return empty }
 
-        let normalized = OCRNormalizer.normalize(rawText)
-        let hash = OCRNormalizer.hash(normalized)
-
-        return await foundationModelsExtract(rawText, normalized: normalized, hash: hash)
+        return await foundationModelsExtract(rawText)
     }
 
     // MARK: - Render
@@ -110,11 +103,7 @@ enum PageAnalyzer {
 
     // MARK: - Foundation Models
 
-    private static func foundationModelsExtract(
-        _ rawText: String,
-        normalized: String,
-        hash: String
-    ) async -> PageAnalysisResult {
+    private static func foundationModelsExtract(_ rawText: String) async -> PageAnalysisResult {
         let prompt = """
         The following text was extracted via OCR from handwritten notes. \
         Extract a brief summary, all action items/tasks, and any open question.
@@ -122,8 +111,7 @@ enum PageAnalyzer {
         Notes:
         \(rawText)
         """
-        let fallback = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil,
-                                          normalizedOCR: normalized, ocrHash: hash)
+        let fallback = PageAnalysisResult(summary: "", tasks: [], openQuestion: nil)
 
         return await withTaskGroup(of: PageAnalysisResult?.self) { group in
             group.addTask {
@@ -137,14 +125,12 @@ enum PageAnalyzer {
                             body: t.body,
                             detail: t.detail,
                             dueDate: parseDate(t.dueDateString),
-                            priority: TaskPriority.from(t.priorityString),
-                            sourceOCRHash: hash
+                            priority: TaskPriority.from(t.priorityString)
                         )
                     }
                     let question: String? = brief.openQuestion.isEmpty ? nil : brief.openQuestion
                     return PageAnalysisResult(summary: brief.summary, tasks: tasks,
-                                             openQuestion: question,
-                                             normalizedOCR: normalized, ocrHash: hash)
+                                             openQuestion: question)
                 } catch {
                     print("[PageAnalyzer] Foundation Models error: \(error)")
                     return nil

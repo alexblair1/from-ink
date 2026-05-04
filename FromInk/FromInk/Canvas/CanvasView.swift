@@ -71,7 +71,9 @@ struct CanvasView: UIViewRepresentable {
         lassoPan.delaysTouchesBegan = false
         lassoPan.delaysTouchesEnded = false
         lassoPan.delegate = context.coordinator
+        lassoPan.isEnabled = tool == .lasso
         canvas.addGestureRecognizer(lassoPan)
+        context.coordinator.lassoPanRecognizer = lassoPan
 
         // Apple Pencil double-tap
         let pencilInteraction = UIPencilInteraction()
@@ -86,13 +88,16 @@ struct CanvasView: UIViewRepresentable {
             canvas.tool = tool.pkTool(settings: penSettings)
             context.coordinator.currentTool = tool
             context.coordinator.currentPenSettings = penSettings
+            context.coordinator.lassoPanRecognizer?.isEnabled = (tool == .lasso)
         }
 
-        // Update page size
+        // Update page size — re-apply tool after contentSize change because PencilKit
+        // resets canvas.tool internally when contentSize is mutated on a fresh canvas.
         let targetSize = CGSize(width: canvas.bounds.width, height: pageHeight)
         if canvas.contentSize != targetSize {
             canvas.isScrollEnabled = true
             canvas.contentSize = targetSize
+            canvas.tool = tool.pkTool(settings: penSettings)
             context.coordinator.templateLayer?.frame = CGRect(origin: .zero, size: targetSize)
             context.coordinator.templateLayer?.setNeedsDisplay()
         }
@@ -124,6 +129,7 @@ struct CanvasView: UIViewRepresentable {
         var onScrolledNearBottom: () -> Void = {}
         var onScrolledAwayFromBottom: () -> Void = {}
         weak var templateLayer: PageTemplateLayer?
+        weak var lassoPanRecognizer: UIPanGestureRecognizer?
 
         private var isNearBottom = false
 

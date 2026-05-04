@@ -31,6 +31,9 @@ struct CanvasScreen: View {
     @State private var currentDrawing = PKDrawing()
     @AppStorage("correctHandwriting") private var correctHandwriting = true
     @State private var showSettingsPanel = false
+    #if DEBUG
+    @State private var showDebugSheet = false
+    #endif
 
     // Sheets
     @State private var activeSheet: ActiveSheet? = nil
@@ -38,7 +41,7 @@ struct CanvasScreen: View {
     @State private var briefSummary: String = ""
     @State private var briefTasks: [InkTask] = []
     @State private var briefOpenQuestion: String? = nil
-    @State private var lassoRecognizedText: String = ""
+    @State private var lassoTask: InkTask? = nil
     @State private var isRecognizing = false
 
     private let pageReadyThreshold = 10
@@ -68,6 +71,9 @@ struct CanvasScreen: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Color.canvas.ignoresSafeArea()
+                    #if DEBUG
+                    .sheet(isPresented: $showDebugSheet) { ExtractionDebugSheet() }
+                    #endif
 
                 CanvasView(
                     tool: $activeTool,
@@ -94,14 +100,13 @@ struct CanvasScreen: View {
                     onDrawingChanged: { currentDrawing = $0 },
                     onScrolledNearBottom: onNearBottom,
                     onLassoCompleted: { image in
-                        lassoRecognizedText = ""
+                        lassoTask = nil
                         isRecognizing = true
                         activeSheet = .lasso
                         Task {
                             defer { isRecognizing = false }
-                            print("[Screen] onLassoCompleted — running OCR")
-                            lassoRecognizedText = await LassoOCR.recognize(image: image, correct: correctHandwriting)
-                            print("[Screen] OCR done → \"\(lassoRecognizedText)\"")
+                            let result = await InkTaskExtractor.extract(image: image, scope: .single)
+                            lassoTask = result.tasks.first
                         }
                     },
                     onScrolledAwayFromBottom: onAwayFromBottom
@@ -124,7 +129,7 @@ struct CanvasScreen: View {
                         activeSheet = .brief
                         Task {
                             defer { isAnalyzing = false }
-                            let result = await PageAnalyzer.analyze(drawing: currentDrawing)
+                            let result = await InkTaskExtractor.extract(drawing: currentDrawing, scope: .page)
                             briefSummary = result.summary
                             briefTasks = result.tasks
                             briefOpenQuestion = result.openQuestion
@@ -149,6 +154,11 @@ struct CanvasScreen: View {
                             customizingTool = nil
                             showTemplatePanel = false
                         }
+                    },
+                    onDebug: {
+                        #if DEBUG
+                        showDebugSheet = true
+                        #endif
                     }
                 )
                 .offset(x: toolbarX)
@@ -260,7 +270,7 @@ struct CanvasScreen: View {
             case .lasso:
                 LassoActionSheet(
                     isLoading: isRecognizing,
-                    recognizedText: lassoRecognizedText,
+                    task: lassoTask ?? InkTask(title: ""),
                     onDismiss: { activeSheet = nil },
                     onSend: { _ in activeSheet = nil }
                 )

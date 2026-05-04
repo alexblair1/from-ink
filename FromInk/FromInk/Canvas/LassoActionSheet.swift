@@ -2,13 +2,13 @@ import SwiftUI
 
 struct LassoActionSheet: View {
     var isLoading: Bool = false
-    var recognizedText: String = ""
+    var task: InkTask = InkTask(title: "")
     var onDismiss: () -> Void = {}
-    var onSend: (ExtractedTask) -> Void = { _ in }
+    var onSend: (InkTask) -> Void = { _ in }
 
-    @State private var task = InkTask(title: "")
+    @State private var editableTask = InkTask(title: "")
 
-    private var selectedCount: Int { task.destinations.count }
+    private var selectedCount: Int { editableTask.destinations.count }
     private var primaryLabel: String {
         selectedCount == 0
             ? "Send"
@@ -37,8 +37,8 @@ struct LassoActionSheet: View {
                 secondary: "Cancel",
                 primary: primaryLabel,
                 secondaryAction: onDismiss,
-                primaryAction: { onSend(task) },
-                primaryDisabled: task.destinations.isEmpty || isLoading
+                primaryAction: { onSend(editableTask) },
+                primaryDisabled: editableTask.destinations.isEmpty || isLoading
             )
         }
         .background(Color.surface)
@@ -46,8 +46,8 @@ struct LassoActionSheet: View {
         .presentationCornerRadius(0)
         .presentationDragIndicator(.hidden)
         .presentationDetents([.large])
-        .onAppear { task.title = recognizedText }
-        .onChange(of: recognizedText) { _, newText in task.title = newText }
+        .onAppear { editableTask = task }
+        .onChange(of: task) { _, newTask in editableTask = newTask }
     }
 
     // MARK: - Header
@@ -125,13 +125,20 @@ struct LassoActionSheet: View {
                 .foregroundStyle(Color.inkSecondary)
                 .frame(width: 36, alignment: .leading)
 
-            Text(task.title.isEmpty ? "No text recognized" : task.title)
-                .font(.system(size: 15))
-                .foregroundStyle(task.title.isEmpty ? Color.inkSecondary : Color.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(editableTask.title.isEmpty ? "No text recognized" : editableTask.title)
+                    .font(.system(size: 15))
+                    .foregroundStyle(editableTask.title.isEmpty ? Color.inkSecondary : Color.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !editableTask.detail.isEmpty {
+                    Text(editableTask.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.inkSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            IntegrationButtonRow(destinations: $task.destinations)
+            IntegrationButtonRow(destinations: $editableTask.destinations)
                 .frame(width: 148, alignment: .center)
 
             Text("Pending")
@@ -153,7 +160,7 @@ struct LassoActionSheet: View {
     Color.canvas.ignoresSafeArea()
         .sheet(isPresented: .constant(true)) {
             LassoActionSheet(
-                recognizedText: "Call John about the Q3 report by Friday"
+                task: InkTask(title: "Call John about the Q3 report", detail: "Due Fri")
             )
         }
 }
