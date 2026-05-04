@@ -247,6 +247,14 @@ enum InkTaskExtractor {
     }
 
     private static func stage2Page(stage1: CandidateExtraction) async -> TaskExtractionResult {
+        // If Stage 1 found no candidates the note-writing style doesn't match the
+        // imperative-verb heuristic. Fall back to the same single-FM-call path the
+        // lasso uses so we always produce output.
+        if stage1.candidates.isEmpty {
+            debugLog(.nlStage1, "No candidates — falling back to full-text FM", stage1.rawText)
+            return await stage2Single(stage1: stage1)
+        }
+
         // Each candidate is processed independently so a guardrail on one sentence
         // doesn't block the others. Clean tasks get FM polish; flagged ones show a warning.
         async let indexedTasks: [(Int, InkTask)] = withTaskGroup(of: (Int, InkTask).self) { group in
@@ -449,7 +457,7 @@ enum InkTaskExtractor {
         let bounds = drawing.bounds.isEmpty
             ? CGRect(x: 0, y: 0, width: 400, height: 400)
             : drawing.bounds.insetBy(dx: -32, dy: -32)
-        let raw = drawing.image(from: bounds, scale: 2)
+        let raw = drawing.image(from: bounds, scale: 3)
         let format = UIGraphicsImageRendererFormat()
         format.scale = raw.scale
         return UIGraphicsImageRenderer(size: raw.size, format: format).image { ctx in

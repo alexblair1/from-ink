@@ -60,7 +60,7 @@ enum PageAnalyzer {
             ? CGRect(x: 0, y: 0, width: 400, height: 400)
             : drawing.bounds.insetBy(dx: -32, dy: -32)
 
-        let raw = drawing.image(from: bounds, scale: 2)
+        let raw = drawing.image(from: bounds, scale: 3)
         let format = UIGraphicsImageRendererFormat()
         format.scale = raw.scale
         return UIGraphicsImageRenderer(size: raw.size, format: format).image { ctx in

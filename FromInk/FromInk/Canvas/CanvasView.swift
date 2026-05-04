@@ -248,7 +248,7 @@ struct CanvasView: UIViewRepresentable {
             }
 
             print("[Lasso] rendering region: \(region)")
-            let image = drawing.image(from: region, scale: 3)
+            let image = drawing.image(from: region, scale: 4)
             print("[Lasso] image size: \(image.size), firing onLassoCompleted")
             onLassoCompleted(image)
         }
