@@ -23,59 +23,59 @@ struct CanvasToolbar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Drag handle
-            dragHandle
+                // Drag handle
+                dragHandle
 
-            // Ink-to-execution bolt — opacity fades first on exit, then height collapses
-            boltZone
-                .frame(height: boltExpanded ? 56 : 0)
-                .opacity(boltVisible ? 1 : 0)
-                .clipped()
-                .onChange(of: isPageReady) { _, ready in
-                    if ready {
-                        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
-                            boltExpanded = true
-                        }
-                        withAnimation(.easeOut(duration: 0.2).delay(0.08)) {
-                            boltVisible = true
-                        }
-                    } else {
-                        withAnimation(.easeIn(duration: 0.15)) {
-                            boltVisible = false
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                // Ink-to-execution bolt — opacity fades first on exit, then height collapses
+                boltZone
+                    .frame(height: boltExpanded ? 56 : 0)
+                    .opacity(boltVisible ? 1 : 0)
+                    .clipped()
+                    .onChange(of: isPageReady) { _, ready in
+                        if ready {
                             withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
-                                boltExpanded = false
+                                boltExpanded = true
+                            }
+                            withAnimation(.easeOut(duration: 0.2).delay(0.08)) {
+                                boltVisible = true
+                            }
+                        } else {
+                            withAnimation(.easeIn(duration: 0.15)) {
+                                boltVisible = false
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+                                    boltExpanded = false
+                                }
                             }
                         }
                     }
+
+                // Writing tools
+                ForEach(writingTools, id: \.self) { tool in
+                    toolButton(tool)
                 }
 
-            // Writing tools
-            ForEach(writingTools, id: \.self) { tool in
-                toolButton(tool)
-            }
+                // Divider
+                Rectangle()
+                    .fill(Color.border)
+                    .frame(height: 1)
 
-            // Divider
-            Rectangle()
-                .fill(Color.border)
-                .frame(height: 1)
+                // Actions
+                actionButton(icon: "arrow.uturn.backward") { undoManager?.undo() }
+                actionButton(icon: "arrow.uturn.forward") { undoManager?.redo() }
+                actionButton(icon: "square.grid.3x3") { onTemplate() }
 
-            // Actions
-            actionButton(icon: "arrow.uturn.backward") { undoManager?.undo() }
-            actionButton(icon: "arrow.uturn.forward") { undoManager?.redo() }
-            actionButton(icon: "square.grid.3x3") { onTemplate() }
-
-            // Appearance toggle
-            actionButton(icon: colorScheme == .dark ? "moon" : "sun.max") {
-                withAnimation(.linear(duration: 0.08)) {
-                    colorScheme = colorScheme == .dark ? .light : .dark
+                // Appearance toggle
+                actionButton(icon: colorScheme == .dark ? "moon" : "sun.max") {
+                    withAnimation(.linear(duration: 0.08)) {
+                        colorScheme = colorScheme == .dark ? .light : .dark
+                    }
                 }
-            }
-            actionButton(icon: "gearshape") { onSettings() }
-            #if DEBUG
-            actionButton(icon: "ant") { onDebug() }
-            #endif
+                actionButton(icon: "gearshape") { onSettings() }
+                #if DEBUG
+                actionButton(icon: "ant") { onDebug() }
+                #endif
         }
         .frame(width: 48)
         .background(Color.surface)

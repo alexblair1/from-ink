@@ -3,6 +3,8 @@ import SwiftUI
 struct LinkInputSheet: View {
     var isLoading: Bool
     var recognizedText: String
+    var initialURL: String = ""
+    var isEditing: Bool = false
     var onConfirm: (URL) -> Void
     var onDismiss: () -> Void
 
@@ -43,21 +45,24 @@ struct LinkInputSheet: View {
                         .focused($urlFieldFocused)
                 }
             }
-            .navigationTitle("Add Link")
+            .navigationTitle(isEditing ? "Edit Link" : "Add Link")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onDismiss)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
+                    Button(isEditing ? "Update" : "Add") {
                         guard let url = parsedURL else { return }
                         onConfirm(url)
                     }
                     .disabled(parsedURL == nil)
                 }
             }
-            .onAppear { urlFieldFocused = !isLoading }
+            .onAppear {
+                urlText = initialURL  // always overwrite — no stale state from prior presentation
+                urlFieldFocused = !isLoading
+            }
             .onChange(of: isLoading) { _, loading in
                 if !loading { urlFieldFocused = true }
             }

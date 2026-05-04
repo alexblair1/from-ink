@@ -4,6 +4,9 @@ struct NotebookScreen: View {
     @State private var pages: [NotebookPage] = [NotebookPage()]
     @State private var currentIndex = 0
     @State private var showAddButton = false
+    @AppStorage("toolbarSide") private var toolbarSideRaw: String = "left"
+
+    private var toolbarIsLeft: Bool { toolbarSideRaw != "right" }
 
     var body: some View {
         ZStack {
@@ -23,21 +26,28 @@ struct NotebookScreen: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
 
-            // Page indicator — only when more than one page exists
+            // Page navigator — opposite side from toolbar, only when more than one page
             if pages.count > 1 {
                 VStack {
                     Spacer()
                     HStack {
-                        Spacer()
-                        Text("\(currentIndex + 1) / \(pages.count)")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(.regularMaterial, in: Capsule())
-                            .padding(.trailing, 20)
-                            .padding(.bottom, showAddButton ? 100 : 24)
-                            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showAddButton)
+                        if !toolbarIsLeft { Spacer() }
+
+                        PageNavigator(
+                            current: currentIndex + 1,
+                            total: pages.count,
+                            onPrevious: {
+                                withAnimation { currentIndex = max(0, currentIndex - 1) }
+                            },
+                            onNext: {
+                                withAnimation { currentIndex = min(pages.count - 1, currentIndex + 1) }
+                            }
+                        )
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, showAddButton ? 100 : 24)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showAddButton)
+
+                        if toolbarIsLeft { Spacer() }
                     }
                 }
                 .ignoresSafeArea()

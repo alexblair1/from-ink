@@ -57,6 +57,7 @@ struct CanvasScreen: View {
     @State private var pendingLinkOCRText: String = ""
     @State private var isRecognizingLink = false
     @State private var activeLinkURL: URL? = nil
+    @State private var editingLink: CanvasLink? = nil
 
     private let pageReadyThreshold = 10
 
@@ -168,9 +169,19 @@ struct CanvasScreen: View {
                 ForEach(links) { link in
                     let viewX = link.contentRect.midX - scrollOffset.x
                     let viewY = link.contentRect.midY - scrollOffset.y
-                    LinkIndicator(link: link) {
-                        activeLinkURL = link.url
-                    }
+                    LinkIndicator(
+                        link: link,
+                        onTap: { activeLinkURL = link.url },
+                        onEdit: {
+                            editingLink = link
+                            pendingLinkOCRText = link.recognizedText
+                            isRecognizingLink = false
+                            activeSheet = .link
+                        },
+                        onDelete: {
+                            links.removeAll { $0.id == link.id }
+                        }
+                    )
                     .position(x: viewX, y: viewY)
                 }
 
@@ -348,6 +359,14 @@ struct CanvasScreen: View {
             .onChange(of: geo.size.width) { _, newWidth in
                 toolbarAnchorX = toolbarSide == .left ? 0 : newWidth - 48
             }
+            .onChange(of: strokeCount) { _, _ in
+                // Auto-remove links whose ink has been fully erased
+                links = links.filter { link in
+                    currentDrawing.strokes.contains { stroke in
+                        link.contentRect.intersects(stroke.renderBounds)
+                    }
+                }
+            }
         }
         .ignoresSafeArea()
         .preferredColorScheme(colorScheme)
@@ -382,16 +401,29 @@ struct CanvasScreen: View {
                 LinkInputSheet(
                     isLoading: isRecognizingLink,
                     recognizedText: pendingLinkOCRText,
+                    initialURL: editingLink?.url.absoluteString ?? "",
+                    isEditing: editingLink != nil,
                     onConfirm: { url in
-                        let link = CanvasLink(
-                            contentRect: pendingLinkContentRect,
-                            recognizedText: pendingLinkOCRText,
-                            url: url
-                        )
-                        links.append(link)
+                        if let existing = editingLink {
+                            // Edit — update in place
+                            if let idx = links.firstIndex(where: { $0.id == existing.id }) {
+                                links[idx].url = url
+                            }
+                            editingLink = nil
+                        } else {
+                            // Create — append new link
+                            links.append(CanvasLink(
+                                contentRect: pendingLinkContentRect,
+                                recognizedText: pendingLinkOCRText,
+                                url: url
+                            ))
+                        }
                         activeSheet = nil
                     },
-                    onDismiss: { activeSheet = nil }
+                    onDismiss: {
+                        editingLink = nil
+                        activeSheet = nil
+                    }
                 )
             }
         }

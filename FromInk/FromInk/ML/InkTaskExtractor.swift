@@ -22,7 +22,7 @@ struct TaskExtractionResult {
 }
 
 // MARK: - Foundation Models structured output
-
+    
 @Generable
 private struct FMSingleTask {
     @Guide(description: "Short, actionable task title in imperative form. Only the cleaned title — nothing else.")
