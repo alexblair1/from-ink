@@ -51,6 +51,11 @@ struct CanvasScreen: View {
     @State private var showLassoMenu = false
     @State private var scrollOffset: CGPoint = .zero
 
+    // Headers
+    @State private var headers: [CanvasHeader] = []
+    @State private var showHeaderPanel = false
+    @State private var canvasScrollTarget: CGPoint? = nil
+
     // Links
     @State private var links: [CanvasLink] = []
     @State private var pendingLinkContentRect: CGRect = .zero
@@ -80,6 +85,19 @@ struct CanvasScreen: View {
                     defer { isRecognizing = false }
                     let result = await InkTaskExtractor.extract(image: image, scope: .single)
                     lassoTask = result.tasks.first
+                }
+            },
+            onMarkHeader: {
+                guard let image = lassoMenuImage else { return }
+                showLassoMenu = false
+                let rect = lassoContentRect
+                var header = CanvasHeader(contentRect: rect, image: image)
+                headers.append(header)
+                Task {
+                    let text = await LassoOCR.recognize(image: image, correct: false)
+                    if let idx = headers.firstIndex(where: { $0.id == header.id }) {
+                        headers[idx].ocrText = text
+                    }
                 }
             },
             onLink: {
@@ -161,7 +179,8 @@ struct CanvasScreen: View {
                         showLassoMenu = true
                     },
                     onScrollOffsetChanged: { scrollOffset = $0 },
-                    onScrolledAwayFromBottom: onAwayFromBottom
+                    onScrolledAwayFromBottom: onAwayFromBottom,
+                    scrollTo: $canvasScrollTarget
                 )
                 .ignoresSafeArea()
 
@@ -184,6 +203,20 @@ struct CanvasScreen: View {
                     )
                     .position(x: viewX, y: viewY)
                 }
+
+                // Long-press strip — opposite side from toolbar, triggers header panel
+                Color.clear
+                    .frame(width: 264)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture(minimumDuration: 0.5) {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            showHeaderPanel = true
+                        }
+                    }
+                    .frame(maxWidth: .infinity,
+                           alignment: toolbarSide == .left ? .trailing : .leading)
+                    .ignoresSafeArea()
 
                 CanvasToolbar(
                     activeTool: $activeTool,
@@ -351,6 +384,40 @@ struct CanvasScreen: View {
                     lassoMenu(in: geo)
                         .transition(.scale(scale: 0.9).combined(with: .opacity))
                         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
+                }
+
+                // Header panel
+                if showHeaderPanel {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                showHeaderPanel = false
+                            }
+                        }
+
+                    HeaderPanel(
+                        headers: headers,
+                        toolbarOnLeft: toolbarSide == .left,
+                        onNavigate: { header in
+                            let y = max(0, header.contentRect.minY - 120)
+                            canvasScrollTarget = CGPoint(x: 0, y: y)
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                showHeaderPanel = false
+                            }
+                        },
+                        onDismiss: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                showHeaderPanel = false
+                            }
+                        }
+                    )
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .frame(maxWidth: .infinity,
+                           alignment: toolbarSide == .left ? .trailing : .leading)
+                    .transition(.move(edge: toolbarSide == .left ? .trailing : .leading))
+                    .ignoresSafeArea()
                 }
             }
             .onAppear {

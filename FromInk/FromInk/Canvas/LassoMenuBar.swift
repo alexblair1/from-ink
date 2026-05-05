@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LassoMenuBar: View {
     var onTaskBrief: () -> Void = {}
+    var onMarkHeader: () -> Void = {}
     var onLink: () -> Void = {}
     var onCopyText: () -> Void = {}
     var onSearch: () -> Void = {}
@@ -10,6 +11,8 @@ struct LassoMenuBar: View {
     var body: some View {
         HStack(spacing: 0) {
             menuButton(icon: "bolt.fill", tint: Color.bolt, action: onTaskBrief)
+            divider
+            menuButton(icon: "bookmark", action: onMarkHeader)
             divider
             menuButton(icon: "link", action: onLink)
             divider

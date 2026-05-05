@@ -21,6 +21,8 @@ struct CanvasView: UIViewRepresentable {
     var onLassoReady: (UIImage, CGRect, CGRect) -> Void = { _, _, _ in }
     var onScrollOffsetChanged: (CGPoint) -> Void = { _ in }
     var onScrolledAwayFromBottom: () -> Void = {}
+    /// Set to scroll the canvas to a content offset. Resets to nil after scrolling.
+    var scrollTo: Binding<CGPoint?> = .constant(nil)
 
     /// The fixed page height used across all devices.
     /// 3× the portrait height of the 13" iPad Pro (3 × 1366 pt) —
@@ -112,6 +114,12 @@ struct CanvasView: UIViewRepresentable {
         // Update template
         if context.coordinator.templateLayer?.template != template {
             context.coordinator.templateLayer?.template = template
+        }
+
+        // Programmatic scroll — consume target then reset to nil
+        if let target = scrollTo.wrappedValue {
+            canvas.setContentOffset(target, animated: true)
+            DispatchQueue.main.async { scrollTo.wrappedValue = nil }
         }
 
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
