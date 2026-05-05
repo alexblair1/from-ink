@@ -23,6 +23,11 @@ struct CanvasView: UIViewRepresentable {
     var onScrolledAwayFromBottom: () -> Void = {}
     /// Set to scroll the canvas to a content offset. Resets to nil after scrolling.
     var scrollTo: Binding<CGPoint?> = .constant(nil)
+    /// Width of the finger-only long press zone for the header panel.
+    var headerStripWidth: CGFloat = 264
+    /// True when the strip is on the right edge (toolbar is on the left).
+    var headerStripOnRight: Bool = true
+    var onHeaderPanelRequested: () -> Void = {}
 
     /// The fixed page height used across all devices.
     /// 3× the portrait height of the 13" iPad Pro (3 × 1366 pt) —
@@ -84,6 +89,23 @@ struct CanvasView: UIViewRepresentable {
         canvas.addGestureRecognizer(lassoPan)
         context.coordinator.lassoPanRecognizer = lassoPan
 
+        // Header strip — finger-only inward swipe from the edge opposite the toolbar
+        let headerSwipe = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleHeaderSwipe(_:))
+        )
+        headerSwipe.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        headerSwipe.maximumNumberOfTouches = 1
+        headerSwipe.cancelsTouchesInView = false
+        headerSwipe.delaysTouchesBegan = false
+        headerSwipe.delaysTouchesEnded = false
+        headerSwipe.delegate = context.coordinator
+        canvas.addGestureRecognizer(headerSwipe)
+        context.coordinator.headerSwipeRecognizer = headerSwipe
+        context.coordinator.headerStripWidth = headerStripWidth
+        context.coordinator.headerStripOnRight = headerStripOnRight
+        context.coordinator.onHeaderPanelRequested = onHeaderPanelRequested
+
         // Apple Pencil double-tap
         let pencilInteraction = UIPencilInteraction()
         pencilInteraction.delegate = context.coordinator
@@ -131,6 +153,9 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.onDrawingChanged = onDrawingChanged
         context.coordinator.onScrolledNearBottom = onScrolledNearBottom
         context.coordinator.onScrolledAwayFromBottom = onScrolledAwayFromBottom
+        context.coordinator.headerStripWidth = headerStripWidth
+        context.coordinator.headerStripOnRight = headerStripOnRight
+        context.coordinator.onHeaderPanelRequested = onHeaderPanelRequested
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate, PKCanvasViewDelegate, UIPencilInteractionDelegate {
@@ -145,8 +170,13 @@ struct CanvasView: UIViewRepresentable {
         var onDrawingChanged: (PKDrawing) -> Void = { _ in }
         var onScrolledNearBottom: () -> Void = {}
         var onScrolledAwayFromBottom: () -> Void = {}
+        var onHeaderPanelRequested: () -> Void = {}
+        var headerStripWidth: CGFloat = 264
+        var headerStripOnRight: Bool = true
         weak var templateLayer: PageTemplateLayer?
         weak var lassoPanRecognizer: UIPanGestureRecognizer?
+        weak var headerSwipeRecognizer: UIPanGestureRecognizer?
+        private var headerSwipeFired = false
 
         private var isNearBottom = false
 
@@ -175,6 +205,33 @@ struct CanvasView: UIViewRepresentable {
             case .ended, .cancelled, .failed:
                 print("[Lasso] two-finger hold ended/cancelled")
                 onTwoFingerHoldEnded()
+            default:
+                break
+            }
+        }
+
+        // MARK: - Header strip
+
+        @objc func handleHeaderSwipe(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            switch recognizer.state {
+            case .began:
+                headerSwipeFired = false
+            case .changed:
+                guard !headerSwipeFired else { return }
+                let translation = recognizer.translation(in: view)
+                let velocity = recognizer.velocity(in: view)
+                // Must be primarily horizontal
+                guard abs(translation.x) > abs(translation.y) else { return }
+                // Inward direction: left when strip is on right, right when strip is on left
+                let inwardTranslation = headerStripOnRight ? -translation.x : translation.x
+                let inwardVelocity   = headerStripOnRight ? -velocity.x   : velocity.x
+                if inwardTranslation > 30 || inwardVelocity > 400 {
+                    headerSwipeFired = true
+                    onHeaderPanelRequested()
+                }
+            case .ended, .cancelled, .failed:
+                headerSwipeFired = false
             default:
                 break
             }
@@ -288,6 +345,15 @@ struct CanvasView: UIViewRepresentable {
         }
 
         // MARK: - UIGestureRecognizerDelegate
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === headerSwipeRecognizer,
+                  let view = gestureRecognizer.view else { return true }
+            let x = gestureRecognizer.location(in: view).x
+            return headerStripOnRight
+                ? x >= view.bounds.width - headerStripWidth
+                : x <= headerStripWidth
+        }
 
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,

@@ -16,22 +16,22 @@ struct HeaderPanel: View {
             // Title bar
             HStack {
                 Text("Headers")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.ink)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.inkSecondary)
+                    .textCase(.uppercase)
+                    .kerning(0.5)
                 Spacer()
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 12, weight: .regular))
                         .foregroundStyle(Color.inkSecondary)
                         .frame(width: 28, height: 28)
-                        .background(Color.border.opacity(0.6))
-                        .clipShape(Circle())
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 20)
-            .padding(.bottom, 14)
+            .frame(height: 44)
 
             Rectangle()
                 .fill(Color.border)
@@ -62,18 +62,10 @@ struct HeaderPanel: View {
         .frame(width: 420)
         .frame(maxHeight: .infinity)
         .background(Color.surface)
-        // Inner-edge border
         .overlay(alignment: toolbarOnLeft ? .leading : .trailing) {
             Rectangle()
                 .fill(Color.border)
                 .frame(width: 1)
         }
-        // Shadow cast toward the canvas
-        .shadow(
-            color: .black.opacity(0.14),
-            radius: 20,
-            x: toolbarOnLeft ? -8 : 8,
-            y: 0
-        )
     }
 }

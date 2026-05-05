@@ -39,8 +39,17 @@ struct HeaderCell: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HeaderCellButtonStyle())
+    }
+}
+
+private struct HeaderCellButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Color.ink.opacity(0.08) : Color.clear)
+            .animation(.linear(duration: 0.08), value: configuration.isPressed)
     }
 }

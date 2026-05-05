@@ -180,9 +180,23 @@ struct CanvasScreen: View {
                     },
                     onScrollOffsetChanged: { scrollOffset = $0 },
                     onScrolledAwayFromBottom: onAwayFromBottom,
-                    scrollTo: $canvasScrollTarget
+                    scrollTo: $canvasScrollTarget,
+                    headerStripOnRight: toolbarSide == .left,
+                    onHeaderPanelRequested: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            showHeaderPanel = true
+                        }
+                    }
                 )
                 .ignoresSafeArea()
+
+                // Header indicators — positioned in view space using scroll offset
+                ForEach(headers) { header in
+                    let viewX = header.contentRect.midX - scrollOffset.x
+                    let viewY = header.contentRect.midY - scrollOffset.y
+                    HeaderIndicator(header: header)
+                        .position(x: viewX, y: viewY)
+                }
 
                 // Link indicators — positioned in view space using scroll offset
                 ForEach(links) { link in
@@ -203,20 +217,6 @@ struct CanvasScreen: View {
                     )
                     .position(x: viewX, y: viewY)
                 }
-
-                // Long-press strip — opposite side from toolbar, triggers header panel
-                Color.clear
-                    .frame(width: 264)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                            showHeaderPanel = true
-                        }
-                    }
-                    .frame(maxWidth: .infinity,
-                           alignment: toolbarSide == .left ? .trailing : .leading)
-                    .ignoresSafeArea()
 
                 CanvasToolbar(
                     activeTool: $activeTool,
@@ -386,7 +386,7 @@ struct CanvasScreen: View {
                         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
                 }
 
-                // Header panel
+                // Header panel tap-away dismiss
                 if showHeaderPanel {
                     Color.clear
                         .ignoresSafeArea()
@@ -396,29 +396,34 @@ struct CanvasScreen: View {
                                 showHeaderPanel = false
                             }
                         }
-
-                    HeaderPanel(
-                        headers: headers,
-                        toolbarOnLeft: toolbarSide == .left,
-                        onNavigate: { header in
-                            let y = max(0, header.contentRect.minY - 120)
-                            canvasScrollTarget = CGPoint(x: 0, y: y)
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                showHeaderPanel = false
-                            }
-                        },
-                        onDismiss: {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                showHeaderPanel = false
-                            }
-                        }
-                    )
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .frame(maxWidth: .infinity,
-                           alignment: toolbarSide == .left ? .trailing : .leading)
-                    .transition(.move(edge: toolbarSide == .left ? .trailing : .leading))
-                    .ignoresSafeArea()
                 }
+
+                // Header panel — always in hierarchy, slides in/out via offset
+                let panelOffset: CGFloat = showHeaderPanel ? 0
+                    : (toolbarSide == .left ? 420 : -420)
+                HeaderPanel(
+                    headers: headers,
+                    toolbarOnLeft: toolbarSide == .left,
+                    onNavigate: { header in
+                        let y = max(0, header.contentRect.minY - 120)
+                        canvasScrollTarget = CGPoint(x: 0, y: y)
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            showHeaderPanel = false
+                        }
+                    },
+                    onDismiss: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            showHeaderPanel = false
+                        }
+                    }
+                )
+                .frame(maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity,
+                       alignment: toolbarSide == .left ? .trailing : .leading)
+                .offset(x: panelOffset)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showHeaderPanel)
+                .allowsHitTesting(showHeaderPanel)
+                .ignoresSafeArea()
             }
             .onAppear {
                 toolbarAnchorX = toolbarSide == .left ? 0 : geo.size.width - 48
