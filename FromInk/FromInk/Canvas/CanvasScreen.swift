@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import PencilKit
 
 private struct HandleState {
@@ -10,18 +11,24 @@ private enum ActiveSheet: Identifiable {
     case lasso
     case brief
     case link
+    case calendarEdit(InkTask)
     var id: String {
         switch self {
-        case .lasso: return "lasso"
-        case .brief: return "brief"
-        case .link: return "link"
+        case .lasso:              return "lasso"
+        case .brief:              return "brief"
+        case .link:               return "link"
+        case .calendarEdit(let t): return "calendarEdit-\(t.id)"
         }
     }
 }
 
 struct CanvasScreen: View {
+    var notebookID: UUID = UUID()
+    var pageIndex: Int = 0
     var onNearBottom: () -> Void = {}
     var onAwayFromBottom: () -> Void = {}
+
+    @Environment(\.modelContext) private var modelContext
 
     @State private var activeTool: CanvasTool = .pen
     @State private var previousTool: CanvasTool = .pen
@@ -56,6 +63,9 @@ struct CanvasScreen: View {
     @State private var showHeaderPanel = false
     @State private var canvasScrollTarget: CGPoint? = nil
 
+    // Routing
+    @State private var routingPermissionError: String? = nil
+
     // Links
     @State private var links: [CanvasLink] = []
     @State private var pendingLinkContentRect: CGRect = .zero
@@ -65,6 +75,49 @@ struct CanvasScreen: View {
     @State private var editingLink: CanvasLink? = nil
 
     private let pageReadyThreshold = 10
+
+    // MARK: - Routing
+
+    private func routeTask(_ task: InkTask) async {
+        for destination in task.destinations {
+            do {
+                switch destination {
+                case .reminders:
+                    let result = try await RoutingService.shared.routeToReminders(task)
+                    saveRoutedItem(task: task, result: result)
+                case .calendar:
+                    let outcome = try await RoutingService.shared.routeToCalendar(task)
+                    switch outcome {
+                    case .success(let result):
+                        saveRoutedItem(task: task, result: result)
+                    case .needsCalendarUI:
+                        activeSheet = .calendarEdit(task)
+                    }
+                case .linear, .github, .mail:
+                    break  // stub — covered by future integration issues
+                }
+            } catch let error as RoutingError {
+                if case .userCancelled = error { continue }
+                routingPermissionError = error.errorDescription
+            } catch {
+                routingPermissionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func saveRoutedItem(task: InkTask, result: RoutingResult) {
+        let item = RoutedItem(
+            notebookID: notebookID,
+            pageIndex: pageIndex,
+            sourceText: task.title,
+            destination: result.integration.rawValue,
+            destinationTitle: task.title,
+            destinationURL: result.destinationURL,
+            eventKitIdentifier: result.eventKitIdentifier
+        )
+        modelContext.insert(item)
+        try? modelContext.save()
+    }
 
     @ViewBuilder
     private func lassoMenu(in geo: GeometryProxy) -> some View {
@@ -403,13 +456,19 @@ struct CanvasScreen: View {
                     : (toolbarSide == .left ? 420 : -420)
                 HeaderPanel(
                     headers: headers,
+                    links: links,
                     toolbarOnLeft: toolbarSide == .left,
+                    notebookID: notebookID,
+                    pageIndex: pageIndex,
                     onNavigate: { header in
                         let y = max(0, header.contentRect.minY - 120)
                         canvasScrollTarget = CGPoint(x: 0, y: y)
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                             showHeaderPanel = false
                         }
+                    },
+                    onOpenLink: { url in
+                        activeLinkURL = url
                     },
                     onDismiss: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
@@ -451,6 +510,23 @@ struct CanvasScreen: View {
                     .ignoresSafeArea()
             }
         }
+        .alert(
+            "Unable to Route Task",
+            isPresented: Binding(
+                get: { routingPermissionError != nil },
+                set: { if !$0 { routingPermissionError = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { routingPermissionError = nil }
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+                routingPermissionError = nil
+            }
+        } message: {
+            if let msg = routingPermissionError { Text(msg) }
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .lasso:
@@ -458,7 +534,14 @@ struct CanvasScreen: View {
                     isLoading: isRecognizing,
                     task: lassoTask ?? InkTask(title: ""),
                     onDismiss: { activeSheet = nil },
-                    onSend: { _ in activeSheet = nil }
+                    onSend: { task in
+                        activeSheet = nil
+                        Task {
+                            // Wait for the sheet dismiss animation before presenting new UI.
+                            try? await Task.sleep(for: .milliseconds(600))
+                            await routeTask(task)
+                        }
+                    }
                 )
             case .brief:
                 BriefSheet(
@@ -469,6 +552,16 @@ struct CanvasScreen: View {
                     onDismiss: { activeSheet = nil },
                     onSendAll: { activeSheet = nil }
                 )
+            case .calendarEdit(let task):
+                EventEditView(
+                    taskTitle: task.title,
+                    onSave: { result in
+                        saveRoutedItem(task: task, result: result)
+                        activeSheet = nil
+                    },
+                    onCancel: { activeSheet = nil }
+                )
+                .ignoresSafeArea()
             case .link:
                 LinkInputSheet(
                     isLoading: isRecognizingLink,

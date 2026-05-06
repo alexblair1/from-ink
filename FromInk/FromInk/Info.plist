@@ -6,5 +6,9 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>From Ink creates calendar events from your handwritten tasks.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>From Ink saves reminders from your handwritten tasks.</string>
 </dict>
 </plist>

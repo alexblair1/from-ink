@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct NotebookScreen: View {
+    @State private var notebookID = UUID()
     @State private var pages: [NotebookPage] = [NotebookPage()]
     @State private var currentIndex = 0
     @State private var showAddButton = false
@@ -13,6 +14,8 @@ struct NotebookScreen: View {
             TabView(selection: $currentIndex) {
                 ForEach(pages.indices, id: \.self) { i in
                     CanvasScreen(
+                        notebookID: notebookID,
+                        pageIndex: i,
                         onNearBottom: {
                             if currentIndex == i { showAddButton = true }
                         },

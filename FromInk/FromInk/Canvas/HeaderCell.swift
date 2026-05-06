@@ -46,7 +46,7 @@ struct HeaderCell: View {
     }
 }
 
-private struct HeaderCellButtonStyle: ButtonStyle {
+struct HeaderCellButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(configuration.isPressed ? Color.ink.opacity(0.08) : Color.clear)

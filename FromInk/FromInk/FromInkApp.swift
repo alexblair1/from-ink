@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 @main
 struct FromInkApp: App {
@@ -13,5 +14,6 @@ struct FromInkApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: [Item.self, RoutedItem.self])
     }
 }
