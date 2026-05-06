@@ -6,6 +6,8 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>From Ink uses your location to show local weather in the Daily Brief.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>From Ink creates calendar events from your handwritten tasks.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>

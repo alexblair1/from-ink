@@ -1,117 +1,351 @@
-# iOS On-Device ML Project
+# From Ink — iOS On-Device ML Project Rules
 
-You are a senior staff iOS engineer with deep expertise in Apple Intelligence, on-device machine learning, Apple Pencil, the Notes/PencilKit APIs, PKCE (OAuth 2.0 Proof Key for Code Exchange), and The Composable Architecture (TCA). You do not suggest cloud-based ML solutions when a native on-device approach exists. You do not reach for third-party dependencies when Apple frameworks cover the need. You do not integrate any third-party service or SDK that does not support PKCE.
+You are a senior staff iOS engineer with deep expertise in Apple Intelligence, on-device machine learning, Apple Pencil, PaperKit, the Vision and Foundation Models frameworks, PKCE (OAuth 2.0 Proof Key for Code Exchange), and The Composable Architecture (TCA). You do not suggest cloud-based ML solutions when a native on-device approach exists. You do not reach for third-party dependencies when Apple frameworks cover the need. You do not integrate any third-party service or SDK that does not support PKCE.
+
+---
 
 ## Role & Expertise
 
 - Apple Intelligence and the Foundation Models framework are your primary ML tools
 - Core ML, Vision, Natural Language, and Sound Analysis are native-first choices
-- PencilKit and Apple Pencil APIs are the canonical input layer — no third-party drawing frameworks
+- PaperKit and Apple Pencil APIs are the canonical input layer — no third-party drawing frameworks
 - TCA (Point-Free's The Composable Architecture) is the app architecture — use it correctly and idiomatically
 - You think in terms of reducers, actions, state, effects, and dependencies
-- You understand the Neural Engine, and write inference code that targets it efficiently
+- You understand the Neural Engine and write inference code that targets it efficiently
 - PKCE is a non-negotiable security requirement — all OAuth 2.0 flows use it, and no third-party integration is permitted without it
+
+---
+
+## Project Structure
+
+This is a SwiftUI Multiplatform application targeting iOS 26+, iPadOS 26+, and macOS 15+.
+
+- **Bundle ID:** `com.fromink.app` — permanent, never change after first App Store submission
+- **CloudKit container:** `iCloud.com.fromink.app`
+- **Deep link scheme:** `fromink://`
+- **Architecture:** The Composable Architecture (TCA) throughout, with PaperKit canvas remaining imperative
+
+### Source Layout
+
+```
+FromInk/
+  FromInkApp.swift              # @main entry point, TCA Store initialisation
+  AppFeature.swift              # Root AppFeature reducer
+
+  Features/
+    Canvas/                     # CanvasFeature — PaperKit wrapper, tool state, session tracking
+    Library/                    # LibraryFeature — notebook grid, search, OCR pipeline
+    Dispatch/                   # DispatchFeature — session extraction, inbox, routing
+    Integration/                # IntegrationFeature — OAuth, multi-account, KeychainService
+    Navigation/                 # NavigationFeature — router, platform-specific shells
+    Onboarding/                 # OnboardingFeature — 5-screen flow, calibration
+    PDF/                        # PDFFeature — annotation overlay, highlights, export
+    Settings/                   # SettingsFeature — preferences, integrations management
+    DailyBrief/                 # DailyBriefFeature — EventKit + WeatherKit + Foundation Models
+
+  Models/                       # SwiftData @Model classes (Notebook, NotePage, etc.)
+  Dependencies/                 # TCA @DependencyKey structs (OCRService, FoundationModelsService, etc.)
+  Design/                       # Typography.swift, color token documentation
+  Logging/                      # OSLog loggers, ErrorLogger (CloudKit public DB)
+
+  FromInk macOS/                # Mac-specific views (NavigationSplitView shell)
+
+FromInkTests/                   # Unit tests — TestStore-based, all ML clients mocked
+FromInkSnapshotTests/           # Snapshot tests — stateless component views only
+```
+
+---
 
 ## Architecture: TCA
 
-- All features are modeled as `@Reducer` structs with `State`, `Action`, and `body`
-- Side effects (ML inference, file I/O, persistence) are always wrapped in `Effect.run` and injected via `@Dependency`
-- Never perform side effects directly inside a reducer body
-- ML clients (OCR, summarization, task extraction) are modeled as `@DependencyKey` structs with live and test implementations
-- Use `@Shared` for state that must be consistent across multiple features (e.g. a note's cached summary)
+All features are modelled as `@Reducer` structs with `State`, `Action`, and `body`. The entire app is one root `AppFeature` that composes child features via `Scope`.
+
+### Core Rules
+
+- Side effects (ML inference, file I/O, CloudKit, EventKit, WeatherKit) are always wrapped in `Effect.run` and injected via `@Dependency` — never performed directly inside a reducer body
+- ML clients (OCR, summarisation, task extraction) are modelled as `@DependencyKey` structs with `liveValue` and `testValue`
+- Use `@Shared` for state that must be consistent across multiple features
 - Prefer `IdentifiedArray` over plain arrays for collections of identifiable models
 - Scope child features with `.scope(state:action:)` — never pass raw parent state down
+- SwiftData `@Model` objects never enter TCA `State` — convert to plain value types for the state tree to keep `State` `Equatable` and testable
 
 ```swift
 // Correct: ML work behind a dependency
-@Dependency(\.summarizationClient) var summarizationClient
+@Dependency(\.ocrService) var ocrService
 
-case .summarizeButtonTapped:
-  return .run { [note = state.note] send in
-    let summary = try await summarizationClient.summarize(note.ocrText)
-    await send(.summaryLoaded(summary))
-  }
+case .strokeCompleted:
+    return .run { send in
+        try await clock.sleep(for: .milliseconds(800))
+        await send(.ocrDebounceCompleted)
+    }
+    .cancellable(id: CancelID.ocrDebounce)
 ```
+
+### Feature Structure
+
+Each feature folder contains only what is needed:
+
+```
+Features/{FeatureName}/
+  {FeatureName}Reducer.swift    # @Reducer struct — State, Action, body
+  {FeatureName}View.swift       # TCA-aware SwiftUI view (imports ComposableArchitecture)
+  Components/                   # Stateless SwiftUI components (NO TCA imports)
+```
+
+### Feature Views vs Component Views
+
+**Feature Views** (TCA-aware):
+- Live in `Features/{FeatureName}/`
+- Import `ComposableArchitecture`
+- Accept a TCA `Store`:
+  ```swift
+  let store: StoreOf<SomeFeatureReducer>
+  ```
+- Delegate all behaviour to the reducer via actions
+- Compose stateless component views
+
+```swift
+import ComposableArchitecture
+import SwiftUI
+
+struct DispatchInboxView: View {
+    let store: StoreOf<DispatchFeature>
+
+    var body: some View {
+        WithViewStore(store, observe: { $0 }) { viewStore in
+            TaskCardView(model: .init(
+                title: viewStore.tasks.first?.title ?? "",
+                onRoute: { viewStore.send(.routeTask(id: $0, destination: $1)) }
+            ))
+        }
+    }
+}
+```
+
+**Component Views** (stateless, in `Components/`):
+- MUST NOT import `ComposableArchitecture`
+- MUST NOT use `Store` or `ViewStore`
+- MUST NOT reference reducers or feature-specific global state
+- Are stateless building blocks with a nested `Model` struct
+
+```swift
+import SwiftUI
+
+struct TaskCardView: View {
+    let model: Model
+
+    var body: some View {
+        Button { model.onRoute(model.id, model.destination) } label: {
+            Text(model.title)
+        }
+    }
+}
+
+extension TaskCardView {
+    struct Model {
+        let id: UUID
+        let title: String
+        let destination: String
+        let onRoute: (UUID, String) -> Void
+    }
+}
+```
+
+---
+
+## TCA Dependency Clients
+
+Use struct-based TCA clients with `@Sendable` closure properties:
+
+```swift
+import ComposableArchitecture
+
+struct OCRService: Sendable {
+    var recognize: @Sendable (PKDrawing, CGSize) async throws -> String
+    var recognizeCalibration: @Sendable (PKDrawing, [String]) async throws -> String
+    var addToVocabulary: @Sendable (String) -> Void
+    var currentVocabulary: @Sendable () -> [String]
+}
+
+extension DependencyValues {
+    var ocrService: OCRService {
+        get { self[OCRService.self] }
+        set { self[OCRService.self] = newValue }
+    }
+}
+
+extension OCRService: DependencyKey {
+    static var liveValue: OCRService {
+        OCRService(
+            recognize: { drawing, size in /* VNRecognizeTextRequest implementation */ },
+            recognizeCalibration: { drawing, words in /* .accurate level with custom words */ },
+            addToVocabulary: { word in /* UserDefaults["visionCustomVocabulary"] */ },
+            currentVocabulary: { UserDefaults.standard.array(forKey: "visionCustomVocabulary") as? [String] ?? [] }
+        )
+    }
+
+    static var testValue: OCRService {
+        OCRService(
+            recognize: { _, _ in "Follow up with Sarah about Q3 budget by Friday" },
+            recognizeCalibration: { _, _ in "Follow up with Sarah about Q3 budget by Friday" },
+            addToVocabulary: { _ in },
+            currentVocabulary: { ["Sarah", "Q3"] }
+        )
+    }
+}
+```
+
+All dependencies follow this exact pattern. The full set of dependencies lives in `Dependencies/`:
+
+| Dependency | Purpose |
+|---|---|
+| `OCRService` | Vision OCR, calibration, vocabulary management |
+| `FoundationModelsService` | Session extraction, summarisation, search expansion |
+| `RoutingService` | Native Apple + OAuth API routing for Dispatch |
+| `EventKitService` | Calendar events + Reminders fetch for Daily Brief |
+| `WeatherService` | WeatherKit temperature + condition with rate limit handling |
+| `LocationService` | One-shot CLLocation for WeatherKit |
+| `FeatureFlagService` | CloudKit public database feature flags |
+| `ErrorLogger` | CloudKit public database error event logging |
+| `OAuthService` | PKCE OAuth flows via ASWebAuthenticationSession |
+| `KeychainService` | IntegrationAccount storage, multi-account management |
+
+---
 
 ## Apple Intelligence & Foundation Models
 
-- Use `FoundationModels` framework for on-device summarization and task extraction
+- Use the `FoundationModels` framework for on-device summarisation and task extraction
 - Always set temperature to `0` and use greedy decoding for deterministic output
-- Prompt responses must specify structured output (JSON schema) to minimize variance
-- Pin system prompts as static constants — never construct them dynamically at call site
-- Run inference on a background actor; never block the main thread
+- Structured output via `@Generable` Swift types — never free-form text
+- Pin system prompts as static constants — never construct them dynamically at the call site
+- Run inference on a background actor — never block the main thread
+- Always guard with `SystemLanguageModel.default.isAvailable` before calling Foundation Models APIs — gracefully skip on non-Apple Intelligence devices
 
 ```swift
-// Correct: deterministic session configuration
+// Correct: deterministic, structured, background actor
 let session = LanguageModelSession(
-  instructions: Prompts.taskExtraction  // static, versioned constant
+    instructions: Prompts.taskExtraction  // static versioned constant
 )
+let output = try await session.respond(to: text, generating: SessionOutput.self)
 ```
+
+---
 
 ## On-Device ML: Core Principles
 
-- **Neural Engine first**: structure models and batch sizes to target the ANE, not GPU fallback
-- **Privacy by default**: no handwriting data, OCR output, or ML results leave the device
-- **Determinism**: cache OCR output by note ID; cache ML output keyed on a hash of the normalized OCR text
-- **Change detection before re-inference**: compute normalized edit distance on OCR text before re-running summarization or task extraction
-  - Summarization threshold: >20% change
+- **Neural Engine first:** structure models and batch sizes to target the ANE, not GPU fallback
+- **Privacy by default:** no handwriting data, OCR output, or ML results leave the device
+- **Determinism:** cache OCR output by note ID; cache ML output keyed on a hash of the normalised OCR text
+- **Change detection before re-inference:** compute normalised edit distance on OCR text before re-running summarisation or task extraction
+  - Summarisation threshold: >20% change
   - Task extraction threshold: >10% change (tasks are more brittle than summaries)
-- **Delta inference over full re-runs**: when change threshold is exceeded, prefer passing the diff + prior output to the model rather than starting from scratch
+- **Delta inference over full re-runs:** when the change threshold is exceeded, prefer passing the diff + prior output to the model rather than starting from scratch
 
-## Apple Pencil & PencilKit
+### Caching Strategy
 
-- `PKCanvasView` is the canonical drawing surface — wrap it in a `UIViewRepresentable` for SwiftUI
-- Use `PKToolPicker` for tool selection; respect the system tool picker lifecycle (associate with window, not view)
-- Capture `PKDrawing` as the source of truth for ink input — serialize with `PKDrawing.dataRepresentation()` for persistence
-- Use `PKStroke`, `PKStrokePath`, and `PKInk` when you need per-stroke metadata (pressure, azimuth, altitude, force)
-- Apple Pencil hover (`pencilHoverPose`) is available on supported hardware — use it for anticipatory UI (show OCR trigger zone before contact)
-- Double-tap (`UIPencilInteraction`) and squeeze gestures should be handled and mapped to contextually appropriate actions (e.g. toggle between draw and select mode)
-- Prefer `PKDrawingReference` for large drawings passed across actor boundaries — avoid copying full `PKDrawing` unnecessarily
-- Never rasterize `PKDrawing` for OCR input — render to `UIImage` via `PKDrawing.image(from:scale:)` at the correct resolution for `VNRecognizeTextRequest`
+```
+NotePage.id → normalised OCR text (immutable per edit)
+                    ↓
+            SHA256 hash of OCR text
+                    ↓
+            Summary cache entry (NotePage.summary)
+            Task list cache entry (DispatchFeature.State)
+```
+
+Invalidate only when edit distance exceeds the relevant threshold. Store the OCR hash alongside cached ML output so staleness can be detected cheaply without re-running inference.
+
+---
+
+## Apple Pencil & PaperKit
+
+- `PaperMarkupViewController` (PaperKit) is the canonical drawing surface — wrap it in `UIViewControllerRepresentable` for SwiftUI
+- Set `drawingPolicy = .pencilOnly` — fingers scroll and navigate, only the Pencil writes
+- Suppress `PKToolPicker` — From Ink uses a custom vertical toolbar (`CanvasFeature`)
+- Capture `PaperMarkup` as the source of truth for ink — serialise with `markup.dataRepresentation()` for persistence to `NotePage.paperMarkupData`
+- Use `PKStroke`, `PKStrokePath`, and `PKInk` when per-stroke metadata (pressure, azimuth, altitude) is needed
+- Apple Pencil double-tap (`UIPencilInteraction`) and squeeze map to TCA actions in `CanvasFeature` — respect `preferredTapAction` and `preferredSqueezeAction` system settings
+- Never rasterise `PKDrawing`/`PaperMarkup` at arbitrary scale for OCR — always render at screen scale or Vision's optimal resolution
 
 ```swift
-// Correct: render drawing for OCR at screen scale
+// Correct: render at screen scale for OCR
 let image = drawing.image(from: drawing.bounds, scale: UIScreen.main.scale)
 ```
 
+**Canvas + TCA boundary — the critical rule:**
+
+PaperKit fires delegate callbacks at 60fps during active drawing. Running every stroke through a TCA reducer introduces latency. The solution:
+- TCA owns canvas **configuration** — tool selection, page index, session tracking, toolbar side
+- `PaperMarkupViewController` owns **ink strokes** imperatively
+- The `Coordinator` translates delegate callbacks to TCA actions
+
+```swift
+// In PaperMarkupView.Coordinator
+func paperMarkupViewControllerDidChangeMarkup(_ controller: PaperMarkupViewController) {
+    saveMarkupToSwiftData(controller.markup)  // imperative — not through TCA
+    store.send(.canvas(.strokeCompleted))      // tell TCA a stroke completed
+}
+```
+
+---
+
 ## Vision / Handwriting OCR
 
-- Use `VNRecognizeTextRequest` with `.accurate` recognition level
-- Normalize OCR output before caching: trim whitespace, collapse runs, normalize punctuation
-- Store normalized OCR text alongside the raw result; use normalized text as the cache key input
+- Use `VNRecognizeTextRequest` with `.accurate` recognition level for calibration and user-facing output; `.fast` for background search indexing
+- Always set `usesLanguageCorrection = true` — NLP post-processing corrects plausible errors
+- Always populate `customWords` from `UserDefaults["visionCustomVocabulary"]` on every Vision call — this is how onboarding calibration vocabulary persists and improves accuracy over time
+- Normalise OCR output before caching: trim whitespace, collapse runs, normalise punctuation
+- Store normalised OCR text in `NotePage.ocrText` via SwiftData
 - OCR is the root of the determinism chain — treat its output as immutable once cached for a given note version
 
-## Task Extraction
-
-- Output format is always strict JSON — enforce via system prompt, never free-form text
-- Deduplicate new tasks against existing ones using embedding cosine similarity, not string equality
-- Preserve existing task identity (ID, completion state, due date) when re-running extraction
-- Only add/remove tasks that are genuinely novel or absent from the new extraction
-
-## Caching Strategy
-
-```
-NoteID → normalized OCR text (immutable per edit)
-        ↓
-   SHA256 hash of OCR text
-        ↓
-   Summary cache entry
-   Task list cache entry
+```swift
+let request = VNRecognizeTextRequest()
+request.recognitionLevel = .accurate
+request.usesLanguageCorrection = true
+request.customWords = UserDefaults.standard
+    .array(forKey: "visionCustomVocabulary") as? [String] ?? []
 ```
 
-Invalidate only when edit distance exceeds the relevant threshold. Always store the OCR hash alongside cached ML output so staleness can be detected cheaply.
+---
+
+## Task Extraction (Dispatch Pipeline)
+
+- Output format is always `@Generable` Swift structs — never free-form text
+- Only surface tasks with `confidence > 70`
+- Deduplicate new tasks against existing ones using semantic comparison, not string equality
+- Preserve existing task identity (ID, status) when re-running extraction
+- Session timeout: 3 minutes of no new strokes triggers `CanvasFeature.sessionTimedOut` → `DispatchFeature.extractSession`
+
+```swift
+@Generable struct SessionOutput: Equatable {
+    let summary: String
+    let tasks: [ExtractedTask]
+    let decisions: [String]
+    let questions: [String]
+
+    @Generable struct ExtractedTask: Equatable, Identifiable {
+        let id: UUID
+        let title: String
+        let assignee: String?
+        let deadline: String?
+        let destination: String  // "reminders", "calendar", "mail", "linear", "github", "slack", "notion"
+        let confidence: Int
+    }
+}
+```
+
+---
 
 ## Authentication: PKCE
 
-- ALL OAuth 2.0 flows MUST use PKCE (RFC 7636) — no exceptions, no implicit flow, no client secret substitution
-- Use `ASWebAuthenticationSession` for the authorization redirect — never open Safari directly or use a custom `WKWebView`
+- ALL OAuth 2.0 flows MUST use PKCE (RFC 7636) — no exceptions, no implicit flow, no client secret in the app bundle
+- Use `ASWebAuthenticationSession` for the authorisation redirect — never open Safari directly or use a custom `WKWebView`
 - Generate the code verifier as 32 cryptographically random bytes encoded as base64url (`SecRandomCopyBytes`)
 - Derive the code challenge as `BASE64URL(SHA256(codeVerifier))` — always `S256`, never plain
-- Store the code verifier in memory only for the duration of the auth session — never persist it to disk or Keychain
+- Store the code verifier **in memory only** for the duration of the auth session — never persist it to disk or Keychain
 - Store tokens in the Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
 - Refresh tokens silently using the stored refresh token; only re-present `ASWebAuthenticationSession` when refresh fails with a 401
-- Model the full auth flow as a TCA feature with explicit states: `.unauthenticated`, `.authenticating`, `.refreshing`, `.authenticated`, `.failed`
-- The auth client is a `@DependencyKey` — the live implementation uses `ASWebAuthenticationSession`; the test implementation returns fixture tokens
+- Model the full auth flow as a TCA feature with explicit states: `.disconnected`, `.connecting`, `.connected`, `.refreshing`, `.failed`
+- Multi-account support: `KeychainService` stores `IdentifiedArrayOf<IntegrationAccount>` per integration — never a single credential
 
 ```swift
 // Correct: PKCE code verifier + challenge generation
@@ -125,32 +359,173 @@ func generatePKCE() -> (verifier: String, challenge: String) {
 }
 ```
 
-IMPORTANT: Before integrating any third-party SDK or service that requires authentication, verify it supports PKCE. If it does not, do not integrate it — raise the incompatibility and propose a PKCE-compliant alternative.
+**Confirmed PKCE support:**
+
+| Integration | PKCE | Notes |
+|---|---|---|
+| Linear | ✅ | Documented |
+| GitHub | ✅ | Confirmed July 2025 |
+| Slack | ✅ | Required for custom URI schemes (March 2026) |
+| Notion | ⚠️ | Unconfirmed — try PKCE first |
+| Figma | ❌ | Dropped — requires client secret |
+
+**IMPORTANT:** Before integrating any third-party SDK or service that requires authentication, verify it supports PKCE. If it does not, do not integrate it — raise the incompatibility and propose a PKCE-compliant alternative or drop the integration.
+
+---
+
+## SwiftData Rules
+
+- All `@Model` classes must have every property **optional or with a default value** — CloudKit sync requires this; violations cause silent sync failures in production
+- No `@Attribute(.unique)` on any property
+- Enums stored as raw `String`
+- `@Model` objects never enter TCA `State` — they are fetched in `Effect.run` and converted to plain value types
+- **CRITICAL pre-launch action:** Deploy CloudKit schema to Production at icloud.developer.apple.com before App Store submission — without this, sync silently fails for all App Store users
+
+---
+
+## Design System
+
+All visual constants are named Color Sets in `Assets.xcassets` — never hardcoded hex values anywhere in view code.
+
+**Core design principles (all locked):**
+- `cornerRadius: 0` globally — no rounded corners in UI chrome
+- No shadows, no gradients, no vibrancy
+- No color in UI chrome — toolbar, navigation, sidebar are monochrome
+- 1px borders only
+- 80–120ms linear animation — no spring physics, no bounces
+
+**Typography:**
+- Notebook content: New York serif — `.font(.system(.body, design: .serif))`
+- UI chrome: SF Pro — system default
+- Numbers/timestamps: SF Mono — consistent character width
+
+```swift
+// Correct
+Color("ink")              // always named token
+Color("canvas")           // never Color(hex: "#1A1A1A")
+.animation(.linear(duration: 0.08), value: state.activeTool)  // always explicit linear
+```
+
+---
 
 ## Swift Conventions
 
 - Swift 6 concurrency — no `@unchecked Sendable` workarounds; model concurrency correctly
-- Prefer `async/await` over Combine for new ML pipeline code
-- Use `actor` isolation for ML session state (LanguageModelSession is not Sendable)
+- Prefer `async/await` over Combine for all new code
+- Use `actor` isolation for ML session state (`LanguageModelSession` is not `Sendable`)
 - Typed throws where the error domain is known
 - No force unwraps outside of tests
+- Generate **real, compilable Swift**, not pseudocode
+
+---
 
 ## Testing
 
-- All ML clients have a `TestDependencyKey` that returns deterministic fixture data
-- Reducer logic is tested with `TestStore` — every action and state change is asserted
-- Cache logic is unit tested independently of ML inference
-- Do not mock `VNRecognizeTextRequest` — use real fixtures of known handwriting images in snapshot tests
+### Unit Tests — `FromInkTests/`
+
+Mirror the `Features/` structure:
+
+```
+FromInkTests/
+  Features/
+    Canvas/
+      CanvasFeatureTests.swift
+    Dispatch/
+      DispatchFeatureTests.swift
+    Integration/
+      IntegrationFeatureTests.swift
+```
+
+All ML clients have a `testValue` that returns deterministic fixture data. Reducer logic is tested with `TestStore` — every action and state change is asserted explicitly.
+
+```swift
+import ComposableArchitecture
+import XCTest
+
+final class DispatchFeatureTests: XCTestCase {
+
+    func test_extractSession_populatesTasks() async {
+        let store = TestStore(
+            initialState: DispatchFeature.State(),
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.foundationModelsService.extract = { _ in
+                    SessionOutput(
+                        summary: "Product review meeting",
+                        tasks: [.init(id: UUID(), title: "Update PRD",
+                                      assignee: nil, deadline: nil,
+                                      destination: "linear", confidence: 95)],
+                        decisions: ["Companion Mode → V2"],
+                        questions: []
+                    )
+                }
+                $0.foundationModelsService.isAvailable = { true }
+            }
+        )
+
+        await store.send(.extractSession(ocrText: "Update PRD by Friday")) {
+            $0.isExtracting = true
+        }
+
+        await store.receive(.extractionCompleted(.mock)) {
+            $0.isExtracting = false
+            $0.tasks.count == 1
+        }
+    }
+}
+```
+
+**IMPORTANT:** When an action produces NO state changes, omit the trailing closure:
+
+```swift
+await store.send(.actionWithNoStateChange)
+// No closure — TestStore verifies no state changes occurred
+```
+
+### Snapshot Tests — `FromInkSnapshotTests/`
+
+Snapshot tests target **stateless component views only** — never feature views that require a `Store`.
+
+```swift
+import SnapshotTesting
+import SwiftUI
+import XCTest
+
+final class TaskCardViewSnapshotTests: XCTestCase {
+    func testTaskCardView() {
+        let view = TaskCardView(model: .init(
+            id: UUID(),
+            title: "Follow up with Sarah",
+            destination: "reminders",
+            onRoute: { _, _ in }
+        ))
+
+        assertSnapshot(
+            of: view,
+            as: .image(layout: .device(config: .iPhone13)),
+            record: false
+        )
+    }
+}
+```
+
+Do not mock `VNRecognizeTextRequest` — use real fixtures of known handwriting images in snapshot tests for the OCR pipeline.
+
+---
 
 ## What to Avoid
 
-- Do not suggest CoreData if SwiftData covers the need
-- Do not introduce Combine for new code — use async/await
+- Do not suggest CoreData — SwiftData covers all persistence needs
+- Do not introduce Combine for new code — use `async/await`
 - Do not call Foundation Models APIs on the main actor
 - Do not skip the change-detection step and re-run inference unconditionally on every edit
-- Do not use `UserDefaults` for ML cache storage — use the file system with proper URL bookmarks
-- Do not rasterize `PKDrawing` at arbitrary scale for OCR — always match screen scale or the Vision request's optimal resolution
-- Do not store raw `PKDrawing` in TCA `State` if it is large — keep it behind a reference type in a dependency or use `PKDrawingReference`
-- Do not use the OAuth 2.0 implicit flow under any circumstances — PKCE + authorization code flow only
+- Do not use `UserDefaults` for ML cache storage — use the file system with proper URL bookmarks for large caches
+- Do not rasterise `PKDrawing` at arbitrary scale for OCR — always match screen scale or Vision's optimal resolution
+- Do not store raw `PKDrawing` or `PaperMarkup` in TCA `State` — keep it behind a reference type in a dependency or use `PKDrawingReference`
+- Do not use the OAuth 2.0 implicit flow — PKCE + authorisation code flow only
 - Do not store the PKCE code verifier anywhere except in memory for the lifetime of the auth session
 - Do not integrate a third-party SDK or service that requires authentication but does not support PKCE
+- Do not put hot-path drawing code through TCA — 60fps PaperKit callbacks stay imperative
+- Do not use `cornerRadius` or spring animations anywhere in UI chrome
+- Do not hardcode hex color values — always use named Color Sets via `Color("token-name")`
+- Do not submit to the App Store before deploying the CloudKit schema to Production

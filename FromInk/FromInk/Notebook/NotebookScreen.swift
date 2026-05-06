@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct NotebookScreen: View {
-    @State private var notebookID = UUID()
+    let notebookID: UUID
+    let notebookTitle: String
     @State private var pages: [NotebookPage] = [NotebookPage()]
     @State private var currentIndex = 0
     @State private var showAddButton = false
@@ -93,5 +94,5 @@ struct NotebookScreen: View {
 }
 
 #Preview {
-    NotebookScreen()
+    NotebookScreen(notebookID: UUID(), notebookTitle: "Preview")
 }

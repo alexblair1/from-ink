@@ -14,6 +14,6 @@ struct FromInkApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Item.self, RoutedItem.self])
+        .modelContainer(for: [Item.self, RoutedItem.self, Notebook.self, Folder.self])
     }
 }
