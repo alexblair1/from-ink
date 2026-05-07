@@ -3,6 +3,9 @@ import FoundationModels
 import ComposableArchitecture
 
 // MARK: - Foundation Models dependency
+//
+// Kept separate from DailyBrief.swift (@Generable) to avoid circular macro expansion.
+// DailyBriefFeature conforms to Reducer manually for the same reason — see comment below.
 
 struct FoundationModelsService: Sendable {
     var isAvailable: @Sendable () -> Bool
@@ -12,9 +15,7 @@ struct FoundationModelsService: Sendable {
 extension FoundationModelsService: DependencyKey {
     static var liveValue: Self {
         .init(
-            isAvailable: {
-                SystemLanguageModel.default.isAvailable
-            },
+            isAvailable: { SystemLanguageModel.default.isAvailable },
             generateBrief: { prompt in
                 let session = LanguageModelSession()
                 let response = try await session.respond(to: prompt, generating: DailyBrief.self)
@@ -29,7 +30,7 @@ extension FoundationModelsService: DependencyKey {
             generateBrief: { _ in
                 DailyBrief(
                     greeting: "Good morning.",
-                    focus: "Review the product spec before the 10am meeting.",
+                    focus: "Your 10am product review is the priority today.",
                     schedule: [
                         DailyBrief.BriefEvent(time: "10:00 AM", title: "Product Review", note: ""),
                         DailyBrief.BriefEvent(time: "2:00 PM", title: "1:1 with Sarah", note: "")
@@ -52,64 +53,55 @@ extension DependencyValues {
 
 // MARK: - Prompt builder
 
-func buildBriefPrompt(
+private func buildBriefPrompt(
     events: [CalendarEventSnapshot],
-    reminders: [ReminderSnapshot],
-    pendingInk: [String]
+    reminders: [ReminderSnapshot]
 ) -> String {
     var parts: [String] = [
-        "Generate a concise daily brief for the user. Today is \(Date().formatted(date: .complete, time: .omitted))."
+        "Generate a concise daily brief. Today is \(Date().formatted(date: .complete, time: .omitted))."
     ]
     if events.isEmpty {
         parts.append("Calendar: No events today.")
     } else {
-        let formatted = events.map {
-            "- \($0.startDate.formatted(.dateTime.hour().minute())): \($0.title)"
-        }.joined(separator: "\n")
-        parts.append("Calendar events:\n\(formatted)")
+        let list = events.map { "- \($0.startDate.formatted(.dateTime.hour().minute())): \($0.title)" }
+            .joined(separator: "\n")
+        parts.append("Calendar events:\n\(list)")
     }
-    if reminders.isEmpty {
-        parts.append("Reminders: None due today.")
-    } else {
-        let formatted = reminders.prefix(5).map { "- \($0.title)" }.joined(separator: "\n")
-        parts.append("Due reminders:\n\(formatted)")
+    if !reminders.isEmpty {
+        let list = reminders.prefix(5).map { "- \($0.title)" }.joined(separator: "\n")
+        parts.append("Due reminders:\n\(list)")
     }
-    if !pendingInk.isEmpty {
-        let formatted = pendingInk.prefix(5).map { "- \($0)" }.joined(separator: "\n")
-        parts.append("Unrouted From Ink tasks:\n\(formatted)")
-    }
-    parts.append("Be concise. Focus sentence: one sentence. Suggestion: empty string if nothing useful.")
+    parts.append("Write 'focus' as a 2–3 sentence paragraph in plain English. Name events by title and time, mention any overdue reminders by name, and close with what matters most. No bullet points or headers. Suggestion: one short actionable tip, or empty string if nothing useful.")
     return parts.joined(separator: "\n\n")
 }
 
 // MARK: - Reducer
 //
 // Manually conforms to Reducer instead of using @Reducer macro.
-// @Reducer expands `body: some ReducerOf<Self>` and resolves `Self` during macro
-// expansion — when @Generable types appear in State/Action this creates a circular
-// macro expansion that the compiler cannot resolve. Explicit conformance breaks the loop.
+// @Reducer resolves `ReducerOf<Self>` during macro expansion. When @Generable types
+// appear in State/Action this creates a circular macro expansion the compiler cannot
+// resolve. Explicit conformance breaks the loop.
 
 struct DailyBriefFeature: Reducer {
 
     @ObservableState struct State: Equatable {
+        var events: [CalendarEventSnapshot] = []
+        var reminders: [ReminderSnapshot] = []
         var brief: DailyBrief? = nil
         var weather: WeatherSnapshot? = nil
         var weatherAttribution: WeatherAttributionSnapshot? = nil
         var isLoading: Bool = false
         var lastRefreshed: Date? = nil
-        var isExpanded: Bool = false
     }
 
-    // No @CasePathable — leaf feature, no child scoping needed.
-    // Plain switch in Reduce closure works without it.
     enum Action {
         case appeared
         case refresh
+        case rawDataLoaded([CalendarEventSnapshot], [ReminderSnapshot])
         case briefLoaded(DailyBrief)
         case weatherLoaded(WeatherSnapshot?)
         case attributionLoaded(WeatherAttributionSnapshot?)
-        case briefFailed
-        case expandToggled
+        case loadFailed
     }
 
     @Dependency(\.foundationModelsService) var foundationModels
@@ -133,33 +125,25 @@ struct DailyBriefFeature: Reducer {
                         do {
                             let events = try await eventKit.fetchTodayEvents()
                             let reminders = try await eventKit.fetchDueReminders()
+                            await send(.rawDataLoaded(events, reminders))
 
-                            guard foundationModels.isAvailable() else {
-                                await send(.briefLoaded(.raw(events: events, reminders: reminders)))
-                                return
-                            }
-
-                            let prompt = buildBriefPrompt(
-                                events: events,
-                                reminders: reminders,
-                                pendingInk: []
-                            )
+                            // Generate FM brief from the same data
+                            guard foundationModels.isAvailable() else { return }
+                            
+                            let prompt = buildBriefPrompt(events: events, reminders: reminders)
                             do {
                                 let brief = try await foundationModels.generateBrief(prompt)
                                 await send(.briefLoaded(brief))
                             } catch {
-                                await send(.briefLoaded(.raw(events: events, reminders: reminders)))
+                                // FM failed or guardrailed — raw data already shown, brief stays nil
                             }
                         } catch {
-                            await send(.briefFailed)
+                            await send(.loadFailed)
                         }
                     },
                     .run { send in
                         let location = await locationService.currentLocation()
-                        guard let location else {
-                            await send(.weatherLoaded(nil))
-                            return
-                        }
+                        guard let location else { await send(.weatherLoaded(nil)); return }
                         let snapshot = await weatherService.fetch(location)
                         await send(.weatherLoaded(snapshot))
                     },
@@ -169,10 +153,15 @@ struct DailyBriefFeature: Reducer {
                     }
                 )
 
-            case .briefLoaded(let brief):
-                state.brief = brief
+            case .rawDataLoaded(let events, let reminders):
+                state.events = events
+                state.reminders = reminders
                 state.isLoading = false
                 state.lastRefreshed = Date()
+                return .none
+
+            case .briefLoaded(let brief):
+                state.brief = brief
                 return .none
 
             case .weatherLoaded(let snapshot):
@@ -183,12 +172,8 @@ struct DailyBriefFeature: Reducer {
                 state.weatherAttribution = attribution
                 return .none
 
-            case .briefFailed:
+            case .loadFailed:
                 state.isLoading = false
-                return .none
-
-            case .expandToggled:
-                state.isExpanded.toggle()
                 return .none
             }
         }

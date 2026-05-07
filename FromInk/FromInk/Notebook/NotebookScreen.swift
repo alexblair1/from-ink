@@ -7,6 +7,7 @@ struct NotebookScreen: View {
     @State private var currentIndex = 0
     @State private var showAddButton = false
     @AppStorage("toolbarSide") private var toolbarSideRaw: String = "left"
+    @Environment(\.dismiss) private var dismiss
 
     private var toolbarIsLeft: Bool { toolbarSideRaw != "right" }
 
@@ -86,6 +87,26 @@ struct NotebookScreen: View {
                 }
                 .ignoresSafeArea()
             }
+            // Dismiss button — top-right corner, opposite side from toolbar
+            VStack {
+                HStack {
+                    if toolbarIsLeft { Spacer() }
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.inkSecondary)
+                            .frame(width: 32, height: 32)
+                            .background(Color.surface.opacity(0.85))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 16)
+                    .padding(.horizontal, 16)
+                    if !toolbarIsLeft { Spacer() }
+                }
+                Spacer()
+            }
+            .ignoresSafeArea()
         }
         .onChange(of: currentIndex) { _, _ in
             showAddButton = false

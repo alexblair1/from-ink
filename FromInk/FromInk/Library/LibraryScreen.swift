@@ -70,10 +70,10 @@ struct LibraryScreen: View {
 
                                 LazyVGrid(
                                     columns: [
-                                        GridItem(.flexible(), spacing: 12),
-                                        GridItem(.flexible(), spacing: 12)
+                                        GridItem(.flexible(), spacing: 32),
+                                        GridItem(.flexible(), spacing: 32)
                                     ],
-                                    spacing: 12
+                                    spacing: 32
                                 ) {
                                     ForEach(rootNotebooks) { notebook in
                                         NotebookCard(notebook: notebook) {

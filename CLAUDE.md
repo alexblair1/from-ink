@@ -383,6 +383,25 @@ func generatePKCE() -> (verifier: String, challenge: String) {
 
 ---
 
+## Icons: Prefer SF Symbols (iOS 26+ / SF Symbols 7)
+
+When adding or replacing icons, default to SF Symbols rather than custom assets, raster images, or third-party icon sets. The app targets iOS 26+, so the full SF Symbols 7 feature set is available without availability checks.
+
+**Why this matters:**
+- **Localization**: SF Symbols ships locale-aware variants (Latin, Arabic, Hebrew, Devanagari, CJK, Thai, Greek, Cyrillic, Korean, Japanese, and several Indic systems) and handles RTL mirroring automatically. Custom assets require us to ship and maintain per-locale artwork.
+- **Animation**: Draw On/Off, Magic Replace, Variable Draw, variable color, and gradient rendering work out of the box via `.symbolEffect(...)` and `.contentTransition(.symbolEffect(...))`. No hand-rolled animation on bitmap icons.
+- **Scalability**: Vector-based, weight- and scale-aware, adapts to Dynamic Type and accessibility settings without extra work.
+
+**Rules:**
+1. Before introducing a custom icon, search SF Symbols for an existing match (including localized and `.fill` / directional variants). Only fall back to a custom symbol if nothing fits — and when you do, build it as a custom SF Symbol (SVG template) so it inherits the same animation and localization behavior.
+2. For icons that appear, disappear, or convey progress, prefer Draw On / Draw Off (`.symbolEffect(.drawOn)` / `.drawOff`) over fade or scale transitions. Use Variable Draw when the symbol should communicate progress or strength.
+3. When an icon changes state (selected, loading, success, error), use Magic Replace via `.contentTransition(.symbolEffect(.replace))` rather than swapping two separate views.
+4. Use gradient rendering (`.symbolRenderingMode(.gradient)`) for emphasis moments — hero icons, empty states, success confirmations — rather than layering custom gradients behind a flat symbol.
+5. Never mirror a directional symbol manually. Rely on the `.flipsForRightToLeft` semantics built into SF Symbols and let the system handle RTL.
+6. Pick the symbol that semantically matches the concept, not just the shape — this keeps the localized variants meaningful (e.g., use `text.book.closed` for a reading concept, not a generic rectangle).
+
+---
+
 ## Design System
 
 All visual constants are named Color Sets in `Assets.xcassets` — never hardcoded hex values anywhere in view code.

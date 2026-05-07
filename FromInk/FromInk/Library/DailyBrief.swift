@@ -7,7 +7,7 @@ import FoundationModels
     @Guide(description: "Time-aware greeting: 'Good morning', 'Good afternoon', or 'Good evening'. Include the user's first name if known, otherwise omit.")
     var greeting: String
 
-    @Guide(description: "One concise sentence — the single most important thing the user should focus on today based on their schedule and pending tasks.")
+    @Guide(description: "2–3 sentence paragraph summarising the day in plain English. Name specific events with their times, call out any overdue reminders by name, and end with what matters most. Write as if speaking directly to the user — no bullet points, no headers.")
     var focus: String
 
     @Guide(description: "Today's events in chronological order, max 5.")

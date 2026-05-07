@@ -6,36 +6,34 @@ struct NotebookCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 0) {
-                // Cover accent strip
-                Rectangle()
-                    .fill(coverColor)
-                    .frame(height: 4)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(notebook.title)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Color.ink)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    Spacer()
-
-                    Text(notebook.lastOpenedAt.formatted(.relative(presentation: .named)))
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.inkSecondary)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .frame(height: 120)
-            .background(Color.surface)
-            .overlay {
-                Rectangle()
-                    .strokeBorder(Color.border, lineWidth: 1)
-            }
+            NotebookCardContent(notebook: notebook)
         }
         .buttonStyle(CardButtonStyle())
+    }
+}
+
+// MARK: - Card content (reads pressed state from environment)
+
+private struct NotebookCardContent: View {
+    let notebook: Notebook
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Image(systemName: "book.closed.fill")
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(Color.primary)
+                .frame(width: 150, height: 150)
+
+            Text(notebook.title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.ink)
+                .lineLimit(1)
+
+            Text(notebook.lastOpenedAt.formatted(.relative(presentation: .named)))
+                .font(.system(size: 10))
+                .foregroundStyle(Color.inkSecondary)
+        }
     }
 
     private var coverColor: Color {
@@ -58,12 +56,24 @@ extension Color {
     }
 }
 
+// MARK: - Pressed environment key
+
+private struct CardPressedKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var cardIsPressed: Bool {
+        get { self[CardPressedKey.self] }
+        set { self[CardPressedKey.self] = newValue }
+    }
+}
+
 // MARK: - Card button style
 
 struct CardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.75 : 1)
-            .animation(.linear(duration: 0.08), value: configuration.isPressed)
+            .environment(\.cardIsPressed, configuration.isPressed)
     }
 }
