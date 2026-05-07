@@ -30,61 +30,76 @@ struct LibraryScreen: View {
                 Color.canvas.ignoresSafeArea()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        // Daily Brief
+                    VStack(alignment: .leading, spacing: 0) {
+
+                        // Stats row
+                        statsRow
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+
+                        Rectangle().fill(Color.border).frame(height: 1)
+
+                        // Daily brief compact strip
                         DailyBriefCard(store: briefStore)
 
-                        // Search bar
+                        // Search
                         searchBar
-                            .padding(.top, 16)
                             .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
+                            .padding(.vertical, 10)
+
+                        Rectangle().fill(Color.border).frame(height: 1)
 
                         if folders.isEmpty && rootNotebooks.isEmpty {
                             emptyState
                         } else {
                             // Folders section
                             if !folders.isEmpty {
-                                sectionHeader("Folders")
+                                sectionHeader("Folders", count: folders.count)
                                     .padding(.horizontal, 20)
-                                    .padding(.bottom, 8)
+                                    .padding(.top, 20)
+                                    .padding(.bottom, 10)
 
-                                VStack(spacing: 1) {
-                                    ForEach(folders) { folder in
-                                        FolderCard(
-                                            folder: folder,
-                                            notebookCount: notebooks.filter { $0.folderID == folder.id }.count,
-                                            onTap: {}
-                                        )
+                                Rectangle().fill(Color.border).frame(height: 1)
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 1) {
+                                        ForEach(folders) { folder in
+                                            FolderCard(
+                                                folder: folder,
+                                                notebookCount: notebooks.filter { $0.folderID == folder.id }.count,
+                                                onTap: {}
+                                            )
+                                        }
                                     }
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 16)
                                 }
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 24)
+
+                                Rectangle().fill(Color.border).frame(height: 1)
                             }
 
                             // Notebooks section
                             if !rootNotebooks.isEmpty {
-                                sectionHeader("Notebooks")
+                                sectionHeader("Notebooks", count: rootNotebooks.count)
                                     .padding(.horizontal, 20)
-                                    .padding(.bottom, 8)
+                                    .padding(.top, 20)
+                                    .padding(.bottom, 10)
 
-                                LazyVGrid(
-                                    columns: [
-                                        GridItem(.flexible(), spacing: 32),
-                                        GridItem(.flexible(), spacing: 32)
-                                    ],
-                                    spacing: 32
-                                ) {
-                                    ForEach(rootNotebooks) { notebook in
-                                        NotebookCard(notebook: notebook) {
-                                            notebook.lastOpenedAt = Date()
-                                            try? modelContext.save()
-                                            activeNotebook = notebook
+                                Rectangle().fill(Color.border).frame(height: 1)
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(alignment: .top, spacing: 20) {
+                                        ForEach(rootNotebooks) { notebook in
+                                            NotebookCard(notebook: notebook) {
+                                                notebook.lastOpenedAt = Date()
+                                                try? modelContext.save()
+                                                activeNotebook = notebook
+                                            }
                                         }
                                     }
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 16)
                                 }
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 32)
                             }
                         }
                     }
@@ -100,12 +115,30 @@ struct LibraryScreen: View {
             }
         }
         .onAppear {
-            // Create a default notebook on first launch
             if notebooks.isEmpty {
                 let notebook = Notebook(title: "My Notebook")
                 modelContext.insert(notebook)
                 try? modelContext.save()
             }
+        }
+    }
+
+    // MARK: - Stats row
+
+    private var statsRow: some View {
+        HStack(spacing: 6) {
+            if !folders.isEmpty {
+                Text("\(folders.count) FOLDERS")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.inkSecondary)
+                    .kerning(0.5)
+                Text("·")
+                    .foregroundStyle(Color.border)
+            }
+            Text("\(notebooks.count) NOTEBOOK\(notebooks.count == 1 ? "" : "S")")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.inkSecondary)
+                .kerning(0.5)
         }
     }
 
@@ -135,6 +168,23 @@ struct LibraryScreen: View {
         .background(Color.surface)
         .overlay {
             Rectangle().strokeBorder(Color.border, lineWidth: 1)
+        }
+    }
+
+    // MARK: - Section header
+
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.inkSecondary)
+                .kerning(0.5)
+            Text("·")
+                .foregroundStyle(Color.border)
+            Text("\(count)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.inkSecondary)
+            Spacer()
         }
     }
 
@@ -223,19 +273,6 @@ struct LibraryScreen: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 80)
-    }
-
-    // MARK: - Section header
-
-    private func sectionHeader(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.inkSecondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
-            Spacer()
-        }
     }
 }
 

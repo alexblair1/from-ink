@@ -6,38 +6,44 @@ struct NotebookCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            NotebookCardContent(notebook: notebook)
+            VStack(alignment: .leading, spacing: 6) {
+                // Portrait card with drawn notebook illustration
+                ZStack {
+                    Color.surface
+                    notebookIllustration
+                }
+                .frame(width: 130, height: 160)
+                .overlay {
+                    Rectangle().strokeBorder(Color.border, lineWidth: 1)
+                }
+
+                Text(notebook.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.ink)
+                    .lineLimit(1)
+                    .frame(width: 130, alignment: .leading)
+
+                Text(notebook.lastOpenedAt.formatted(.relative(presentation: .named)))
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.inkSecondary)
+                    .frame(width: 130, alignment: .leading)
+            }
         }
         .buttonStyle(CardButtonStyle())
     }
-}
 
-// MARK: - Card content (reads pressed state from environment)
-
-private struct NotebookCardContent: View {
-    let notebook: Notebook
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Image(systemName: "book.closed.fill")
-                .resizable()
-                .scaledToFit()
-                .foregroundStyle(Color.primary)
-                .frame(width: 150, height: 150)
-
-            Text(notebook.title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.ink)
-                .lineLimit(1)
-
-            Text(notebook.lastOpenedAt.formatted(.relative(presentation: .named)))
-                .font(.system(size: 10))
-                .foregroundStyle(Color.inkSecondary)
+    // Drawn notebook: spine strip on left, page body to the right
+    private var notebookIllustration: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.ink)
+                .frame(width: 10)
+            Color.canvas
         }
-    }
-
-    private var coverColor: Color {
-        Color(hex: notebook.coverColorHex) ?? Color.ink
+        .frame(width: 72, height: 100)
+        .overlay {
+            Rectangle().strokeBorder(Color.ink, lineWidth: 1.5)
+        }
     }
 }
 
@@ -56,24 +62,12 @@ extension Color {
     }
 }
 
-// MARK: - Pressed environment key
-
-private struct CardPressedKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    var cardIsPressed: Bool {
-        get { self[CardPressedKey.self] }
-        set { self[CardPressedKey.self] = newValue }
-    }
-}
-
 // MARK: - Card button style
 
 struct CardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .environment(\.cardIsPressed, configuration.isPressed)
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .animation(.linear(duration: 0.08), value: configuration.isPressed)
     }
 }

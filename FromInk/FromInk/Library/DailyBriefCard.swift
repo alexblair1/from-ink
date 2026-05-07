@@ -6,131 +6,138 @@ struct DailyBriefCard: View {
     @State private var showDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                // Date in serif
+                (Text(dayName).fontWeight(.semibold) + Text(",  \(monthDay)").italic())
+                    .font(.system(size: 14, design: .serif))
+                    .foregroundStyle(Color.ink)
+                    .fixedSize()
 
-            // Title row
-            HStack(alignment: .center, spacing: 8) {
-                Text("Daily Brief")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.inkSecondary)
-                    .textCase(.uppercase)
-                    .kerning(0.5)
-
-                Spacer()
-
+                // Weather
                 if let weather = store.weather {
-                    weatherBadge(weather)
+                    HStack(spacing: 3) {
+                        Image(systemName: weather.symbolName)
+                            .symbolRenderingMode(.monochrome)
+                        Text(weather.formattedTemperature)
+                            .fontDesign(.monospaced)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.inkSecondary)
+                    .padding(.leading, 10)
                 }
 
                 if store.isLoading {
                     ProgressView()
-                        .scaleEffect(0.65)
+                        .scaleEffect(0.6)
                         .tint(Color.inkSecondary)
+                        .padding(.leading, 8)
                 }
 
-                if !store.events.isEmpty || !store.reminders.isEmpty {
+                // Separator
+                Text("  |  ")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.border)
+
+                // Brief paragraph, truncated to one line
+                Text(briefParagraph)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .transition(.opacity)
+                    .animation(.easeIn(duration: 0.25), value: store.brief?.focus)
+
+                Spacer(minLength: 12)
+
+                // Counts + Read More
+                HStack(spacing: 10) {
+                    if !store.events.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "calendar")
+                            Text("\(store.events.count)")
+                        }
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.inkSecondary)
+                    }
+                    if !store.reminders.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "circle")
+                            Text("\(store.reminders.count)")
+                        }
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.inkSecondary)
+                    }
+
                     Button { showDetails = true } label: {
-                        Text("Details")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.ink)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.border.opacity(0.4))
-                            .overlay {
-                                Rectangle().strokeBorder(Color.border, lineWidth: 1)
-                            }
+                        HStack(spacing: 2) {
+                            Text("READ MORE")
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.ink)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.vertical, 12)
 
-            // Prose paragraph — FM brief when ready, fallback narrative while loading
-            let paragraph = store.brief?.focus.isEmpty == false
-                ? store.brief!.focus
-                : narrativeFallback(events: store.events, reminders: store.reminders)
-
-            if !paragraph.isEmpty {
-                Text(paragraph)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.ink)
-                    .lineSpacing(3)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 14)
-                    .transition(.opacity)
-                    .animation(.easeIn(duration: 0.25), value: store.brief?.focus)
-            }
-        }
-        .background(Color.surface)
-        .overlay(alignment: .bottom) {
             Rectangle().fill(Color.border).frame(height: 1)
         }
+        .background(Color.surface)
         .onAppear { _ = store.send(.appeared) }
         .sheet(isPresented: $showDetails) {
             BriefDetailsSheet(store: store)
         }
     }
 
-    // MARK: - Deterministic fallback paragraph
+    // MARK: - Helpers
+
+    private var dayName: String {
+        Date().formatted(.dateTime.weekday(.wide))
+    }
+
+    private var monthDay: String {
+        Date().formatted(.dateTime.month(.wide).day())
+    }
+
+    private var briefParagraph: String {
+        if store.brief?.focus.isEmpty == false {
+            return store.brief!.focus
+        }
+        return narrativeFallback(events: store.events, reminders: store.reminders)
+    }
 
     private func narrativeFallback(
         events: [CalendarEventSnapshot],
         reminders: [ReminderSnapshot]
     ) -> String {
         guard !events.isEmpty || !reminders.isEmpty else { return "" }
-
         var sentences: [String] = []
-
         switch events.count {
         case 0:
             sentences.append("No events scheduled today.")
         case 1:
-            sentences.append(
-                "You have \(events[0].title) at \(formatTime(events[0].startDate)) today."
-            )
+            sentences.append("You have \(events[0].title) at \(formatTime(events[0].startDate)) today.")
         case 2:
-            sentences.append(
-                "You have \(events[0].title) at \(formatTime(events[0].startDate)) and \(events[1].title) at \(formatTime(events[1].startDate)) today."
-            )
+            sentences.append("You have \(events[0].title) at \(formatTime(events[0].startDate)) and \(events[1].title) at \(formatTime(events[1].startDate)) today.")
         default:
             let listed = events.prefix(3).map { "\($0.title) at \(formatTime($0.startDate))" }
             let tail = events.count > 3 ? " and \(events.count - 3) more" : ""
             sentences.append("Today: \(listed.joined(separator: ", "))\(tail).")
         }
-
         switch reminders.count {
-        case 0:
-            break
-        case 1:
-            sentences.append("'\(reminders[0].title)' is due today.")
-        default:
-            sentences.append(
-                "\(reminders.count) reminders are due, starting with '\(reminders[0].title)'."
-            )
+        case 0: break
+        case 1: sentences.append("'\(reminders[0].title)' is due today.")
+        default: sentences.append("\(reminders.count) reminders due, starting with '\(reminders[0].title)'.")
         }
-
         return sentences.joined(separator: " ")
     }
 
     private func formatTime(_ date: Date) -> String {
         date.formatted(.dateTime.hour().minute())
-    }
-
-    // MARK: - Weather badge
-
-    @ViewBuilder
-    private func weatherBadge(_ weather: WeatherSnapshot) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: weather.symbolName)
-                .symbolRenderingMode(.monochrome)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.inkSecondary)
-            Text(weather.formattedTemperature)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color.inkSecondary)
-        }
     }
 }
 
@@ -164,8 +171,6 @@ private struct BriefDetailsSheet: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-
-                    // AI brief paragraph + suggestion
                     if let brief = store.brief {
                         VStack(alignment: .leading, spacing: 8) {
                             if !brief.greeting.isEmpty {
@@ -199,7 +204,6 @@ private struct BriefDetailsSheet: View {
                         Rectangle().fill(Color.border).frame(height: 1)
                     }
 
-                    // Events
                     sectionHeader("Today")
                     if store.events.isEmpty {
                         emptyRow("No events today")
@@ -213,7 +217,6 @@ private struct BriefDetailsSheet: View {
 
                     Spacer().frame(height: 20)
 
-                    // Reminders
                     sectionHeader("Reminders Due")
                     if store.reminders.isEmpty {
                         emptyRow("No reminders due today")
@@ -225,7 +228,6 @@ private struct BriefDetailsSheet: View {
                         }
                     }
 
-                    // Weather attribution
                     if let attribution = store.weatherAttribution {
                         HStack {
                             Spacer()
@@ -269,7 +271,6 @@ private struct BriefDetailsSheet: View {
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Color.inkSecondary)
                 .frame(width: 56, alignment: .leading)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.title)
                     .font(.system(size: 14))
@@ -292,7 +293,6 @@ private struct BriefDetailsSheet: View {
                 .font(.system(size: 11))
                 .foregroundStyle(Color.inkSecondary)
                 .padding(.top, 2)
-
             VStack(alignment: .leading, spacing: 2) {
                 Text(reminder.title)
                     .font(.system(size: 14))
