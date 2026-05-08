@@ -2,13 +2,13 @@ import SwiftUI
 
 /// Folder card showing name, notebook count, and optional icon.
 ///
-///     FolderCard(model: .init(
+///     InkFolderCard(model: .init(
 ///         name: "Work",
 ///         notebookCount: 5,
 ///         onTap: { }
 ///     ))
 ///
-struct FolderCard: View {
+struct InkFolderCard: View {
     let model: Model
 
     var body: some View {
@@ -49,7 +49,7 @@ struct FolderCard: View {
     }
 }
 
-extension FolderCard {
+extension InkFolderCard {
     struct Model {
         let id: UUID
         let name: String

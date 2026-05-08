@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Dispatch task row with checkbox, title, destination badge, and optional metadata.
 ///
-///     TaskRow(model: .init(
+///     InkTaskRow(model: .init(
 ///         title: "Update PRD by Friday",
 ///         destination: "linear",
 ///         isCompleted: false,
@@ -10,7 +10,7 @@ import SwiftUI
 ///         onTap: { }
 ///     ))
 ///
-struct TaskRow: View {
+struct InkTaskRow: View {
     let model: Model
 
     var body: some View {
@@ -63,7 +63,7 @@ struct TaskRow: View {
     }
 }
 
-extension TaskRow {
+extension InkTaskRow {
     struct Model {
         let id: UUID
         let title: String
