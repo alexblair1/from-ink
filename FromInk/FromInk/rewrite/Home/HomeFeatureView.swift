@@ -44,9 +44,13 @@ struct HomeFeatureView: View {
             .fullScreenCover(item: $activeNotebook) { notebook in
                 NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsScreen(onDismiss: { showSettings = false })
+            .overlay {
+                if showSettings {
+                    SettingsScreen(onDismiss: { showSettings = false })
+                        .transition(.opacity)
+                }
             }
+            .animation(ds.animation.standard, value: showSettings)
             .overlay {
                 if showNewNotebookSheet {
                     NewNotebookOverlay(
