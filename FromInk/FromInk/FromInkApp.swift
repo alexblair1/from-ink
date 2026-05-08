@@ -13,6 +13,7 @@ struct FromInkApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .designSystem(.standard)
         }
         .modelContainer(for: [Item.self, RoutedItem.self, Notebook.self, Folder.self])
     }

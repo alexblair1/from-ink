@@ -4,16 +4,19 @@ import SwiftUI
 
 #Preview("Home — Editorial") {
     HomeScreen(model: .preview)
+        .designSystem(.standard)
         .preferredColorScheme(.light)
 }
 
 #Preview("Home — Dark") {
     HomeScreen(model: .preview)
+        .designSystem(.standard)
         .preferredColorScheme(.dark)
 }
 
 #Preview("Home — Empty") {
     HomeScreen(model: .previewEmpty)
+        .designSystem(.standard)
         .preferredColorScheme(.light)
 }
 
@@ -36,12 +39,12 @@ extension HomeScreen.Model {
                 .init(id: UUID(), name: "Travel", notebookCount: 2, icon: "folder"),
             ],
             notebooks: [
-                .init(id: UUID(), title: "Quarterly review", subtitle: "Page 3 of 12", coverColor: Color("ink/Ink")),
-                .init(id: UUID(), title: "Morning pages", subtitle: "Page 58 of 58", coverColor: Color("ink/Ink")),
-                .init(id: UUID(), title: "Interview prep", subtitle: "Page 1 of 3", coverColor: Color("ink/Ink2")),
-                .init(id: UUID(), title: "Field notes", subtitle: "Page 2 of 6", coverColor: Color("ink/Ink")),
-                .init(id: UUID(), title: "Book club", subtitle: "Page 4 of 9", coverColor: Color("ink/Ink3")),
-                .init(id: UUID(), title: "Meeting notes", subtitle: "Page 7 of 7", coverColor: Color("ink/Ink")),
+                .init(id: UUID(), title: "Quarterly review", subtitle: "Page 3 of 12", coverColor: ColorTokens.standard.ink),
+                .init(id: UUID(), title: "Morning pages", subtitle: "Page 58 of 58", coverColor: ColorTokens.standard.ink),
+                .init(id: UUID(), title: "Interview prep", subtitle: "Page 1 of 3", coverColor: ColorTokens.standard.ink2),
+                .init(id: UUID(), title: "Field notes", subtitle: "Page 2 of 6", coverColor: ColorTokens.standard.ink),
+                .init(id: UUID(), title: "Book club", subtitle: "Page 4 of 9", coverColor: ColorTokens.standard.ink3),
+                .init(id: UUID(), title: "Meeting notes", subtitle: "Page 7 of 7", coverColor: ColorTokens.standard.ink),
             ],
             onFolder: { _ in },
             onNotebook: { _ in },
@@ -69,7 +72,7 @@ extension HomeMasthead.Model {
             weekday: "Wednesday",
             monthDay: "May 7",
             syncLabel: "synced 2m ago",
-            briefSentence: "Three meetings, two ship-day reminders, and Carla's birthday — a heavy day with one window for deep work between 10 and noon.",
+            briefSentence: "A heavy Wednesday — Carla's birthday and the v0.3 ship.",
             eventCount: 4,
             reminderCount: 4,
             birthdayCount: 1,
@@ -81,7 +84,6 @@ extension HomeMasthead.Model {
                 sunset: "8:01"
             ),
             expandedBrief: .preview,
-            onNewNotebook: { },
             onViewDetails: { }
         )
     }
@@ -97,10 +99,10 @@ extension HomeExpandedBrief.Model {
                 "Foggy through mid-morning, clearing for the walk. Sunset at 8:01.",
             ],
             highlights: [
-                .init(icon: "calendar", label: "Next up", text: "1:1 with Maya · 11:00 at Roastery on 4th"),
-                .init(icon: "checklist", label: "Overdue", text: "Renew domain — fromink.app · 2 days late"),
-                .init(icon: "checklist", label: "Today", text: "Ship v0.3 build to TestFlight · 5pm, flagged"),
-                .init(icon: "person.crop.circle", label: "Birthday", text: "Carla Mendez turns 41 · you're seeing her at 2pm"),
+                .init(icon: "calendar", label: AppStrings.Home.nextUp, text: "1:1 with Maya · 11:00 at Roastery on 4th"),
+                .init(icon: "checklist", label: AppStrings.Home.overdue, text: "Renew domain — fromink.app · 2 days late"),
+                .init(icon: "checklist", label: AppStrings.Home.today, text: "Ship v0.3 build to TestFlight · 5pm, flagged"),
+                .init(icon: "person.crop.circle", label: AppStrings.Home.birthday, text: "Carla Mendez turns 41 · you're seeing her at 2pm"),
             ],
             onViewDetails: { },
             onCollapse: { }

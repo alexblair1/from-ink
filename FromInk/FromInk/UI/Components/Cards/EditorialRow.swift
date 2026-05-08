@@ -16,29 +16,29 @@ struct EditorialRow: View {
     var body: some View {
         Button(action: model.onTap) {
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: model.style.innerSpacing) {
+                    VStack(alignment: .leading, spacing: model.style.titleSpacing) {
                         Text(model.title)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Color("ink/Ink"))
+                            .font(model.style.titleFont)
+                            .foregroundStyle(model.style.titleColor)
                             .lineLimit(2)
 
                         if let excerpt = model.excerpt {
                             Text(excerpt)
-                                .font(.system(size: 15, weight: .regular))
-                                .foregroundStyle(Color("ink/Ink2"))
+                                .font(model.style.excerptFont)
+                                .foregroundStyle(model.style.excerptColor)
                                 .lineLimit(3)
                         }
 
-                        HStack(spacing: 8) {
+                        HStack(spacing: model.style.metadataSpacing) {
                             if let timestamp = model.timestamp {
-                                MonoLabel(timestamp, color: Color("ink/Ink3"))
+                                MonoLabel(timestamp, color: model.style.metadataColor)
                             }
                             if let tag = model.tag {
-                                MonoLabel("· \(tag)", color: Color("ink/Ink3"))
+                                MonoLabel("· \(tag)", color: model.style.metadataColor)
                             }
                         }
-                        .padding(.top, 4)
+                        .padding(.top, model.style.titleSpacing)
                     }
 
                     Spacer(minLength: 0)
@@ -47,12 +47,15 @@ struct EditorialRow: View {
                         thumbnail
                             .resizable()
                             .aspectRatio(contentMode: .fill)
-                            .frame(width: 64, height: 64)
+                            .frame(
+                                width: model.style.thumbnailSize,
+                                height: model.style.thumbnailSize
+                            )
                             .clipped()
                     }
                 }
-                .padding(.vertical, 12)
-                .padding(.horizontal, 16)
+                .padding(.vertical, model.style.verticalPadding)
+                .padding(.horizontal, model.style.horizontalPadding)
 
                 HairlineRule()
             }
@@ -62,6 +65,34 @@ struct EditorialRow: View {
 }
 
 extension EditorialRow {
+    struct Style {
+        let titleFont: Font
+        let titleColor: Color
+        let excerptFont: Font
+        let excerptColor: Color
+        let metadataColor: Color
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+        let innerSpacing: CGFloat
+        let titleSpacing: CGFloat
+        let metadataSpacing: CGFloat
+        let thumbnailSize: CGFloat
+
+        static let standard = Style(
+            titleFont: TypographyTokens.standard.headline,
+            titleColor: ColorTokens.standard.ink,
+            excerptFont: TypographyTokens.standard.subheadline,
+            excerptColor: ColorTokens.standard.ink2,
+            metadataColor: ColorTokens.standard.ink3,
+            verticalPadding: SpacingScale.standard.md,
+            horizontalPadding: SpacingScale.standard.base,
+            innerSpacing: SpacingScale.standard.md,
+            titleSpacing: SpacingScale.standard.xs,
+            metadataSpacing: SpacingScale.standard.sm,
+            thumbnailSize: LayoutTokens.standard.thumbnailSize
+        )
+    }
+
     struct Model {
         let id: UUID
         let title: String
@@ -70,6 +101,7 @@ extension EditorialRow {
         let tag: String?
         let thumbnail: Image?
         let onTap: () -> Void
+        let style: Style
 
         init(
             id: UUID = UUID(),
@@ -78,7 +110,8 @@ extension EditorialRow {
             timestamp: String? = nil,
             tag: String? = nil,
             thumbnail: Image? = nil,
-            onTap: @escaping () -> Void
+            onTap: @escaping () -> Void,
+            style: Style = .standard
         ) {
             self.id = id
             self.title = title
@@ -87,6 +120,7 @@ extension EditorialRow {
             self.tag = tag
             self.thumbnail = thumbnail
             self.onTap = onTap
+            self.style = style
         }
     }
 }

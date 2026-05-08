@@ -5,32 +5,36 @@ import SwiftUI
 ///     SearchBar(text: $query, placeholder: "Search notebooks...")
 ///
 struct SearchBar: View {
+
     @Binding var text: String
     let placeholder: String
     let onCommit: (() -> Void)?
+    let style: Style
 
     @FocusState private var isFocused: Bool
 
     init(
         text: Binding<String>,
         placeholder: String = "Search...",
-        onCommit: (() -> Void)? = nil
+        onCommit: (() -> Void)? = nil,
+        style: Style = .standard
     ) {
         self._text = text
         self.placeholder = placeholder
         self.onCommit = onCommit
+        self.style = style
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: style.innerSpacing) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .regular))
+                .font(style.font)
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color("ink/Ink2"))
+                .foregroundStyle(style.iconColor)
 
             TextField(placeholder, text: $text)
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Color("ink/Ink"))
+                .font(style.font)
+                .foregroundStyle(style.textColor)
                 .focused($isFocused)
                 .onSubmit { onCommit?() }
 
@@ -39,21 +43,47 @@ struct SearchBar: View {
                     text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15, weight: .regular))
+                        .font(style.font)
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink3"))
+                        .foregroundStyle(style.clearColor)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, style.horizontalPadding)
+        .padding(.vertical, style.verticalPadding)
         .background(
-            isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Color("ink/Surface"))
+            isFocused ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(style.background)
         )
         .overlay(
             Rectangle()
-                .strokeBorder(Color("ink/Rule"), lineWidth: 0.5)
+                .strokeBorder(style.borderColor, lineWidth: 0.5)
+        )
+    }
+}
+
+extension SearchBar {
+    struct Style {
+        let font: Font
+        let iconColor: Color
+        let textColor: Color
+        let clearColor: Color
+        let background: Color
+        let borderColor: Color
+        let horizontalPadding: CGFloat
+        let verticalPadding: CGFloat
+        let innerSpacing: CGFloat
+
+        static let standard = Style(
+            font: TypographyTokens.standard.subheadline,
+            iconColor: ColorTokens.standard.ink2,
+            textColor: ColorTokens.standard.ink,
+            clearColor: ColorTokens.standard.ink3,
+            background: ColorTokens.standard.surface,
+            borderColor: ColorTokens.standard.rule,
+            horizontalPadding: SpacingScale.standard.md,
+            verticalPadding: SpacingScale.standard.sm,
+            innerSpacing: SpacingScale.standard.sm
         )
     }
 }

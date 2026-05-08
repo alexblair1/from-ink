@@ -10,6 +10,7 @@ import SwiftUI
 ///     ))
 ///
 struct NameDialog: View {
+
     let model: Model
 
     @State private var text: String
@@ -23,19 +24,19 @@ struct NameDialog: View {
     var body: some View {
         VStack(spacing: 0) {
             // Title
-            MonoLabel(model.title, color: Color("ink/Ink2"))
-                .padding(.top, 20)
-                .padding(.bottom, 16)
+            MonoLabel(model.title)
+                .padding(.top, model.style.padding)
+                .padding(.bottom, model.style.padding)
 
             HairlineRule()
 
             // Text field
             TextField(model.placeholder, text: $text)
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(Color("ink/Ink"))
+                .font(model.style.bodyFont)
+                .foregroundStyle(model.style.bodyColor)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 16)
+                .padding(.horizontal, SpacingScale.standard.lg)
+                .padding(.vertical, model.style.padding)
                 .focused($isFocused)
                 .onSubmit {
                     guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
@@ -47,11 +48,11 @@ struct NameDialog: View {
             // Actions
             HStack(spacing: 0) {
                 Button(action: model.onCancel) {
-                    Text("Cancel")
-                        .font(.system(size: 15, weight: .regular))
-                        .foregroundStyle(Color("ink/Ink2"))
+                    Text(AppStrings.Common.cancel)
+                        .font(model.style.cancelFont)
+                        .foregroundStyle(model.style.cancelColor)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, SpacingScale.standard.md)
                 }
                 .buttonStyle(.plain)
 
@@ -61,27 +62,56 @@ struct NameDialog: View {
                     model.onConfirm(text)
                 } label: {
                     Text(model.confirmLabel)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(model.style.confirmFont)
+                        .fontWeight(.medium)
                         .foregroundStyle(
                             text.trimmingCharacters(in: .whitespaces).isEmpty
-                                ? Color("ink/Ink3")
-                                : Color("ink/Ink")
+                                ? model.style.disabledColor
+                                : model.style.enabledColor
                         )
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, SpacingScale.standard.md)
                 }
                 .buttonStyle(.plain)
                 .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .frame(height: 48)
+            .frame(height: model.style.actionHeight)
         }
-        .frame(width: 300)
-        .background(Color("ink/Surface"))
+        .frame(width: model.style.dialogWidth)
+        .background(model.style.background)
         .onAppear { isFocused = true }
     }
 }
 
 extension NameDialog {
+    struct Style {
+        let bodyFont: Font
+        let bodyColor: Color
+        let cancelFont: Font
+        let cancelColor: Color
+        let confirmFont: Font
+        let disabledColor: Color
+        let enabledColor: Color
+        let background: Color
+        let padding: CGFloat
+        let dialogWidth: CGFloat
+        let actionHeight: CGFloat
+
+        static let standard = Style(
+            bodyFont: TypographyTokens.standard.body,
+            bodyColor: ColorTokens.standard.ink,
+            cancelFont: TypographyTokens.standard.subheadline,
+            cancelColor: ColorTokens.standard.ink2,
+            confirmFont: TypographyTokens.standard.subheadline,
+            disabledColor: ColorTokens.standard.ink3,
+            enabledColor: ColorTokens.standard.ink,
+            background: ColorTokens.standard.surface,
+            padding: SpacingScale.standard.base,
+            dialogWidth: LayoutTokens.standard.dialogWidth,
+            actionHeight: LayoutTokens.standard.dialogActionHeight
+        )
+    }
+
     struct Model {
         let title: String
         let placeholder: String
@@ -89,6 +119,7 @@ extension NameDialog {
         let confirmLabel: String
         let onCancel: () -> Void
         let onConfirm: (String) -> Void
+        let style: Style
 
         init(
             title: String,
@@ -96,7 +127,8 @@ extension NameDialog {
             initialValue: String = "",
             confirmLabel: String = "Create",
             onCancel: @escaping () -> Void,
-            onConfirm: @escaping (String) -> Void
+            onConfirm: @escaping (String) -> Void,
+            style: Style = .standard
         ) {
             self.title = title
             self.placeholder = placeholder
@@ -104,6 +136,7 @@ extension NameDialog {
             self.confirmLabel = confirmLabel
             self.onCancel = onCancel
             self.onConfirm = onConfirm
+            self.style = style
         }
     }
 }

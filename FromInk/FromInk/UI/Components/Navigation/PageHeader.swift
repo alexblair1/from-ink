@@ -10,51 +10,78 @@ import SwiftUI
 ///     ))
 ///
 struct PageHeader: View {
+
     let model: Model
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HairlineRule()
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: model.style.innerSpacing) {
                 if let eyebrow = model.eyebrow {
-                    MonoLabel(eyebrow, color: Color("ink/Ink3"))
-                        .padding(.bottom, 4)
+                    MonoLabel(eyebrow, color: model.style.eyebrowColor)
+                        .padding(.bottom, model.style.eyebrowSpacing)
                 }
 
                 Text(model.title)
-                    .font(.system(size: 48, weight: .light, design: .serif))
-                    .foregroundStyle(Color("ink/Ink"))
+                    .font(model.style.titleFont)
+                    .foregroundStyle(model.style.titleColor)
 
                 if let subtitle = model.subtitle {
                     Text(subtitle)
-                        .font(.system(size: 17, weight: .regular))
-                        .foregroundStyle(Color("ink/Ink2"))
+                        .font(model.style.subtitleFont)
+                        .foregroundStyle(model.style.subtitleColor)
                 }
 
                 if let action = model.action {
                     InkButton(action.label, style: .tinted, action: action.handler)
-                        .padding(.top, 12)
+                        .padding(.top, SpacingScale.standard.md)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 24)
+            .padding(.horizontal, model.style.horizontalPadding)
+            .padding(.vertical, model.style.verticalPadding)
         }
     }
 }
 
 extension PageHeader {
+    struct Style {
+        let titleFont: Font
+        let titleColor: Color
+        let subtitleFont: Font
+        let subtitleColor: Color
+        let eyebrowColor: Color
+        let horizontalPadding: CGFloat
+        let verticalPadding: CGFloat
+        let eyebrowSpacing: CGFloat
+        let innerSpacing: CGFloat
+
+        static let standard = Style(
+            titleFont: TypographyTokens.standard.display(size: 48),
+            titleColor: ColorTokens.standard.ink,
+            subtitleFont: TypographyTokens.standard.body,
+            subtitleColor: ColorTokens.standard.ink2,
+            eyebrowColor: ColorTokens.standard.ink3,
+            horizontalPadding: SpacingScale.standard.base,
+            verticalPadding: SpacingScale.standard.lg,
+            eyebrowSpacing: SpacingScale.standard.xs,
+            innerSpacing: SpacingScale.standard.xs
+        )
+    }
+
     struct Model {
         let title: String
         let subtitle: String?
         let eyebrow: String?
         let action: (label: String, handler: () -> Void)?
+        let style: Style
 
         init(
             title: String,
             subtitle: String? = nil,
             eyebrow: String? = nil,
-            action: (String, () -> Void)? = nil
+            action: (String, () -> Void)? = nil,
+            style: Style = .standard
         ) {
             self.title = title
             self.subtitle = subtitle
@@ -64,6 +91,7 @@ extension PageHeader {
             } else {
                 self.action = nil
             }
+            self.style = style
         }
     }
 }

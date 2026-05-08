@@ -94,3 +94,26 @@ enum ElevationLevel: Int, Sendable {
     case sheet    = 2
     case alert    = 3
 }
+
+// MARK: - Layout Tokens
+//
+// Fixed chrome dimensions — nav bars, footers, hit targets, dialog widths.
+// These are structural constants, not spacing multiples.
+
+struct LayoutTokens: Sendable {
+    let navBarHeight: CGFloat = 44
+    let sheetHeaderHeight: CGFloat = 52
+    let footerHeight: CGFloat = 60
+    let dialogActionHeight: CGFloat = 48
+    let hitTarget: CGFloat = 44
+    let toolHitTarget: CGFloat = 48
+    let iconFrame: CGFloat = 24
+    let thumbnailSize: CGFloat = 64
+    let dialogWidth: CGFloat = 300
+    let panelWidth: CGFloat = 420
+    let spineMinHeight: CGFloat = 140
+    let timeBlockWidth: CGFloat = 72
+    let headerSpacer: CGFloat = 60
+
+    static let standard = LayoutTokens()
+}

@@ -1,5 +1,23 @@
 import SwiftUI
 
+// MARK: - Style
+
+struct InkPanelStyle {
+    let background: Color
+    let height: CGFloat
+    let horizontalPadding: CGFloat
+    let dismissColor: Color
+
+    static let standard = InkPanelStyle(
+        background: ColorTokens.standard.surface,
+        height: LayoutTokens.standard.hitTarget,
+        horizontalPadding: SpacingScale.standard.base,
+        dismissColor: ColorTokens.standard.ink2
+    )
+}
+
+// MARK: - View
+
 /// Generic panel container with title bar, optional tabs, content, and optional footer.
 /// Used as the base for all side panels and sheets in the design system.
 ///
@@ -14,6 +32,7 @@ import SwiftUI
 ///     }
 ///
 struct InkPanel<Content: View, Footer: View>: View {
+
     let model: Model
     let content: () -> Content
     let footer: () -> Footer
@@ -32,14 +51,14 @@ struct InkPanel<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             // Title bar
             HStack {
-                MonoLabel(model.title, color: Color("ink/Ink2"))
+                MonoLabel(model.title)
                 Spacer()
                 if let onDismiss = model.onDismiss {
-                    IconButton("xmark", size: .footnote, color: Color("ink/Ink2"), action: onDismiss)
+                    IconButton("xmark", size: .footnote, color: model.style.dismissColor, action: onDismiss)
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 44)
+            .padding(.horizontal, model.style.horizontalPadding)
+            .frame(height: model.style.height)
 
             HairlineRule()
 
@@ -51,24 +70,29 @@ struct InkPanel<Content: View, Footer: View>: View {
         }
         .frame(width: model.width)
         .frame(maxHeight: .infinity)
-        .background(Color("ink/Surface"))
+        .background(model.style.background)
     }
 }
+
+// MARK: - Model
 
 extension InkPanel {
     struct Model {
         let title: String
         let width: CGFloat
         let onDismiss: (() -> Void)?
+        let style: InkPanelStyle
 
         init(
             title: String,
-            width: CGFloat = 420,
-            onDismiss: (() -> Void)? = nil
+            width: CGFloat = LayoutTokens.standard.panelWidth,
+            onDismiss: (() -> Void)? = nil,
+            style: InkPanelStyle = .standard
         ) {
             self.title = title
             self.width = width
             self.onDismiss = onDismiss
+            self.style = style
         }
     }
 }

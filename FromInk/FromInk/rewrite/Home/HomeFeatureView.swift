@@ -15,6 +15,7 @@ struct HomeFeatureView: View {
     @Query(sort: \Notebook.lastOpenedAt, order: .reverse) private var notebooks: [Notebook]
     @Query(sort: \Folder.sortOrder) private var folders: [Folder]
     @Environment(\.modelContext) private var modelContext
+    private let ds = DesignSystem.standard
 
     @State private var briefStore = Store(initialState: DailyBriefFeature.State()) {
         DailyBriefFeature()
@@ -42,9 +43,27 @@ struct HomeFeatureView: View {
             .fullScreenCover(item: $activeNotebook) { notebook in
                 NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
             }
-            .sheet(isPresented: $showNewNotebookSheet) {
-                newNotebookSheet
+            .overlay {
+                if showNewNotebookSheet {
+                    NewNotebookOverlay(
+                        title: $newNotebookTitle,
+                        onCreate: {
+                            let notebook = Notebook(
+                                title: newNotebookTitle.isEmpty ? AppStrings.Common.untitled : newNotebookTitle
+                            )
+                            modelContext.insert(notebook)
+                            try? modelContext.save()
+                            showNewNotebookSheet = false
+                            activeNotebook = notebook
+                        },
+                        onCancel: {
+                            showNewNotebookSheet = false
+                        }
+                    )
+                    .transition(.opacity)
+                }
             }
+            .animation(ds.animation.standard, value: showNewNotebookSheet)
     }
 
     // MARK: - Model bridge
@@ -106,21 +125,19 @@ struct HomeFeatureView: View {
                 )
             },
             expandedBrief: expandedBriefModel(state: state),
-            onNewNotebook: {
-                newNotebookTitle = ""
-                showNewNotebookSheet = true
-            },
             onViewDetails: { }
         )
     }
 
     // MARK: - Brief helpers
 
+    /// The masthead shows only the first sentence — a concise headline.
+    /// The full multi-sentence focus lives in the expanded editor's note.
     private func briefSentence(state: DailyBriefFeature.State) -> String {
         if let focus = state.brief?.focus, !focus.isEmpty {
-            return focus
+            return firstSentence(of: focus)
         }
-        return narrativeFallback(events: state.events, reminders: state.reminders)
+        return firstSentence(of: narrativeFallback(events: state.events, reminders: state.reminders))
     }
 
     private func expandedBriefModel(state: DailyBriefFeature.State) -> HomeExpandedBrief.Model {
@@ -139,7 +156,7 @@ struct HomeFeatureView: View {
         if let next = state.events.first {
             highlights.append(.init(
                 icon: "calendar",
-                label: "Next up",
+                label: AppStrings.Home.nextUp,
                 text: "\(next.title) · \(next.startDate.formatted(.dateTime.hour().minute()))"
             ))
         }
@@ -147,8 +164,8 @@ struct HomeFeatureView: View {
         // Urgent reminders
         for reminder in state.reminders.prefix(2) {
             let dueLabel = reminder.dueDate.map {
-                $0 < Date() ? "Overdue" : "Today"
-            } ?? "Today"
+                $0 < Date() ? AppStrings.Home.overdue : AppStrings.Home.today
+            } ?? AppStrings.Home.today
             highlights.append(.init(
                 icon: "checklist",
                 label: dueLabel,
@@ -194,59 +211,24 @@ struct HomeFeatureView: View {
         return parts.joined(separator: " ")
     }
 
+    private func firstSentence(of text: String) -> String {
+        guard let range = text.range(of: ".", options: .literal) else { return text }
+        let sentence = String(text[text.startIndex...range.lowerBound])
+        return sentence
+    }
+
     private func coverColor(for notebook: Notebook) -> Color {
-        Color(hex: notebook.coverColorHex) ?? Color("ink/Ink")
+        Color(hex: notebook.coverColorHex) ?? ColorTokens.standard.ink
     }
 
     // MARK: - Seed
 
     private func seedNotebookIfNeeded() {
         if notebooks.isEmpty {
-            let notebook = Notebook(title: "My Notebook")
+            let notebook = Notebook(title: AppStrings.Library.myNotebook)
             modelContext.insert(notebook)
             try? modelContext.save()
         }
     }
 
-    // MARK: - New notebook sheet
-
-    private var newNotebookSheet: some View {
-        VStack(spacing: 0) {
-            SheetHeader(
-                title: "New Notebook",
-                leadingAction: ("Cancel", { showNewNotebookSheet = false }),
-                onDismiss: { showNewNotebookSheet = false }
-            )
-
-            TextField("Title", text: $newNotebookTitle)
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(Color("ink/Ink"))
-                .padding(20)
-
-            HairlineRule()
-
-            Button {
-                let notebook = Notebook(
-                    title: newNotebookTitle.isEmpty ? "Untitled" : newNotebookTitle
-                )
-                modelContext.insert(notebook)
-                try? modelContext.save()
-                showNewNotebookSheet = false
-                activeNotebook = notebook
-            } label: {
-                Text("Create & Open")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color("ink/Paper"))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color("ink/Ink"))
-            }
-            .buttonStyle(.plain)
-            .padding(20)
-
-            Spacer()
-        }
-        .background(Color("ink/Surface"))
-        .presentationDetents([.height(260)])
-    }
 }

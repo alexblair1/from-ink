@@ -4,15 +4,16 @@ import SwiftUI
 /// Used for eyebrows, runners, timestamps, sync status, sheet titles.
 ///
 ///     MonoLabel("Daily brief · synced 2m ago")
-///     MonoLabel("3 notebooks", color: Color("ink/Ink2"))
+///     MonoLabel("3 notebooks", color: ColorTokens.standard.ink3)
 ///     MonoLabel("May 07, 2026", size: 10)
 ///
 struct MonoLabel: View {
+
     let text: String
     let size: CGFloat
     let color: Color
 
-    init(_ text: String, size: CGFloat = 11, color: Color = Color("ink/Ink2")) {
+    init(_ text: String, size: CGFloat = 11, color: Color = ColorTokens.standard.secondaryLabel) {
         self.text = text
         self.size = size
         self.color = color

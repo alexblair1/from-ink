@@ -15,21 +15,33 @@ import SwiftUI
 struct HomeScreen: View {
     let model: Model
 
+    private let ds = DesignSystem.standard
+    @State private var isBriefExpanded = false
+
     var body: some View {
         ZStack(alignment: .top) {
-            Color("ink/Paper").ignoresSafeArea()
+            ds.colors.paper.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // ── Editorial Masthead ──────────────────
-                    HomeMasthead(model: model.masthead)
+                    // ── Top bar ─────────────────────────────
+                    homeTopBar
+                        .padding(.horizontal, ds.spacing.lg)
 
-                    // ── Search ──────────────────────────────
+                    // ── Search (below wordmark) ────────────
                     HomeSearchRow(
                         text: model.searchText,
-                        onTextChanged: model.onSearchChanged,
-                        placeholder: "Search folders, notebooks and pages"
+                        onTextChanged: { query in
+                            if !query.isEmpty {
+                                isBriefExpanded = false
+                            }
+                            model.onSearchChanged(query)
+                        },
+                        placeholder: AppStrings.Home.searchPlaceholder
                     )
+
+                    // ── Editorial Masthead ──────────────────
+                    HomeMasthead(model: model.masthead, isExpanded: $isBriefExpanded)
 
                     // ── Folders ─────────────────────────────
                     if !model.folders.isEmpty {
@@ -52,10 +64,36 @@ struct HomeScreen: View {
                         HomeEmptyState(onCreateNotebook: model.onNewNotebook)
                     }
 
-                    Spacer().frame(height: 48)
+                    Spacer().frame(height: ds.spacing.xxl)
                 }
             }
         }
+    }
+
+    // MARK: - Top bar
+
+    private var homeTopBar: some View {
+        HStack {
+            Text(AppStrings.Home.title)
+                .font(.system(size: 18, weight: .regular, design: .serif))
+                .italic()
+                .foregroundStyle(ds.colors.ink)
+                .tracking(0.4)
+
+            Spacer()
+
+            Button(action: model.onNewNotebook) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 17, weight: .regular))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(ds.colors.ink)
+                    .frame(width: ds.layout.hitTarget, height: ds.layout.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, ds.spacing.sm)
+        .padding(.bottom, ds.spacing.xs)
     }
 }
 
@@ -95,16 +133,18 @@ private struct HomeSearchRow: View {
     let onTextChanged: (String) -> Void
     let placeholder: String
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ds.spacing.sm) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15, weight: .regular))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color("ink/Ink2"))
+                .foregroundStyle(ds.colors.ink2)
 
             TextField(placeholder, text: text)
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Color("ink/Ink"))
+                .font(ds.typography.subheadline)
+                .foregroundStyle(ds.colors.ink)
                 .onChange(of: text.wrappedValue) { _, newValue in
                     onTextChanged(newValue)
                 }
@@ -117,18 +157,18 @@ private struct HomeSearchRow: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 15, weight: .regular))
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink3"))
+                        .foregroundStyle(ds.colors.ink3)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(Color("ink/Surface"))
+        .padding(.horizontal, ds.spacing.md)
+        .padding(.vertical, ds.spacing.sm)
+        .background(ds.colors.surface)
         .overlay(
-            Rectangle().strokeBorder(Color("ink/Rule"), lineWidth: 0.5)
+            Rectangle().strokeBorder(ds.colors.rule, lineWidth: 0.5)
         )
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
+        .padding(.horizontal, ds.spacing.lg)
+        .padding(.vertical, ds.spacing.base)
     }
 }

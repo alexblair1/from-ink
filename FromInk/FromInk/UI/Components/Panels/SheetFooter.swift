@@ -13,14 +13,26 @@ import SwiftUI
 ///     )
 ///
 struct SheetFooter: View {
+
     let secondary: Action?
     let primary: Action
+    let style: Style
+
+    init(
+        secondary: Action? = nil,
+        primary: Action,
+        style: Style = .standard
+    ) {
+        self.secondary = secondary
+        self.primary = primary
+        self.style = style
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HairlineRule()
 
-            HStack(spacing: 12) {
+            HStack(spacing: style.innerSpacing) {
                 if let secondary {
                     InkButton(secondary.label, style: .ghost, action: secondary.handler)
                 }
@@ -31,14 +43,28 @@ struct SheetFooter: View {
                     .opacity(primary.isDisabled ? 0.4 : 1)
                     .allowsHitTesting(!primary.isDisabled)
             }
-            .padding(.horizontal, 20)
-            .frame(height: 60)
+            .padding(.horizontal, style.horizontalPadding)
+            .frame(height: style.height)
         }
-        .background(Color("ink/Surface"))
+        .background(style.background)
     }
 }
 
 extension SheetFooter {
+    struct Style {
+        let horizontalPadding: CGFloat
+        let height: CGFloat
+        let background: Color
+        let innerSpacing: CGFloat
+
+        static let standard = Style(
+            horizontalPadding: SpacingScale.standard.base,
+            height: LayoutTokens.standard.footerHeight,
+            background: ColorTokens.standard.surface,
+            innerSpacing: SpacingScale.standard.md
+        )
+    }
+
     struct Action {
         let label: String
         let isDisabled: Bool

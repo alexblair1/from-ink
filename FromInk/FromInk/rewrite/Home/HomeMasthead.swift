@@ -11,37 +11,33 @@ import SwiftUI
 ///
 struct HomeMasthead: View {
     let model: Model
+    @Binding var isExpanded: Bool
 
-    @State private var isExpanded = false
+    private let ds = DesignSystem.standard
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-
-            // ── Top bar ────────────────────────────
-            topBar
-                .padding(.horizontal, 24)
-
             // ── Masthead block ─────────────────────
             VStack(alignment: .leading, spacing: 0) {
                 // Thick top rule — editorial weight
                 Rectangle()
-                    .fill(Color("ink/Ink"))
+                    .fill(ds.colors.ink)
                     .frame(height: 2)
 
                 // Topline: "DAILY BRIEF · SYNCED 2M AGO" + weather
                 topline
-                    .padding(.top, 14)
-                    .padding(.horizontal, 24)
+                    .padding(.top, ds.spacing.md)
+                    .padding(.horizontal, ds.spacing.lg)
 
                 // Big serif date
                 dateBlock
-                    .padding(.top, 8)
-                    .padding(.horizontal, 24)
+                    .padding(.top, ds.spacing.sm)
+                    .padding(.horizontal, ds.spacing.lg)
 
                 // Brief sentence + counts
                 briefAndCounts
-                    .padding(.top, 10)
-                    .padding(.horizontal, 24)
+                    .padding(.top, ds.spacing.sm)
+                    .padding(.horizontal, ds.spacing.lg)
 
                 // Expanded editorial content
                 if isExpanded {
@@ -51,59 +47,31 @@ struct HomeMasthead: View {
                         highlights: model.expandedBrief.highlights,
                         onViewDetails: model.onViewDetails,
                         onCollapse: {
-                            withAnimation(.linear(duration: 0.10)) {
+                            withAnimation(ds.animation.standard) {
                                 isExpanded = false
                             }
                         }
                     ))
-                    .padding(.top, 16)
-                    .padding(.horizontal, 24)
+                    .padding(.top, ds.spacing.base)
+                    .padding(.horizontal, ds.spacing.lg)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 // Bottom rule
                 Rectangle()
-                    .fill(Color("ink/Ink"))
+                    .fill(ds.colors.ink)
                     .frame(height: 1)
-                    .padding(.top, 16)
+                    .padding(.top, ds.spacing.base)
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, ds.spacing.lg)
         }
-    }
-
-    // MARK: - Top bar
-
-    private var topBar: some View {
-        HStack {
-            // Leading: wordmark
-            Text("From Ink")
-                .font(.system(size: 18, weight: .regular, design: .serif))
-                .italic()
-                .foregroundStyle(Color("ink/Ink"))
-                .tracking(0.4)
-
-            Spacer()
-
-            // Trailing: new notebook
-            Button(action: model.onNewNotebook) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 17, weight: .regular))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(Color("ink/Ink"))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 4)
     }
 
     // MARK: - Topline
 
     private var topline: some View {
         HStack {
-            MonoLabel("Daily brief · \(model.syncLabel)", color: Color("ink/Ink3"))
+            MonoLabel("\(AppStrings.Home.dailyBrief) · \(model.syncLabel)", color: ds.colors.ink3)
 
             Spacer()
 
@@ -111,18 +79,18 @@ struct HomeMasthead: View {
             if let weather = model.weather {
                 HStack(spacing: 6) {
                     Image(systemName: weather.symbolName)
-                        .font(.system(size: 12, weight: .regular))
+                        .font(ds.typography.caption)
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink"))
+                        .foregroundStyle(ds.colors.ink)
 
                     if let transition = weather.transitionSymbol {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 8, weight: .regular))
-                            .foregroundStyle(Color("ink/Ink3"))
+                            .foregroundStyle(ds.colors.ink3)
                         Image(systemName: transition)
-                            .font(.system(size: 12, weight: .regular))
+                            .font(ds.typography.caption)
                             .symbolRenderingMode(.monochrome)
-                            .foregroundStyle(Color("ink/Ink"))
+                            .foregroundStyle(ds.colors.ink)
                     }
 
                     HairlineRule(.vertical)
@@ -131,11 +99,11 @@ struct HomeMasthead: View {
                     Image(systemName: "thermometer.medium")
                         .font(.system(size: 11, weight: .regular))
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink"))
-                    MonoLabel(weather.temperature, color: Color("ink/Ink2"))
+                        .foregroundStyle(ds.colors.ink)
+                    MonoLabel(weather.temperature, color: ds.colors.ink2)
 
                     if let sunrise = weather.sunrise, let sunset = weather.sunset {
-                        MonoLabel("↑\(sunrise) ↓\(sunset)", color: Color("ink/Ink3"))
+                        MonoLabel("↑\(sunrise) ↓\(sunset)", color: ds.colors.ink3)
                     }
                 }
             }
@@ -149,36 +117,36 @@ struct HomeMasthead: View {
             // Large serif date
             (
                 Text(model.weekday)
-                    .foregroundStyle(Color("ink/Ink"))
+                    .foregroundStyle(ds.colors.ink)
                 +
                 Text(",")
-                    .foregroundStyle(Color("ink/Ink2"))
+                    .foregroundStyle(ds.colors.ink2)
             )
-            .font(.system(size: 38, weight: .light, design: .serif))
+            .font(ds.typography.display(size: 38))
             .tracking(-0.5)
 
             Text("\(model.monthDay).")
-                .font(.system(size: 28, weight: .light, design: .serif))
+                .font(ds.typography.display(size: 28))
                 .italic()
-                .foregroundStyle(Color("ink/Ink2"))
+                .foregroundStyle(ds.colors.ink2)
 
             Spacer()
 
             // Read more / Collapse toggle
             Button {
-                withAnimation(.linear(duration: 0.10)) {
+                withAnimation(ds.animation.standard) {
                     isExpanded.toggle()
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Text(isExpanded ? "COLLAPSE" : "READ MORE")
-                        .underline(color: Color("ink/Ink"))
+                    Text(isExpanded ? AppStrings.Home.collapse.uppercased() : AppStrings.Home.readMore.uppercased())
+                        .underline(color: ds.colors.ink)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .medium))
                 }
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(ds.typography.monoLabel)
                 .tracking(11 * 0.18)
-                .foregroundStyle(Color("ink/Ink"))
+                .foregroundStyle(ds.colors.ink)
             }
             .buttonStyle(.plain)
         }
@@ -187,22 +155,22 @@ struct HomeMasthead: View {
     // MARK: - Brief sentence + counts
 
     private var briefAndCounts: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 24) {
+        HStack(alignment: .firstTextBaseline, spacing: ds.spacing.lg) {
             // Brief sentence
             Text(model.briefSentence)
                 .font(.system(size: 17, weight: .regular, design: .serif))
-                .foregroundStyle(Color("ink/Ink"))
-                .lineSpacing(4)
+                .foregroundStyle(ds.colors.ink)
+                .lineSpacing(ds.spacing.xs)
                 .frame(maxWidth: 720, alignment: .leading)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: ds.spacing.base)
 
             // Inline counts
             HStack(spacing: 18) {
-                countBadge(icon: "calendar", count: model.eventCount, label: "events")
-                countBadge(icon: "checklist", count: model.reminderCount, label: "due")
+                countBadge(icon: "calendar", count: model.eventCount, label: AppStrings.Home.events)
+                countBadge(icon: "checklist", count: model.reminderCount, label: AppStrings.Home.due)
                 if model.birthdayCount > 0 {
-                    countBadge(icon: "person.crop.circle", count: model.birthdayCount, label: "birthday")
+                    countBadge(icon: "person.crop.circle", count: model.birthdayCount, label: AppStrings.Home.birthday)
                 }
             }
         }
@@ -211,13 +179,13 @@ struct HomeMasthead: View {
     private func countBadge(icon: String, count: Int, label: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .regular))
+                .font(ds.typography.footnote)
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color("ink/Ink"))
+                .foregroundStyle(ds.colors.ink)
             Text("\(count)")
                 .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(Color("ink/Ink"))
-            MonoLabel(label, color: Color("ink/Ink2"))
+                .foregroundStyle(ds.colors.ink)
+            MonoLabel(label, color: ds.colors.ink2)
         }
     }
 }
@@ -235,7 +203,6 @@ extension HomeMasthead {
         let birthdayCount: Int
         let weather: WeatherInfo?
         let expandedBrief: HomeExpandedBrief.Model
-        let onNewNotebook: () -> Void
         let onViewDetails: () -> Void
 
         struct WeatherInfo {

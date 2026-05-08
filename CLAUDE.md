@@ -151,6 +151,8 @@ extension TaskCardView {
 }
 ```
 
+> **Full architecture reference:** See [`~/development/Stateless_SwiftUI_TCA_Architecture.md`](/Users/alexblair/development/Stateless_SwiftUI_TCA_Architecture.md) for the complete Stateless SwiftUI + TCA + FeaturePreview pattern, including the Wiring View layer, adapter conventions, migration guide, anti-patterns, and testing strategy. That document is project-agnostic and applies to all iOS projects using TCA.
+
 ---
 
 ## TCA Dependency Clients

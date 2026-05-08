@@ -11,22 +11,23 @@ import SwiftUI
 ///     ))
 ///
 struct EmptyState: View {
+
     let model: Model
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: model.style.spacing) {
             Spacer()
 
             if let icon = model.icon {
                 Image(systemName: icon)
-                    .font(.system(size: 32, weight: .light))
+                    .font(.system(size: model.style.iconSize, weight: .light))
                     .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(Color("ink/Ink3"))
+                    .foregroundStyle(model.style.iconColor)
             }
 
             Text(model.message)
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Color("ink/Ink3"))
+                .font(model.style.messageFont)
+                .foregroundStyle(model.style.messageColor)
                 .multilineTextAlignment(.center)
 
             if let actionLabel = model.actionLabel, let onAction = model.onAction {
@@ -36,27 +37,48 @@ struct EmptyState: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 32)
+        .padding(.horizontal, model.style.horizontalPadding)
     }
 }
 
 extension EmptyState {
+    struct Style {
+        let messageFont: Font
+        let messageColor: Color
+        let iconColor: Color
+        let iconSize: CGFloat
+        let spacing: CGFloat
+        let horizontalPadding: CGFloat
+
+        static let standard = Style(
+            messageFont: TypographyTokens.standard.subheadline,
+            messageColor: ColorTokens.standard.ink3,
+            iconColor: ColorTokens.standard.ink3,
+            iconSize: 32,
+            spacing: SpacingScale.standard.base,
+            horizontalPadding: SpacingScale.standard.xl
+        )
+    }
+
     struct Model {
         let icon: String?
         let message: String
         let actionLabel: String?
         let onAction: (() -> Void)?
+        let style: Style
 
         init(
             icon: String? = nil,
             message: String,
             actionLabel: String? = nil,
-            onAction: (() -> Void)? = nil
+            onAction: (() -> Void)? = nil,
+            style: Style = .standard
         ) {
             self.icon = icon
             self.message = message
             self.actionLabel = actionLabel
             self.onAction = onAction
+            self.style = style
         }
     }
 }

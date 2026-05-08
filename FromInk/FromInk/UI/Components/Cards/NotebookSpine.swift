@@ -18,50 +18,78 @@ struct NotebookSpine: View {
                 // Spine accent strip
                 Rectangle()
                     .fill(model.coverColor)
-                    .frame(height: 4)
+                    .frame(height: model.style.stripHeight)
 
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: model.style.innerSpacing) {
                     Text(model.title)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color("ink/Ink"))
+                        .font(model.style.titleFont)
+                        .foregroundStyle(model.style.titleColor)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
                     Spacer()
 
-                    MonoLabel("\(model.pageCount) pages", color: Color("ink/Ink3"))
+                    MonoLabel(model.pageCountLabel, color: model.style.metadataColor)
                 }
-                .padding(12)
+                .padding(model.style.padding)
 
                 HairlineRule()
             }
-            .frame(minHeight: 140)
-            .background(Color("ink/Surface"))
+            .frame(minHeight: model.style.minHeight)
+            .background(model.style.background)
         }
         .buttonStyle(.plain)
     }
 }
 
 extension NotebookSpine {
+    struct Style {
+        let titleFont: Font
+        let titleColor: Color
+        let metadataColor: Color
+        let background: Color
+        let stripHeight: CGFloat
+        let innerSpacing: CGFloat
+        let padding: CGFloat
+        let minHeight: CGFloat
+
+        static let standard = Style(
+            titleFont: TypographyTokens.standard.subheadline,
+            titleColor: ColorTokens.standard.ink,
+            metadataColor: ColorTokens.standard.ink3,
+            background: ColorTokens.standard.surface,
+            stripHeight: 4,
+            innerSpacing: SpacingScale.standard.sm,
+            padding: SpacingScale.standard.md,
+            minHeight: LayoutTokens.standard.spineMinHeight
+        )
+    }
+
     struct Model {
         let id: UUID
         let title: String
         let pageCount: Int
+        let pageCountLabel: String
         let coverColor: Color
         let onTap: () -> Void
+        let style: Style
 
         init(
             id: UUID = UUID(),
             title: String,
             pageCount: Int = 0,
-            coverColor: Color = Color("ink/Ink"),
-            onTap: @escaping () -> Void
+            pageCountLabel: String? = nil,
+            coverColor: Color = ColorTokens.standard.ink,
+            onTap: @escaping () -> Void,
+            style: Style = .standard
         ) {
             self.id = id
             self.title = title
             self.pageCount = pageCount
+            self.pageCountLabel = pageCountLabel ?? "\(pageCount) pages"
             self.coverColor = coverColor
             self.onTap = onTap
+            self.style = style
         }
     }
 }

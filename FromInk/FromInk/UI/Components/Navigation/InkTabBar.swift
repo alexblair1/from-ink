@@ -14,8 +14,20 @@ import SwiftUI
 ///     )
 ///
 struct InkTabBar: View {
+
     let tabs: [Tab]
     @Binding var selectedIndex: Int
+    let style: Style
+
+    init(
+        tabs: [Tab],
+        selectedIndex: Binding<Int>,
+        style: Style = .standard
+    ) {
+        self.tabs = tabs
+        self._selectedIndex = selectedIndex
+        self.style = style
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,31 +40,51 @@ struct InkTabBar: View {
                     Button {
                         selectedIndex = index
                     } label: {
-                        VStack(spacing: 4) {
+                        VStack(spacing: style.innerSpacing) {
                             Image(systemName: tab.icon)
-                                .font(.system(size: 25, weight: isSelected ? .medium : .regular))
+                                .font(.system(size: style.iconSize, weight: isSelected ? .medium : .regular))
                                 .symbolRenderingMode(.monochrome)
 
                             Text(tab.label)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .font(style.labelFont)
                                 .tracking(10 * 0.18)
                                 .textCase(.uppercase)
                         }
-                        .foregroundStyle(isSelected ? Color("ink/Ink") : Color("ink/Ink3"))
+                        .foregroundStyle(isSelected ? style.selectedColor : style.unselectedColor)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, style.verticalPadding)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, style.horizontalPadding)
         }
         .background(.regularMaterial)
     }
 }
 
 extension InkTabBar {
+    struct Style {
+        let selectedColor: Color
+        let unselectedColor: Color
+        let iconSize: CGFloat
+        let labelFont: Font
+        let innerSpacing: CGFloat
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+
+        static let standard = Style(
+            selectedColor: ColorTokens.standard.ink,
+            unselectedColor: ColorTokens.standard.ink3,
+            iconSize: 25,
+            labelFont: TypographyTokens.standard.monoSmall,
+            innerSpacing: SpacingScale.standard.xs,
+            verticalPadding: SpacingScale.standard.xs,
+            horizontalPadding: SpacingScale.standard.sm
+        )
+    }
+
     struct Tab {
         let icon: String
         let label: String

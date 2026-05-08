@@ -6,29 +6,31 @@ import SwiftUI
 struct HomeEmptyState: View {
     let onCreateNotebook: () -> Void
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer().frame(height: 48)
+        VStack(spacing: ds.spacing.base) {
+            Spacer().frame(height: ds.spacing.xxl)
 
             Image(systemName: "book.closed")
                 .font(.system(size: 36, weight: .ultraLight))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(Color("ink/Ink3"))
+                .foregroundStyle(ds.colors.ink3)
 
             VStack(spacing: 6) {
-                Text("Start writing")
-                    .font(.system(size: 22, weight: .light, design: .serif))
-                    .foregroundStyle(Color("ink/Ink"))
+                Text(AppStrings.Home.startWriting)
+                    .font(ds.typography.display(size: 22))
+                    .foregroundStyle(ds.colors.ink)
 
-                Text("Create your first notebook to begin.")
-                    .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(Color("ink/Ink2"))
+                Text(AppStrings.Home.emptySubtitle)
+                    .font(ds.typography.subheadline)
+                    .foregroundStyle(ds.colors.ink2)
             }
 
-            InkButton("New Notebook", style: .filled, icon: "plus", action: onCreateNotebook)
-                .padding(.top, 4)
+            InkButton(AppStrings.Home.newNotebook, style: .filled, icon: "plus", action: onCreateNotebook)
+                .padding(.top, ds.spacing.xs)
 
-            Spacer().frame(height: 48)
+            Spacer().frame(height: ds.spacing.xxl)
         }
         .frame(maxWidth: .infinity)
     }

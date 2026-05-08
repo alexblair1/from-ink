@@ -15,38 +15,51 @@ struct InkTaskRow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: model.style.innerSpacing) {
                 Button(action: model.onToggle) {
                     Image(systemName: model.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22, weight: .regular))
+                        .font(model.style.checkboxFont)
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(
-                            model.isCompleted ? Color("ink/Ink3") : Color("ink/Ink")
+                            model.isCompleted
+                                ? model.style.completedColor
+                                : model.style.titleColor
                         )
-                        .frame(width: 24, height: 24)
+                        .frame(
+                            width: model.style.iconFrame,
+                            height: model.style.iconFrame
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
                 Button(action: model.onTap) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: model.style.metadataSpacing) {
                         Text(model.title)
-                            .font(.system(size: 17, weight: .regular))
+                            .font(model.style.titleFont)
                             .foregroundStyle(
-                                model.isCompleted ? Color("ink/Ink3") : Color("ink/Ink")
+                                model.isCompleted
+                                    ? model.style.completedColor
+                                    : model.style.titleColor
                             )
                             .strikethrough(model.isCompleted)
                             .lineLimit(2)
 
-                        HStack(spacing: 8) {
+                        HStack(spacing: model.style.metadataInnerSpacing) {
                             if let destination = model.destination {
-                                MonoLabel(destination, color: Color("ink/Ink2"))
+                                MonoLabel(destination)
                             }
                             if let assignee = model.assignee {
-                                MonoLabel("· \(assignee)", color: Color("ink/Ink3"))
+                                MonoLabel(
+                                    "· \(assignee)",
+                                    color: model.style.completedColor
+                                )
                             }
                             if let deadline = model.deadline {
-                                MonoLabel("· \(deadline)", color: Color("ink/Ink3"))
+                                MonoLabel(
+                                    "· \(deadline)",
+                                    color: model.style.completedColor
+                                )
                             }
                         }
                     }
@@ -55,8 +68,8 @@ struct InkTaskRow: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 16)
+            .padding(.vertical, model.style.verticalPadding)
+            .padding(.horizontal, model.style.horizontalPadding)
 
             HairlineRule()
         }
@@ -64,6 +77,32 @@ struct InkTaskRow: View {
 }
 
 extension InkTaskRow {
+    struct Style {
+        let titleFont: Font
+        let titleColor: Color
+        let completedColor: Color
+        let checkboxFont: Font
+        let innerSpacing: CGFloat
+        let metadataSpacing: CGFloat
+        let metadataInnerSpacing: CGFloat
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+        let iconFrame: CGFloat
+
+        static let standard = Style(
+            titleFont: TypographyTokens.standard.body,
+            titleColor: ColorTokens.standard.ink,
+            completedColor: ColorTokens.standard.ink3,
+            checkboxFont: .system(size: 22, weight: .regular),
+            innerSpacing: SpacingScale.standard.md,
+            metadataSpacing: SpacingScale.standard.xs,
+            metadataInnerSpacing: SpacingScale.standard.sm,
+            verticalPadding: SpacingScale.standard.md,
+            horizontalPadding: SpacingScale.standard.base,
+            iconFrame: LayoutTokens.standard.iconFrame
+        )
+    }
+
     struct Model {
         let id: UUID
         let title: String
@@ -73,6 +112,7 @@ extension InkTaskRow {
         let isCompleted: Bool
         let onToggle: () -> Void
         let onTap: () -> Void
+        let style: Style
 
         init(
             id: UUID = UUID(),
@@ -82,7 +122,8 @@ extension InkTaskRow {
             deadline: String? = nil,
             isCompleted: Bool = false,
             onToggle: @escaping () -> Void,
-            onTap: @escaping () -> Void
+            onTap: @escaping () -> Void,
+            style: Style = .standard
         ) {
             self.id = id
             self.title = title
@@ -92,6 +133,7 @@ extension InkTaskRow {
             self.isCompleted = isCompleted
             self.onToggle = onToggle
             self.onTap = onTap
+            self.style = style
         }
     }
 }

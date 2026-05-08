@@ -8,8 +8,20 @@ import SwiftUI
 ///     )
 ///
 struct PanelTabBar: View {
+
     let tabs: [(icon: String, label: String)]
     @Binding var selectedIndex: Int
+    let style: Style
+
+    init(
+        tabs: [(icon: String, label: String)],
+        selectedIndex: Binding<Int>,
+        style: Style = .standard
+    ) {
+        self.tabs = tabs
+        self._selectedIndex = selectedIndex
+        self.style = style
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,9 +35,9 @@ struct PanelTabBar: View {
                         Image(systemName: tab.icon)
                             .font(.system(size: 15, weight: isSelected ? .medium : .regular))
                             .symbolRenderingMode(.monochrome)
-                            .foregroundStyle(isSelected ? Color("ink/Paper") : Color("ink/Ink2"))
+                            .foregroundStyle(isSelected ? style.selectedForeground : style.unselectedForeground)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(isSelected ? Color("ink/Ink") : .clear)
+                            .background(isSelected ? style.selectedBackground : .clear)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -35,9 +47,27 @@ struct PanelTabBar: View {
                     }
                 }
             }
-            .frame(height: 44)
+            .frame(height: style.height)
 
             HairlineRule()
         }
+    }
+}
+
+extension PanelTabBar {
+    struct Style {
+        let selectedForeground: Color
+        let unselectedForeground: Color
+        let selectedBackground: Color
+        let height: CGFloat
+        let font: Font
+
+        static let standard = Style(
+            selectedForeground: ColorTokens.standard.paper,
+            unselectedForeground: ColorTokens.standard.ink2,
+            selectedBackground: ColorTokens.standard.ink,
+            height: LayoutTokens.standard.hitTarget,
+            font: .system(size: 15)
+        )
     }
 }

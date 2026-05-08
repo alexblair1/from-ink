@@ -16,6 +16,7 @@ import SwiftUI
 ///     ))
 ///
 struct ToolRail: View {
+
     let model: Model
 
     var body: some View {
@@ -27,11 +28,11 @@ struct ToolRail: View {
                     model.onSelect(tool.id)
                 } label: {
                     Image(systemName: tool.icon)
-                        .font(.system(size: 22, weight: isSelected ? .medium : .regular))
+                        .font(.system(size: model.style.iconSize, weight: isSelected ? .medium : .regular))
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(isSelected ? Color("ink/Paper") : Color("ink/Ink"))
-                        .frame(width: 48, height: 48)
-                        .background(isSelected ? Color("ink/Ink") : .clear)
+                        .foregroundStyle(isSelected ? model.style.selectedForeground : model.style.unselectedForeground)
+                        .frame(width: model.style.toolSize, height: model.style.toolSize)
+                        .background(isSelected ? model.style.selectedBackground : .clear)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -43,11 +44,11 @@ struct ToolRail: View {
 
                 if tool.id != model.tools.last?.id {
                     HairlineRule()
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, model.style.ruleSpacing)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, model.style.railPadding)
         .background(.thickMaterial)
         .overlay(
             HairlineRule(.vertical),
@@ -57,25 +58,48 @@ struct ToolRail: View {
 }
 
 extension ToolRail {
+    struct Style {
+        let iconSize: CGFloat
+        let selectedForeground: Color
+        let unselectedForeground: Color
+        let selectedBackground: Color
+        let toolSize: CGFloat
+        let railPadding: CGFloat
+        let ruleSpacing: CGFloat
+
+        static let standard = Style(
+            iconSize: 22,
+            selectedForeground: ColorTokens.standard.paperOnInk,
+            unselectedForeground: ColorTokens.standard.ink,
+            selectedBackground: ColorTokens.standard.ink,
+            toolSize: LayoutTokens.standard.toolHitTarget,
+            railPadding: SpacingScale.standard.xs,
+            ruleSpacing: SpacingScale.standard.sm
+        )
+    }
+
     struct Model {
         let tools: [Tool]
         let selectedID: String
         let edge: HorizontalEdge
         let onSelect: (String) -> Void
         let onDoubleTap: ((String) -> Void)?
+        let style: Style
 
         init(
             tools: [Tool],
             selectedID: String,
             edge: HorizontalEdge = .leading,
             onSelect: @escaping (String) -> Void,
-            onDoubleTap: ((String) -> Void)? = nil
+            onDoubleTap: ((String) -> Void)? = nil,
+            style: Style = .standard
         ) {
             self.tools = tools
             self.selectedID = selectedID
             self.edge = edge
             self.onSelect = onSelect
             self.onDoubleTap = onDoubleTap
+            self.style = style
         }
     }
 

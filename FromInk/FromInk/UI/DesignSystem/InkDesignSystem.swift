@@ -32,19 +32,22 @@ struct DesignSystem: Sendable {
     var spacing: SpacingScale
     var cornerRadius: CornerRadiusScale
     var animation: AnimationTokens
+    var layout: LayoutTokens
 
     init(
         colors: ColorTokens = .standard,
         typography: TypographyTokens = .standard,
         spacing: SpacingScale = .standard,
         cornerRadius: CornerRadiusScale = .standard,
-        animation: AnimationTokens = .standard
+        animation: AnimationTokens = .standard,
+        layout: LayoutTokens = .standard
     ) {
         self.colors = colors
         self.typography = typography
         self.spacing = spacing
         self.cornerRadius = cornerRadius
         self.animation = animation
+        self.layout = layout
     }
 
     static let standard = DesignSystem()
@@ -72,6 +75,8 @@ struct ColorTokens: Sendable {
     var ink2: Color
     var ink3: Color
     var rule: Color
+    /// Paper-colored text/icons on ink-filled backgrounds (inverted).
+    var paperOnInk: Color
 
     var tint: Color { ink }
     var selection: Color { highlight }
@@ -81,13 +86,14 @@ struct ColorTokens: Sendable {
     var separator: Color { rule }
 
     static let standard = ColorTokens(
-        paper:     Color("ink/Paper"),
-        surface:   Color("ink/Surface"),
-        highlight: Color("ink/Highlight"),
-        ink:       Color("ink/Ink"),
-        ink2:      Color("ink/Ink2"),
-        ink3:      Color("ink/Ink3"),
-        rule:      Color("ink/Rule")
+        paper:      Color("ink/Paper"),
+        surface:    Color("ink/Surface"),
+        highlight:  Color("ink/Highlight"),
+        ink:        Color("ink/Ink"),
+        ink2:       Color("ink/Ink2"),
+        ink3:       Color("ink/Ink3"),
+        rule:       Color("ink/Rule"),
+        paperOnInk: Color("ink/Paper")
     )
 }
 

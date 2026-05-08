@@ -17,39 +17,39 @@ struct EventRow: View {
     var body: some View {
         Button(action: model.onTap) {
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
+                HStack(spacing: model.style.innerSpacing) {
                     // Time block
-                    VStack(alignment: .trailing, spacing: 2) {
-                        MonoLabel(model.time, color: Color("ink/Ink"))
+                    VStack(alignment: .trailing, spacing: model.style.timeSpacing) {
+                        MonoLabel(model.time, color: model.style.timeColor)
                         if let duration = model.duration {
-                            MonoLabel(duration, color: Color("ink/Ink3"))
+                            MonoLabel(duration, color: model.style.durationColor)
                         }
                     }
-                    .frame(width: 72, alignment: .trailing)
+                    .frame(width: model.style.timeBlockWidth, alignment: .trailing)
 
                     // Color accent bar
                     Rectangle()
                         .fill(model.accentColor)
                         .frame(width: 2)
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: model.style.timeSpacing) {
                         Text(model.title)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Color("ink/Ink"))
+                            .font(model.style.titleFont)
+                            .foregroundStyle(model.style.titleColor)
                             .lineLimit(1)
 
                         if let location = model.location {
                             Text(location)
-                                .font(.system(size: 15, weight: .regular))
-                                .foregroundStyle(Color("ink/Ink2"))
+                                .font(model.style.locationFont)
+                                .foregroundStyle(model.style.locationColor)
                                 .lineLimit(1)
                         }
                     }
 
                     Spacer()
                 }
-                .padding(.vertical, 12)
-                .padding(.horizontal, 16)
+                .padding(.vertical, model.style.verticalPadding)
+                .padding(.horizontal, model.style.horizontalPadding)
 
                 HairlineRule()
             }
@@ -59,6 +59,34 @@ struct EventRow: View {
 }
 
 extension EventRow {
+    struct Style {
+        let titleFont: Font
+        let titleColor: Color
+        let locationFont: Font
+        let locationColor: Color
+        let timeColor: Color
+        let durationColor: Color
+        let innerSpacing: CGFloat
+        let timeSpacing: CGFloat
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+        let timeBlockWidth: CGFloat
+
+        static let standard = Style(
+            titleFont: TypographyTokens.standard.headline,
+            titleColor: ColorTokens.standard.ink,
+            locationFont: TypographyTokens.standard.subheadline,
+            locationColor: ColorTokens.standard.ink2,
+            timeColor: ColorTokens.standard.ink,
+            durationColor: ColorTokens.standard.ink3,
+            innerSpacing: SpacingScale.standard.md,
+            timeSpacing: SpacingScale.standard.xxs,
+            verticalPadding: SpacingScale.standard.md,
+            horizontalPadding: SpacingScale.standard.base,
+            timeBlockWidth: LayoutTokens.standard.timeBlockWidth
+        )
+    }
+
     struct Model {
         let id: UUID
         let title: String
@@ -67,6 +95,7 @@ extension EventRow {
         let location: String?
         let accentColor: Color
         let onTap: () -> Void
+        let style: Style
 
         init(
             id: UUID = UUID(),
@@ -74,8 +103,9 @@ extension EventRow {
             time: String,
             duration: String? = nil,
             location: String? = nil,
-            accentColor: Color = Color("ink/Ink"),
-            onTap: @escaping () -> Void
+            accentColor: Color = ColorTokens.standard.ink,
+            onTap: @escaping () -> Void,
+            style: Style = .standard
         ) {
             self.id = id
             self.title = title
@@ -84,6 +114,7 @@ extension EventRow {
             self.location = location
             self.accentColor = accentColor
             self.onTap = onTap
+            self.style = style
         }
     }
 }

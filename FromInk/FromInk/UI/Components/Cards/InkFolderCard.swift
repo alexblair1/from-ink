@@ -4,7 +4,7 @@ import SwiftUI
 ///
 ///     InkFolderCard(model: .init(
 ///         name: "Work",
-///         notebookCount: 5,
+///         subtitle: "5 notebooks",
 ///         onTap: { }
 ///     ))
 ///
@@ -14,61 +14,89 @@ struct InkFolderCard: View {
     var body: some View {
         Button(action: model.onTap) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .top, spacing: model.style.innerSpacing) {
                     Image(systemName: model.icon)
-                        .font(.system(size: 17, weight: .regular))
+                        .font(model.style.iconFont)
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink2"))
+                        .foregroundStyle(model.style.iconColor)
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: model.style.titleSpacing) {
                         Text(model.name)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Color("ink/Ink"))
+                            .font(model.style.nameFont)
+                            .foregroundStyle(model.style.nameColor)
                             .lineLimit(1)
 
-                        MonoLabel(
-                            "\(model.notebookCount) notebook\(model.notebookCount == 1 ? "" : "s")",
-                            color: Color("ink/Ink3")
-                        )
+                        MonoLabel(model.subtitle, color: model.style.subtitleColor)
                     }
 
                     Spacer()
 
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .regular))
+                        .font(model.style.chevronFont)
                         .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(Color("ink/Ink3"))
+                        .foregroundStyle(model.style.chevronColor)
                 }
-                .padding(16)
+                .padding(model.style.padding)
 
                 HairlineRule()
             }
-            .background(Color("ink/Surface"))
+            .background(model.style.background)
         }
         .buttonStyle(.plain)
     }
 }
 
 extension InkFolderCard {
+    struct Style {
+        let nameFont: Font
+        let nameColor: Color
+        let iconFont: Font
+        let iconColor: Color
+        let subtitleColor: Color
+        let chevronFont: Font
+        let chevronColor: Color
+        let background: Color
+        let innerSpacing: CGFloat
+        let titleSpacing: CGFloat
+        let padding: CGFloat
+
+        static let standard = Style(
+            nameFont: TypographyTokens.standard.headline,
+            nameColor: ColorTokens.standard.ink,
+            iconFont: TypographyTokens.standard.body,
+            iconColor: ColorTokens.standard.ink2,
+            subtitleColor: ColorTokens.standard.ink3,
+            chevronFont: TypographyTokens.standard.footnote,
+            chevronColor: ColorTokens.standard.ink3,
+            background: ColorTokens.standard.surface,
+            innerSpacing: SpacingScale.standard.md,
+            titleSpacing: SpacingScale.standard.xs,
+            padding: SpacingScale.standard.base
+        )
+    }
+
     struct Model {
         let id: UUID
         let name: String
-        let notebookCount: Int
+        let subtitle: String
         let icon: String
         let onTap: () -> Void
+        let style: Style
 
         init(
             id: UUID = UUID(),
             name: String,
-            notebookCount: Int = 0,
+            subtitle: String = "",
             icon: String = "folder",
-            onTap: @escaping () -> Void
+            onTap: @escaping () -> Void,
+            style: Style = .standard
         ) {
             self.id = id
             self.name = name
-            self.notebookCount = notebookCount
+            self.subtitle = subtitle
             self.icon = icon
             self.onTap = onTap
+            self.style = style
         }
     }
 }

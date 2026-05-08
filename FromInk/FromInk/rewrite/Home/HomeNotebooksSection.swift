@@ -7,16 +7,17 @@ struct HomeNotebooksSection: View {
     let notebooks: [HomeScreen.Model.NotebookItem]
     let onNotebook: (UUID) -> Void
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeader(
-                "Notebooks",
-                count: notebooks.count,
+                model: .init(title: "Notebooks", count: notebooks.count),
                 trailing: {
-                    MonoLabel("Last modified ↓", color: Color("ink/Ink2"))
+                    MonoLabel("\(AppStrings.Home.lastModified) ↓", color: ds.colors.ink2)
                 }
             )
-            .padding(.horizontal, 24)
+            .padding(.horizontal, ds.spacing.lg)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 18) {
@@ -24,18 +25,18 @@ struct HomeNotebooksSection: View {
                         notebookCard(notebook)
                     }
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 16)
+                .padding(.horizontal, ds.spacing.lg)
+                .padding(.vertical, ds.spacing.base)
             }
         }
     }
 
     private func notebookCard(_ notebook: HomeScreen.Model.NotebookItem) -> some View {
         Button { onNotebook(notebook.id) } label: {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: ds.spacing.sm) {
                 // Notebook cover illustration
                 ZStack {
-                    Color("ink/Paper")
+                    ds.colors.paper
 
                     // Spine + page illustration
                     HStack(spacing: 0) {
@@ -48,31 +49,31 @@ struct HomeNotebooksSection: View {
                             Spacer()
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color("ink/Paper"))
+                        .background(ds.colors.paper)
                         // Bookmark line
                         .overlay(alignment: .leading) {
                             Rectangle()
                                 .fill(notebook.coverColor.opacity(0.85))
                                 .frame(width: 1.5)
-                                .padding(.leading, 10)
+                                .padding(.leading, ds.spacing.sm)
                         }
                     }
                     .padding(22)
                 }
                 .frame(width: 116, height: 154)
                 .overlay(
-                    Rectangle().strokeBorder(Color("ink/Rule"), lineWidth: 0.5)
+                    Rectangle().strokeBorder(ds.colors.rule, lineWidth: 0.5)
                 )
 
                 // Title
                 Text(notebook.title)
                     .font(.system(size: 13, weight: .regular, design: .serif))
-                    .foregroundStyle(Color("ink/Ink"))
+                    .foregroundStyle(ds.colors.ink)
                     .lineLimit(1)
                     .frame(width: 116, alignment: .leading)
 
                 // Subtitle
-                MonoLabel(notebook.subtitle, size: 9, color: Color("ink/Ink2"))
+                MonoLabel(notebook.subtitle, size: 9, color: ds.colors.ink2)
                     .frame(width: 116, alignment: .leading)
             }
             .contentShape(Rectangle())

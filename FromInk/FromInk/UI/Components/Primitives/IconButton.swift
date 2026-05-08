@@ -4,10 +4,58 @@ import SwiftUI
 ///
 ///     IconButton("magnifyingglass", action: search)
 ///     IconButton("plus", size: .tabBar, action: add)
-///     IconButton("pencil", size: .toolbar, color: Color("ink/Ink2"), action: edit)
+///     IconButton("pencil", size: .toolbar, color: ColorTokens.standard.ink2, action: edit)
 ///
 struct IconButton: View {
 
+    let systemName: String
+    let size: Size
+    let color: Color
+    let style: Style
+    let action: () -> Void
+
+    init(
+        _ systemName: String,
+        size: Size = .body,
+        color: Color = ColorTokens.standard.ink,
+        style: Style = .standard,
+        action: @escaping () -> Void
+    ) {
+        self.systemName = systemName
+        self.size = size
+        self.color = color
+        self.style = style
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: size.pointSize, weight: size.weight))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(color)
+                .frame(minWidth: style.hitTarget, minHeight: style.hitTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Style
+
+extension IconButton {
+    struct Style {
+        let hitTarget: CGFloat
+
+        static let standard = Style(
+            hitTarget: LayoutTokens.standard.hitTarget
+        )
+    }
+}
+
+// MARK: - Size
+
+extension IconButton {
     enum Size {
         /// 17pt — Nav bar trailing, list row leading.
         case body
@@ -33,36 +81,5 @@ struct IconButton: View {
             default: .regular
             }
         }
-
-        var minHitTarget: CGFloat { 44 }
-    }
-
-    let systemName: String
-    let size: Size
-    let color: Color
-    let action: () -> Void
-
-    init(
-        _ systemName: String,
-        size: Size = .body,
-        color: Color = Color("ink/Ink"),
-        action: @escaping () -> Void
-    ) {
-        self.systemName = systemName
-        self.size = size
-        self.color = color
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: size.pointSize, weight: size.weight))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(color)
-                .frame(minWidth: size.minHitTarget, minHeight: size.minHitTarget)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
