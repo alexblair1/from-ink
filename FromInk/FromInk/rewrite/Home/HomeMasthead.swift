@@ -27,17 +27,14 @@ struct HomeMasthead: View {
                 // Topline: "DAILY BRIEF · SYNCED 2M AGO" + weather
                 topline
                     .padding(.top, ds.spacing.md)
-                    .padding(.horizontal, ds.spacing.lg)
 
                 // Big serif date
                 dateBlock
                     .padding(.top, ds.spacing.sm)
-                    .padding(.horizontal, ds.spacing.lg)
 
                 // Brief sentence + counts
                 briefAndCounts
                     .padding(.top, ds.spacing.sm)
-                    .padding(.horizontal, ds.spacing.lg)
 
                 // Expanded editorial content
                 if isExpanded {
@@ -53,7 +50,6 @@ struct HomeMasthead: View {
                         }
                     ))
                     .padding(.top, ds.spacing.base)
-                    .padding(.horizontal, ds.spacing.lg)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
