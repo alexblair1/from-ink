@@ -550,7 +550,16 @@ struct CanvasScreen: View {
                     tasks: $briefTasks,
                     openQuestion: briefOpenQuestion,
                     onDismiss: { activeSheet = nil },
-                    onSendAll: { activeSheet = nil }
+                    onSendAll: {
+                        let tasksToRoute = briefTasks
+                        activeSheet = nil
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(600))
+                            for task in tasksToRoute {
+                                await routeTask(task)
+                            }
+                        }
+                    }
                 )
             case .calendarEdit(let task):
                 EventEditView(
