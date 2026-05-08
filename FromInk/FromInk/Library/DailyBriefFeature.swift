@@ -131,6 +131,7 @@ struct DailyBriefFeature: Reducer {
                             guard foundationModels.isAvailable() else { return }
                             
                             let prompt = buildBriefPrompt(events: events, reminders: reminders)
+                            
                             do {
                                 let brief = try await foundationModels.generateBrief(prompt)
                                 await send(.briefLoaded(brief))

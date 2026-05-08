@@ -19,8 +19,7 @@ struct CanvasSettingsPanel: View {
         .fixedSize()
         .background(Color.surface)
         .overlay(
-            Rectangle()
-                .strokeBorder(Color.border, lineWidth: 1)
+            Rectangle().strokeBorder(Color.border, lineWidth: 1)
         )
     }
 
@@ -66,11 +65,4 @@ struct CanvasSettingsPanel: View {
         .padding(.vertical, 12)
         .frame(width: 280)
     }
-}
-
-#Preview {
-    Color.canvas.ignoresSafeArea()
-        .overlay(alignment: .center) {
-            CanvasSettingsPanel()
-        }
 }
