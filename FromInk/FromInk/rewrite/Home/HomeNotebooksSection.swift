@@ -34,35 +34,20 @@ struct HomeNotebooksSection: View {
     private func notebookCard(_ notebook: HomeScreen.Model.NotebookItem) -> some View {
         Button { onNotebook(notebook.id) } label: {
             VStack(alignment: .leading, spacing: ds.spacing.sm) {
-                // Notebook cover illustration
-                ZStack {
-                    ds.colors.paper
+                // Notebook cover
+                HStack(spacing: 0) {
+                    // Spine
+                    Rectangle()
+                        .fill(ds.colors.ink)
+                        .frame(width: 6)
 
-                    // Spine + page illustration
-                    HStack(spacing: 0) {
-                        // Spine
-                        Rectangle()
-                            .fill(notebook.coverColor)
-                            .frame(width: 8)
-                        // Page area
-                        VStack {
-                            Spacer()
-                        }
+                    // Page area (will host notebook preview)
+                    ds.colors.paper
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(ds.colors.paper)
-                        // Bookmark line
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(notebook.coverColor.opacity(0.85))
-                                .frame(width: 1.5)
-                                .padding(.leading, ds.spacing.sm)
-                        }
-                    }
-                    .padding(22)
                 }
                 .frame(width: 116, height: 154)
                 .overlay(
-                    Rectangle().strokeBorder(ds.colors.rule, lineWidth: 0.5)
+                    Rectangle().strokeBorder(ds.colors.rule, lineWidth: 1)
                 )
 
                 // Title

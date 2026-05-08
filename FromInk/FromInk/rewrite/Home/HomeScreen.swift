@@ -17,6 +17,7 @@ struct HomeScreen: View {
 
     private let ds = DesignSystem.standard
     @State private var isBriefExpanded = false
+    @State private var stickyHeaderHeight: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -24,21 +25,8 @@ struct HomeScreen: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // ── Top bar ─────────────────────────────
-                    homeTopBar
-                        .padding(.horizontal, ds.spacing.lg)
-
-                    // ── Search (below wordmark) ────────────
-                    HomeSearchRow(
-                        text: model.searchText,
-                        onTextChanged: { query in
-                            if !query.isEmpty {
-                                isBriefExpanded = false
-                            }
-                            model.onSearchChanged(query)
-                        },
-                        placeholder: AppStrings.Home.searchPlaceholder
-                    )
+                    // Spacer to push content below the sticky header
+                    Color.clear.frame(height: stickyHeaderHeight)
 
                     // ── Editorial Masthead ──────────────────
                     HomeMasthead(model: model.masthead, isExpanded: $isBriefExpanded)
@@ -66,6 +54,29 @@ struct HomeScreen: View {
 
                     Spacer().frame(height: ds.spacing.xxl)
                 }
+            }
+
+            // ── Sticky header ─────────────────────────
+            VStack(spacing: 0) {
+                homeTopBar
+                    .padding(.horizontal, ds.spacing.lg)
+
+                HomeSearchRow(
+                    text: model.searchText,
+                    onTextChanged: { query in
+                        if !query.isEmpty {
+                            isBriefExpanded = false
+                        }
+                        model.onSearchChanged(query)
+                    },
+                    placeholder: AppStrings.Home.searchPlaceholder
+                )
+            }
+            .background(ds.colors.paper)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                stickyHeaderHeight = height
             }
         }
     }
