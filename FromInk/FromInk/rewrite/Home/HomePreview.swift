@@ -48,7 +48,8 @@ extension HomeScreen.Model {
             ],
             onFolder: { _ in },
             onNotebook: { _ in },
-            onNewNotebook: { }
+            onNewNotebook: { },
+            onSettings: { }
         )
     }
 
@@ -61,7 +62,8 @@ extension HomeScreen.Model {
             notebooks: [],
             onFolder: { _ in },
             onNotebook: { _ in },
-            onNewNotebook: { }
+            onNewNotebook: { },
+            onSettings: { }
         )
     }
 }

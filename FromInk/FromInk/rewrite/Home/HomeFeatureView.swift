@@ -23,6 +23,7 @@ struct HomeFeatureView: View {
     @State private var searchText = ""
     @State private var activeNotebook: Notebook? = nil
     @State private var showNewNotebookSheet = false
+    @State private var showSettings = false
     @State private var newNotebookTitle = ""
 
     private var filteredNotebooks: [Notebook] {
@@ -42,6 +43,9 @@ struct HomeFeatureView: View {
             }
             .fullScreenCover(item: $activeNotebook) { notebook in
                 NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsScreen(onDismiss: { showSettings = false })
             }
             .overlay {
                 if showNewNotebookSheet {
@@ -100,7 +104,8 @@ struct HomeFeatureView: View {
             onNewNotebook: {
                 newNotebookTitle = ""
                 showNewNotebookSheet = true
-            }
+            },
+            onSettings: { showSettings = true }
         )
     }
 

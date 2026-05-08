@@ -74,6 +74,18 @@ struct HomeScreen: View {
 
     private var homeTopBar: some View {
         HStack {
+            Button(action: model.onSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17, weight: .regular))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(ds.colors.ink)
+                    .frame(width: ds.layout.hitTarget, height: ds.layout.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
             Text(AppStrings.Home.title)
                 .font(.system(size: 18, weight: .regular, design: .serif))
                 .italic()
@@ -109,6 +121,7 @@ extension HomeScreen {
         let onFolder: (UUID) -> Void
         let onNotebook: (UUID) -> Void
         let onNewNotebook: () -> Void
+        let onSettings: () -> Void
 
         struct FolderItem: Identifiable {
             let id: UUID
