@@ -1,5 +1,13 @@
 import SwiftUI
 
+// MARK: - LEGACY — DEPRECATED
+//
+// This file contains hardcoded Color and Font extensions used by the canvas
+// and other legacy code. These should be migrated to use ColorTokens.standard
+// and TypographyTokens.standard from the new design system.
+//
+// Once all consumers are migrated, delete this file.
+
 // MARK: - Adaptive Color Helper
 
 extension Color {

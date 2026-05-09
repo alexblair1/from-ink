@@ -1,13 +1,13 @@
 //
-//  FromInkTests.swift
-//  FromInkTests
+//  FromInkSnapshotTests.swift
+//  FromInkSnapshotTests
 //
-//  Created by Alex Blair on 5/1/26.
+//  Created by Alex Blair on 5/9/26.
 //
 
 import Testing
 
-struct FromInkTests {
+struct FromInkSnapshotTests {
 
     @Test func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.
