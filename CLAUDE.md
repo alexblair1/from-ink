@@ -4,6 +4,28 @@ You are a senior staff iOS engineer with deep expertise in Apple Intelligence, o
 
 ---
 
+## Engineering Design Documents
+
+The following EDDs are the authoritative specifications for their respective domains. When this CLAUDE.md and an EDD conflict, **the EDD wins** — it is the more detailed and more recently reviewed source of truth. Read the relevant EDD before making changes in its domain.
+
+| EDD | Path | Governs |
+|---|---|---|
+| **View Layer** | `Documentation/view_layer_edd.md` | Three-tier view taxonomy (Component / Feature / Wiring), Style pattern, `@ObservableState`, bindings, imperative canvas boundary, navigation, FeaturePreview, testing strategy |
+| **Data Layer** | `Documentation/data_layer_edd.md` | SwiftData models, CloudKit constraints, dual ModelContainer setup (synced + local), `@Dependency(\.syncedModelContext)`, TCA reducer integration with persistence |
+| **Data Model** | `Documentation/data_model_edd.md` | Schema graph (Notebook, NotePage, NoteHeader, NoteLink, NoteHistoryEntry, Folder, Tag, Highlight, UserPreferences), CloudKit development phases, `VersionedSchema` plan, UUID default pattern |
+| **Design System** | `Documentation/design_system_edd.md` | Color tokens, typography tokens, spacing scale, animation rules, Style struct pattern, component view contract |
+| **Toolbar** | `Documentation/toolbar_edd.md` | ToolbarFeature reducer, ToolID, ToolDescriptor, toolbar zones, panel presentation, per-tool settings persistence, Apple Pencil gesture mapping |
+| **PKCE** | `Documentation/pkce_edd.md` | OAuthService + KeychainService TCA clients, PKCEEngine, provider configs, token lifecycle, auth state machine, multi-account support |
+| **Integration Matrix** | `Documentation/integration_matrix_edd.md` | V1 native Apple integrations, V2 OAuth PKCE integrations, URL scheme integrations, dropped integrations, the PKCE rule |
+
+**Key cross-references:**
+- View layer taxonomy (Component / Feature / Wiring) and the Style pattern apply to ALL view code — including toolbar views, settings, and home screen.
+- Data model EDD's CloudKit constraints (defaults on every property, no `@Attribute(.unique)`, optional relationships) apply to ALL `@Model` classes.
+- The toolbar EDD's `ToolbarFeature` is scoped under `CanvasFeature` per the view layer EDD §10 imperative boundary rules.
+- PKCE EDD's `OAuthService` and `KeychainService` are TCA dependency clients following the same pattern as `OCRService` documented below.
+
+---
+
 ## Role & Expertise
 
 - Apple Intelligence and the Foundation Models framework are your primary ML tools
@@ -62,12 +84,15 @@ All features are modelled as `@Reducer` structs with `State`, `Action`, and `bod
 
 ### Core Rules
 
+- TCA 1.10+ with `@ObservableState` — no `WithViewStore`, no `ViewStoreOf` (deprecated)
+- All reducer `State` structs marked `@ObservableState`
 - Side effects (ML inference, file I/O, CloudKit, EventKit, WeatherKit) are always wrapped in `Effect.run` and injected via `@Dependency` — never performed directly inside a reducer body
 - ML clients (OCR, summarisation, task extraction) are modelled as `@DependencyKey` structs with `liveValue` and `testValue`
-- Use `@Shared` for state that must be consistent across multiple features
+- Cross-feature state: prefer SwiftData (persist, query, observe) over parent-action handling over `@Shared` (last resort) — see view layer EDD §11
 - Prefer `IdentifiedArray` over plain arrays for collections of identifiable models
-- Scope child features with `.scope(state:action:)` — never pass raw parent state down
+- Scope child features with `Scope(state:action:)` — never pass raw parent state down
 - SwiftData `@Model` objects never enter TCA `State` — convert to plain value types for the state tree to keep `State` `Equatable` and testable
+- Bindings (`Binding<T>`) are passed alongside `Model`, not embedded in it — see view layer EDD §9
 
 ```swift
 // Correct: ML work behind a dependency
@@ -83,51 +108,68 @@ case .strokeCompleted:
 
 ### Feature Structure
 
-Each feature folder contains only what is needed:
+Each feature folder follows the three-tier taxonomy (see `Documentation/view_layer_edd.md` §18):
 
 ```
 Features/{FeatureName}/
-  {FeatureName}Reducer.swift    # @Reducer struct — State, Action, body
-  {FeatureName}View.swift       # TCA-aware SwiftUI view (imports ComposableArchitecture)
-  Components/                   # Stateless SwiftUI components (NO TCA imports)
+  {FeatureName}Feature.swift           # @Reducer — State, Action, body
+  Views/
+    {FeatureName}View.swift            # Feature view (no TCA)
+    {FeatureName}WiringView.swift      # Wiring view (TCA integration)
+  Adapters/
+    {FeatureName}View+Adapter.swift    # Model init(store:)
+  Components/                          # Feature-local component views (no TCA)
+  Previews/
+    {FeatureName}ViewPreview.swift     # FeaturePreview conformance
 ```
 
-### Feature Views vs Component Views
+### Three-Tier View Taxonomy
 
-**Feature Views** (TCA-aware):
-- Live in `Features/{FeatureName}/`
-- Import `ComposableArchitecture`
-- Accept a TCA `Store`:
-  ```swift
-  let store: StoreOf<SomeFeatureReducer>
-  ```
-- Delegate all behaviour to the reducer via actions
-- Compose stateless component views
+> **Full specification:** See `Documentation/view_layer_edd.md` §4–§8 for the complete taxonomy, rules, and examples.
 
+Every view is one of three tiers. The boundaries are enforced by import — a file imports `ComposableArchitecture` or it does not.
+
+| Tier | Imports TCA | Accepts | Purpose |
+|---|---|---|---|
+| **Component** | Never | `let model: Model` | Reusable building blocks with `Style` + `Model` |
+| **Feature** | Never | `let model: Model` | Domain-specific layout, composes components |
+| **Wiring** | Always | `StoreOf<Feature>` | Converts Store → Model, zero layout |
+
+**Wiring View** (TCA-aware, `@ObservableState` — no `WithViewStore`):
 ```swift
 import ComposableArchitecture
 import SwiftUI
 
-struct DispatchInboxView: View {
+struct DispatchWiringView: View {
     let store: StoreOf<DispatchFeature>
 
     var body: some View {
-        WithViewStore(store, observe: { $0 }) { viewStore in
-            TaskCardView(model: .init(
-                title: viewStore.tasks.first?.title ?? "",
-                onRoute: { viewStore.send(.routeTask(id: $0, destination: $1)) }
-            ))
-        }
+        DispatchInboxView(model: .init(store: store))
     }
 }
 ```
 
-**Component Views** (stateless, in `Components/`):
-- MUST NOT import `ComposableArchitecture`
-- MUST NOT use `Store` or `ViewStore`
-- MUST NOT reference reducers or feature-specific global state
-- Are stateless building blocks with a nested `Model` struct
+**Feature View** (no TCA):
+```swift
+import SwiftUI
 
+struct DispatchInboxView: View {
+    let model: Model
+
+    var body: some View {
+        TaskCardView(model: model.firstTask)
+    }
+}
+
+extension DispatchInboxView {
+    struct Model {
+        let firstTask: TaskCardView.Model
+        let onAppear: () -> Void
+    }
+}
+```
+
+**Component View** (no TCA, reusable):
 ```swift
 import SwiftUI
 
@@ -135,23 +177,33 @@ struct TaskCardView: View {
     let model: Model
 
     var body: some View {
-        Button { model.onRoute(model.id, model.destination) } label: {
+        Button(action: model.onTap) {
             Text(model.title)
+                .font(model.style.titleFont)
         }
     }
 }
 
 extension TaskCardView {
+    struct Style {
+        let titleFont: Font
+        static let standard = Style(titleFont: TypographyTokens.standard.body)
+    }
+
     struct Model {
-        let id: UUID
         let title: String
-        let destination: String
-        let onRoute: (UUID, String) -> Void
+        let onTap: () -> Void
+        let style: Style
+        init(title: String, onTap: @escaping () -> Void, style: Style = .standard) {
+            self.title = title
+            self.onTap = onTap
+            self.style = style
+        }
     }
 }
 ```
 
-> **Full architecture reference:** See [`~/development/Stateless_SwiftUI_TCA_Architecture.md`](/Users/alexblair/development/Stateless_SwiftUI_TCA_Architecture.md) for the complete Stateless SwiftUI + TCA + FeaturePreview pattern, including the Wiring View layer, adapter conventions, migration guide, anti-patterns, and testing strategy. That document is project-agnostic and applies to all iOS projects using TCA.
+> **Full architecture reference:** See `Documentation/view_layer_edd.md` for the complete three-tier view taxonomy (Component / Feature / Wiring), the Style pattern, `@ObservableState` wiring, adapter conventions, imperative canvas boundaries, navigation, FeaturePreview, anti-patterns, and testing strategy. That EDD supersedes the earlier `Stateless_SwiftUI_TCA_Architecture.md` reference doc.
 
 ---
 
@@ -361,26 +413,24 @@ func generatePKCE() -> (verifier: String, challenge: String) {
 }
 ```
 
-**Confirmed PKCE support:**
+**Confirmed PKCE support:** Linear, GitHub, Slack, Canva, Asana, Todoist, Airtable. See `Documentation/integration_matrix_edd.md` for the full list including dropped integrations (Figma, Notion, Jira — no PKCE).
 
-| Integration | PKCE | Notes |
-|---|---|---|
-| Linear | ✅ | Documented |
-| GitHub | ✅ | Confirmed July 2025 |
-| Slack | ✅ | Required for custom URI schemes (March 2026) |
-| Notion | ⚠️ | Unconfirmed — try PKCE first |
-| Figma | ❌ | Dropped — requires client secret |
-
-**IMPORTANT:** Before integrating any third-party SDK or service that requires authentication, verify it supports PKCE. If it does not, do not integrate it — raise the incompatibility and propose a PKCE-compliant alternative or drop the integration.
+**IMPORTANT:** Before integrating any third-party SDK or service that requires authentication, verify it supports PKCE. If it does not, do not integrate it — raise the incompatibility and propose a PKCE-compliant alternative or drop the integration. See `Documentation/pkce_edd.md` for the reusable PKCE auth system architecture.
 
 ---
 
 ## SwiftData Rules
 
+> **Full specification:** See `Documentation/data_model_edd.md` for the complete schema graph, model definitions, CloudKit development phases, and `VersionedSchema` plan. See `Documentation/data_layer_edd.md` for TCA reducer integration with SwiftData.
+
 - All `@Model` classes must have every property **optional or with a default value** — CloudKit sync requires this; violations cause silent sync failures in production
-- No `@Attribute(.unique)` on any property
-- Enums stored as raw `String`
+- No `@Attribute(.unique)` on any property — CloudKit does not support unique constraints; deduplication is handled in application logic
+- Enums stored as raw `String` via a private property, exposed via computed property
 - `@Model` objects never enter TCA `State` — they are fetched in `Effect.run` and converted to plain value types
+- Use `@Attribute(.externalStorage)` on large `Data` properties (`drawingData`, `thumbnailData`, `sourcePDFData`) — auto-promotes to CKAsset on sync
+- `init` parameters include `id: UUID = UUID()` for injectability; body assigns from parameter (`self.id = id`), never calls `UUID()` directly — see data model EDD §2.1
+- CloudKit is `cloudKitDatabase: .none` during development — model as if CloudKit is on, keep the runtime off until the schema is stable (data model EDD §9)
+- Two `ModelContainer` instances: synced (Notebook, NotePage, Folder, Tag, etc.) and local-only (UserPreferences — never synced)
 - **CRITICAL pre-launch action:** Deploy CloudKit schema to Production at icloud.developer.apple.com before App Store submission — without this, sync silently fails for all App Store users
 
 ---
@@ -405,6 +455,8 @@ When adding or replacing icons, default to SF Symbols rather than custom assets,
 ---
 
 ## Design System
+
+> **Full specification:** See `Documentation/design_system_edd.md` for the complete token definitions, Style struct pattern, and component view contract.
 
 All visual constants are named Color Sets in `Assets.xcassets` — never hardcoded hex values anywhere in view code.
 

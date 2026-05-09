@@ -161,19 +161,22 @@ struct HomeFeatureView: View {
 
         var highlights: [HomeExpandedBrief.Model.Highlight] = []
 
-        // Next event
-        if let next = state.events.first {
+        // Next 3 upcoming events
+        let now = Date()
+        let upcomingEvents = state.events.filter { $0.startDate >= now || $0.endDate >= now }
+        for (index, event) in upcomingEvents.prefix(3).enumerated() {
+            let label = index == 0 ? AppStrings.Home.nextUp : AppStrings.Home.upcoming
             highlights.append(.init(
                 icon: "calendar",
-                label: AppStrings.Home.nextUp,
-                text: "\(next.title) · \(next.startDate.formatted(.dateTime.hour().minute()))"
+                label: label,
+                text: "\(event.title) · \(event.startDate.formatted(.dateTime.hour().minute()))"
             ))
         }
 
-        // Urgent reminders
-        for reminder in state.reminders.prefix(2) {
+        // Up to 3 due/overdue reminders
+        for reminder in state.reminders.prefix(3) {
             let dueLabel = reminder.dueDate.map {
-                $0 < Date() ? AppStrings.Home.overdue : AppStrings.Home.today
+                $0 < now ? AppStrings.Home.overdue : AppStrings.Home.today
             } ?? AppStrings.Home.today
             highlights.append(.init(
                 icon: "checklist",

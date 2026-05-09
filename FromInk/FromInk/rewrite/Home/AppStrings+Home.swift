@@ -16,6 +16,7 @@ extension AppStrings {
         static let dailyBrief = NSLocalizedString("home.dailyBrief", value: "Daily brief", comment: "Daily brief section label")
         static let lastModified = NSLocalizedString("home.lastModified", value: "Last modified", comment: "Notebooks sort label")
         static let nextUp = NSLocalizedString("home.nextUp", value: "Next up", comment: "Next event highlight label")
+        static let upcoming = NSLocalizedString("home.upcoming", value: "Upcoming", comment: "Upcoming event highlight label")
         static let overdue = NSLocalizedString("home.overdue", value: "Overdue", comment: "Overdue reminder label")
         static let today = NSLocalizedString("home.today", value: "Today", comment: "Today reminder label")
         static let birthday = NSLocalizedString("home.birthday", value: "Birthday", comment: "Birthday highlight label")
