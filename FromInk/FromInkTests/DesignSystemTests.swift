@@ -1,109 +1,7 @@
 import XCTest
 @testable import FromInk
 
-@MainActor
 final class DesignSystemTests: XCTestCase {
-
-    override func setUp() async throws {
-        try await super.setUp()
-        DesignSystem.use(.standard)
-    }
-
-    // MARK: - DesignSystem.current
-
-    func test_current_defaultsToStandard() {
-        let current = DesignSystem.current
-        XCTAssertEqual(current.spacing.base, 16)
-        XCTAssertEqual(current.layout.hitTarget, 44)
-        XCTAssertEqual(current.cornerRadius.content, 0)
-    }
-
-    func test_use_replacesCurrent() {
-        addTeardownBlock { @MainActor in
-            DesignSystem.use(.standard)
-        }
-
-        let custom = DesignSystem(
-            colors: .standard,
-            typography: .standard,
-            spacing: SpacingScale(
-                xxs: 1,
-                xs: 2,
-                sm: 4,
-                md: 6,
-                base: 8,
-                lg: 12,
-                xl: 16,
-                xxl: 24
-            ),
-            layout: .standard,
-            animation: .standard,
-            cornerRadius: .standard
-        )
-
-        DesignSystem.use(custom)
-        XCTAssertEqual(DesignSystem.current.spacing.base, 8)
-    }
-
-    func test_withDesignSystem_restoresPrevious() {
-        let custom = DesignSystem(
-            colors: .standard,
-            typography: .standard,
-            spacing: SpacingScale(
-                xxs: 1,
-                xs: 2,
-                sm: 4,
-                md: 6,
-                base: 8,
-                lg: 12,
-                xl: 16,
-                xxl: 24
-            ),
-            layout: .standard,
-            animation: .standard,
-            cornerRadius: .standard
-        )
-
-        DesignSystem.withDesignSystem(custom) {
-            XCTAssertEqual(DesignSystem.current.spacing.base, 8)
-        }
-
-        XCTAssertEqual(DesignSystem.current.spacing.base, 16)
-    }
-
-    func test_withDesignSystem_restoresOnThrow() {
-        struct TestError: Error {}
-
-        let custom = DesignSystem(
-            colors: .standard,
-            typography: .standard,
-            spacing: SpacingScale(
-                xxs: 1,
-                xs: 2,
-                sm: 4,
-                md: 6,
-                base: 8,
-                lg: 12,
-                xl: 16,
-                xxl: 24
-            ),
-            layout: .standard,
-            animation: .standard,
-            cornerRadius: .standard
-        )
-
-        do {
-            try DesignSystem.withDesignSystem(custom) {
-                XCTAssertEqual(DesignSystem.current.spacing.base, 8)
-                throw TestError()
-            }
-            XCTFail("Should have thrown")
-        } catch {
-            // Expected
-        }
-
-        XCTAssertEqual(DesignSystem.current.spacing.base, 16)
-    }
 
     // MARK: - SpacingScale
 
@@ -128,6 +26,15 @@ final class DesignSystemTests: XCTestCase {
     func test_layoutTokens_toolbarDimensions() {
         XCTAssertEqual(LayoutTokens.standard.toolbarWidth, 48)
         XCTAssertEqual(LayoutTokens.standard.toolbarButtonHeight, 54)
+    }
+
+    func test_layoutTokens_toolbarIconSize() {
+        XCTAssertEqual(LayoutTokens.standard.toolbarIconSize, 20)
+    }
+
+    func test_layoutTokens_dragHandleDimensions() {
+        XCTAssertEqual(LayoutTokens.standard.dragHandleCapsuleWidth, 20)
+        XCTAssertEqual(LayoutTokens.standard.dragHandleCapsuleHeight, 2)
     }
 
     // MARK: - CornerRadiusScale
@@ -177,5 +84,14 @@ final class DesignSystemTests: XCTestCase {
     func test_numeralsProducesDifferentFontsForDifferentSizes() {
         let t = TypographyTokens.standard
         XCTAssertNotEqual(t.numerals(size: 32), t.numerals(size: 56))
+    }
+
+    // MARK: - DesignSystem standard instance
+
+    func test_standardInstance_hasExpectedTokens() {
+        let ds = DesignSystem.standard
+        XCTAssertEqual(ds.spacing.base, 16)
+        XCTAssertEqual(ds.layout.hitTarget, 44)
+        XCTAssertEqual(ds.cornerRadius.content, 0)
     }
 }

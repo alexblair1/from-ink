@@ -1,12 +1,22 @@
 import SwiftUI
 import PencilKit
 
-struct PenSettings: Equatable {
+nonisolated
+struct PenSettings: Equatable, Codable, Sendable {
 
     // MARK: - Pen Type
 
-    enum PenType: String, CaseIterable, Equatable {
-        case ballpoint, fineliner, pencil, mechanical, fountain, paintbrush, calligraphy, marker, highlighter
+    nonisolated
+    enum PenType: String, CaseIterable, Equatable, Codable, Sendable {
+        case ballpoint
+        case fineliner
+        case pencil
+        case mechanical
+        case fountain
+        case paintbrush
+        case calligraphy
+        case marker
+        case highlighter
 
         var displayName: String {
             switch self {
@@ -55,7 +65,8 @@ struct PenSettings: Equatable {
 
     // MARK: - Graphite Grade
 
-    enum GraphiteGrade: Int, CaseIterable, Equatable {
+    nonisolated
+    enum GraphiteGrade: Int, CaseIterable, Equatable, Codable, Sendable {
         case nineH = 0, threeH, hb, threeB, nineB
 
         var label: String {

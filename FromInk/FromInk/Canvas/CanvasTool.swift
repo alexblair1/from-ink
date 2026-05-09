@@ -36,8 +36,4 @@ enum CanvasTool: String, CaseIterable, Equatable {
     }
 }
 
-// MARK: - Toolbar Side
-
-enum ToolbarSide: String {
-    case left, right
-}
+// ToolbarSide is defined in Toolbar/ToolbarTypes.swift

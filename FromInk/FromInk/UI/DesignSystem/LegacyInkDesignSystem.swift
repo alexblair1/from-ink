@@ -7,7 +7,7 @@ import SwiftUI
 // TypographyTokens.swift, SpacingScale.swift).
 //
 // Migration: replace `@Environment(\.ds)` and `private let ds = DesignSystem.standard`
-// references with the new `DesignSystem.current` / `Style.standard` pattern.
+// references with flat Model fields resolved via `ds: DesignSystem = .standard` init pattern.
 // Once all consumers are migrated, delete this file.
 
 // MARK: - Legacy Environment Injection

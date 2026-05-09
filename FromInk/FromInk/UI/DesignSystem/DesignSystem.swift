@@ -1,12 +1,13 @@
 import SwiftUI
 
-// MARK: - Design System
-
 /// Value-type token bundle for From Ink.
-/// Accessed through `DesignSystem.current` (a `@MainActor`-isolated static).
-/// Component views never read this directly — they read `model.style.*`.
-/// Feature views may use `private let ds = DesignSystem.standard` or
-/// read tokens through `DesignSystem.current` inside `Style.standard`.
+///
+/// Plain immutable struct with a `static let standard` instance.
+/// Component view Models resolve tokens at init time via a `ds: DesignSystem = .standard`
+/// parameter. Views read flat fields off the Model — never from DesignSystem directly.
+///
+/// To add a theme later, add another static instance (e.g. `static let highContrast`)
+/// and pass it through Model construction.
 ///
 /// See Documentation/design_system_edd.md for the full specification.
 ///
@@ -26,34 +27,4 @@ struct DesignSystem: Sendable {
         animation: .standard,
         cornerRadius: .standard
     )
-}
-
-// MARK: - Injection Seam
-
-extension DesignSystem {
-    /// The active design system. v1 always returns `.standard`.
-    /// Future settings UI calls `use(_:)` to swap themes.
-    @MainActor
-    static private(set) var current: DesignSystem = .standard
-
-    /// Replace the active design system. v1 calls this at most once at app
-    /// startup. Future settings UI calls this when the user selects a theme.
-    @MainActor
-    static func use(_ system: DesignSystem) {
-        current = system
-    }
-
-    /// Run a closure with a temporarily replaced design system.
-    /// Used by snapshot tests and per-preview theme variants.
-    /// Restores the previous value on return.
-    @MainActor
-    static func withDesignSystem<T>(
-        _ system: DesignSystem,
-        perform: () throws -> T
-    ) rethrows -> T {
-        let previous = current
-        current = system
-        defer { current = previous }
-        return try perform()
-    }
 }

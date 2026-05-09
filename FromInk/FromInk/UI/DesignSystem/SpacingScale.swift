@@ -41,6 +41,9 @@ struct LayoutTokens: Sendable {
     let panelWidth: CGFloat
     let headerSpacer: CGFloat
     let toolHitTarget: CGFloat
+    let toolbarIconSize: CGFloat
+    let dragHandleCapsuleWidth: CGFloat
+    let dragHandleCapsuleHeight: CGFloat
     let timeBlockWidth: CGFloat
     let spineMinHeight: CGFloat
 
@@ -58,6 +61,9 @@ struct LayoutTokens: Sendable {
         panelWidth: 420,
         headerSpacer: 60,
         toolHitTarget: 48,
+        toolbarIconSize: 20,
+        dragHandleCapsuleWidth: 20,
+        dragHandleCapsuleHeight: 2,
         timeBlockWidth: 72,
         spineMinHeight: 140
     )
