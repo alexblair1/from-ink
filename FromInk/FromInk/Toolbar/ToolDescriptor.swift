@@ -8,7 +8,6 @@ import PencilKit
 struct ToolDescriptor: Sendable {
     let id: ToolID
     let icon: String
-    let label: String
     let hasCustomization: Bool
     let makePKTool: @Sendable (PenSettings) -> PKTool
 }
@@ -25,43 +24,43 @@ extension ToolDescriptor: Equatable {
 
 extension ToolDescriptor {
     static let pen = ToolDescriptor(
-        id: .pen, icon: "pencil", label: "Pen",
+        id: .pen, icon: "pencil",
         hasCustomization: true,
         makePKTool: { $0.pkTool }
     )
 
     static let fountain = ToolDescriptor(
-        id: .fountain, icon: "pencil.tip", label: "Fountain",
+        id: .fountain, icon: "pencil.tip",
         hasCustomization: true,
         makePKTool: { $0.pkTool }
     )
 
     static let pencil = ToolDescriptor(
-        id: .pencil, icon: "scribble", label: "Pencil",
+        id: .pencil, icon: "scribble",
         hasCustomization: true,
         makePKTool: { $0.pkTool }
     )
 
     static let marker = ToolDescriptor(
-        id: .marker, icon: "paintbrush.pointed", label: "Marker",
+        id: .marker, icon: "paintbrush.pointed",
         hasCustomization: true,
         makePKTool: { $0.pkTool }
     )
 
     static let highlighter = ToolDescriptor(
-        id: .highlighter, icon: "highlighter", label: "Highlighter",
+        id: .highlighter, icon: "highlighter",
         hasCustomization: true,
         makePKTool: { $0.pkTool }
     )
 
     static let eraser = ToolDescriptor(
-        id: .eraser, icon: "eraser", label: "Eraser",
+        id: .eraser, icon: "eraser",
         hasCustomization: false,
         makePKTool: { _ in PKEraserTool(.bitmap) }
     )
 
     static let lasso = ToolDescriptor(
-        id: .lasso, icon: "lasso", label: "Lasso",
+        id: .lasso, icon: "lasso",
         hasCustomization: false,
         makePKTool: { _ in PKLassoTool() }
     )

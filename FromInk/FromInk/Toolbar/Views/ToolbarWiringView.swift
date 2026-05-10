@@ -39,13 +39,14 @@ extension ToolbarWiringView {
                         icon: icon,
                         isActive: isActive,
                         onTap: {
-                            if isActive {
+                            if isActive && descriptor.hasCustomization {
                                 store.send(.toolDoubleTapped(descriptor.id))
-                            } else {
+                            } else if !isActive {
                                 store.send(.toolSelected(descriptor.id))
                             }
                         },
                         onDoubleTap: {
+                            guard descriptor.hasCustomization else { return }
                             store.send(.toolDoubleTapped(descriptor.id))
                         }
                     ))

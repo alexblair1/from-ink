@@ -132,6 +132,58 @@ final class ToolbarFeatureTests: XCTestCase {
         }
     }
 
+    func test_toolCustomizationToggled_opensPanel() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .pen),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolCustomizationToggled(.pen)) {
+            $0.openPanel = .toolCustomization(.pen)
+        }
+    }
+
+    func test_toolCustomizationToggled_closesPanel() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(
+                activeToolID: .pen,
+                openPanel: .toolCustomization(.pen)
+            ),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolCustomizationToggled(.pen)) {
+            $0.openPanel = nil
+        }
+    }
+
+    func test_toolCustomizationToggled_doesNotChangeActiveTool() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .pen),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolCustomizationToggled(.marker)) {
+            $0.openPanel = .toolCustomization(.marker)
+        }
+        // activeToolID stays .pen — toolCustomizationToggled only affects the panel
+    }
+
+    func test_settingsToggled() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.settingsToggled) {
+            $0.openPanel = .canvasSettings
+        }
+
+        await store.send(.settingsToggled) {
+            $0.openPanel = nil
+        }
+    }
+
     func test_templatePickerToggled() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(),

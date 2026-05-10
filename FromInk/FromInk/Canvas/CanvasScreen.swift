@@ -1,11 +1,7 @@
 import SwiftUI
 import SwiftData
 import PencilKit
-
-private struct HandleState {
-    var isPressed = false
-    var offset: CGFloat = 0
-}
+import ComposableArchitecture
 
 private enum ActiveSheet: Identifiable {
     case lasso
@@ -30,16 +26,14 @@ struct CanvasScreen: View {
 
     @Environment(\.modelContext) private var modelContext
 
-    @State private var activeTool: CanvasTool = .pen
-    @State private var previousTool: CanvasTool = .pen
-    @State private var toolSettings: [CanvasTool: PenSettings] = [:]
-    @State private var customizingTool: CanvasTool? = nil
-    @State private var activeTemplate: CanvasTemplate = .none
-    @State private var showTemplatePanel = false
-    @State private var strokeCount: Int = 0
+    // Toolbar state — driven by TCA
+    @State private var toolbarStore = Store(initialState: ToolbarFeature.State()) {
+        ToolbarFeature()
+    }
+
+    // Legacy state still needed until full CanvasFeature migration
     @State private var currentDrawing = PKDrawing()
     @AppStorage("correctHandwriting") private var correctHandwriting = true
-    @State private var showSettingsPanel = false
     #if DEBUG
     @State private var showDebugSheet = false
     #endif
@@ -74,7 +68,6 @@ struct CanvasScreen: View {
     @State private var activeLinkURL: URL? = nil
     @State private var editingLink: CanvasLink? = nil
 
-    private let pageReadyThreshold = 10
 
     // MARK: - Routing
 
@@ -172,26 +165,30 @@ struct CanvasScreen: View {
         .position(x: menuX, y: menuY)
     }
 
-    private var activeSettings: PenSettings {
-        toolSettings[activeTool] ?? .default
-    }
-
-    private func settingsBinding(for tool: CanvasTool) -> Binding<PenSettings> {
-        Binding(
-            get: { toolSettings[tool] ?? .default },
-            set: { toolSettings[tool] = $0 }
-        )
-    }
-
-    @State private var toolbarSide: ToolbarSide = {
-        ToolbarSide(rawValue: UserDefaults.standard.string(forKey: "toolbarSide") ?? "") ?? .left
-    }()
-    @State private var colorScheme: ColorScheme = .light
-    @State private var toolbarAnchorX: CGFloat = 0
-    @GestureState private var handleState = HandleState()
     @Environment(\.undoManager) private var undoManager
 
-    var toolbarX: CGFloat { toolbarAnchorX + handleState.offset }
+    /// Bridge: read the active tool from the toolbar store for CanvasView.
+    private var activeTool: CanvasTool {
+        // Map ToolID → CanvasTool for the legacy CanvasView binding
+        switch toolbarStore.activeToolID {
+        case .pen: .pen
+        case .fountain: .fountain
+        case .pencil: .pencil
+        case .marker: .marker
+        case .highlighter: .highlighter
+        case .eraser: .eraser
+        case .lasso: .lasso
+        default: .pen
+        }
+    }
+
+    private var activeSettings: PenSettings {
+        toolbarStore.activeSettings
+    }
+
+    private var toolbarSide: ToolbarSide {
+        toolbarStore.side
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -202,27 +199,22 @@ struct CanvasScreen: View {
                     #endif
 
                 CanvasView(
-                    tool: $activeTool,
+                    tool: Binding(
+                        get: { activeTool },
+                        set: { _ in } // tool changes flow through the store, not the binding
+                    ),
                     penSettings: activeSettings,
-                    template: activeTemplate,
+                    template: toolbarStore.template,
                     onTwoFingerHoldBegan: {
-                        previousTool = activeTool
-                        activeTool = .lasso
+                        toolbarStore.send(.twoFingerHoldBegan)
                     },
                     onTwoFingerHoldEnded: {
-                        activeTool = previousTool
+                        toolbarStore.send(.twoFingerHoldEnded)
                     },
                     onPencilDoubleTap: {
-                        withAnimation(.linear(duration: 0.08)) {
-                            if activeTool == .eraser {
-                                activeTool = previousTool
-                            } else {
-                                previousTool = activeTool
-                                activeTool = .eraser
-                            }
-                        }
+                        toolbarStore.send(.pencilDoubleTapped)
                     },
-                    onStrokeCountChanged: { strokeCount = $0 },
+                    onStrokeCountChanged: { toolbarStore.send(.strokeCountUpdated($0)) },
                     onDrawingChanged: { currentDrawing = $0 },
                     onScrolledNearBottom: onNearBottom,
                     onLassoReady: { image, viewRect, contentRect in
@@ -271,147 +263,62 @@ struct CanvasScreen: View {
                     .position(x: viewX, y: viewY)
                 }
 
-                CanvasToolbar(
-                    activeTool: $activeTool,
-                    colorScheme: $colorScheme,
-                    side: toolbarSide,
-                    isHandlePressed: handleState.isPressed,
-                    undoManager: undoManager,
-                    toolSettings: toolSettings,
-                    isPageReady: strokeCount >= pageReadyThreshold,
-                    onAnalyze: {
-                        briefTasks = []
-                        briefSummary = ""
-                        briefOpenQuestion = nil
-                        isAnalyzing = true
-                        activeSheet = .brief
-                        Task {
-                            defer { isAnalyzing = false }
-                            let result = await InkTaskExtractor.extract(drawing: currentDrawing, scope: .page)
-                            briefSummary = result.summary
-                            briefTasks = result.tasks
-                            briefOpenQuestion = result.openQuestion
+                ToolbarWiringView(store: toolbarStore)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: toolbarSide == .left ? .leading : .trailing
+                    )
+
+                // Panel presentation — driven by toolbarStore.openPanel
+                if toolbarStore.openPanel != nil {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            toolbarStore.send(.panelDismissed)
                         }
-                    },
-                    onCustomize: { tool in
-                        withAnimation(.linear(duration: 0.08)) {
-                            customizingTool = customizingTool == tool ? nil : tool
-                            showTemplatePanel = false
+                }
+
+                if let panel = toolbarStore.openPanel {
+                    let tw = LayoutTokens.standard.toolbarWidth
+                    let panelGap: CGFloat = 8
+                    // All panels: top aligned to toolbar's vertical center
+                    let panelTopY = geo.size.height / 2
+
+                    Group {
+                        switch panel {
+                        case .toolCustomization(let toolID):
+                            let tool: CanvasTool = CanvasTool(rawValue: toolID.rawValue) ?? .pen
+                            PenCustomizationPanel(
+                                tool: tool,
+                                settings: Binding(
+                                    get: { toolbarStore.toolSettings[id: toolID]?.settings ?? .default },
+                                    set: { toolbarStore.send(.toolSettingsChanged(toolID, $0)) }
+                                ),
+                                onDismiss: { toolbarStore.send(.panelDismissed) }
+                            )
+
+                        case .templatePicker:
+                            TemplatePickerPanel(
+                                template: Binding(
+                                    get: { toolbarStore.template },
+                                    set: { toolbarStore.send(.templateSelected($0)) }
+                                ),
+                                onDismiss: { toolbarStore.send(.panelDismissed) }
+                            )
+
+                        case .canvasSettings:
+                            CanvasSettingsPanel(
+                                onDismiss: { toolbarStore.send(.panelDismissed) }
+                            )
                         }
-                    },
-                    onTemplate: {
-                        withAnimation(.linear(duration: 0.08)) {
-                            showTemplatePanel.toggle()
-                            customizingTool = nil
-                            showSettingsPanel = false
-                        }
-                    },
-                    onSettings: {
-                        withAnimation(.linear(duration: 0.08)) {
-                            showSettingsPanel.toggle()
-                            customizingTool = nil
-                            showTemplatePanel = false
-                        }
-                    },
-                    onDebug: {
-                        #if DEBUG
-                        showDebugSheet = true
-                        #endif
                     }
-                )
-                .offset(x: toolbarX)
-                .shadow(
-                    color: handleState.isPressed ? .black.opacity(0.16) : .clear,
-                    radius: handleState.isPressed ? 18 : 0,
-                    x: handleState.isPressed ? (toolbarSide == .left ? 8 : -8) : 0,
-                    y: 0
-                )
-                .gesture(
-                    DragGesture(minimumDistance: 10)
-                        .updating($handleState) { value, state, _ in
-                            guard value.startLocation.y <= 54 else { return }
-                            state.isPressed = true
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            state.offset = value.translation.width
-                        }
-                        .onEnded { value in
-                            guard value.startLocation.y <= 54 else { return }
-                            let dx = value.translation.width
-                            guard abs(dx) > abs(value.translation.height) else { return }
-                            let target: ToolbarSide = abs(dx) > 40
-                                ? (dx > 0 ? .right : .left)
-                                : toolbarSide
-                            let finalX: CGFloat = target == .left ? 0 : geo.size.width - 48
-                            toolbarAnchorX += dx
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                toolbarAnchorX = finalX
-                                toolbarSide = target
-                            }
-                            UserDefaults.standard.set(target.rawValue, forKey: "toolbarSide")
-                        }
-                )
-
-                if showTemplatePanel {
-                    Color.clear
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.linear(duration: 0.08)) { showTemplatePanel = false }
-                        }
-
-                    TemplatePickerPanel(template: $activeTemplate, onDismiss: {
-                        withAnimation(.linear(duration: 0.08)) { showTemplatePanel = false }
-                    })
-                    .position(
-                        x: toolbarSide == .left
-                            ? toolbarX + 48 + 8 + 110
-                            : toolbarX - 8 - 110,
-                        y: geo.size.height / 2
-                    )
-                }
-
-                if showSettingsPanel {
-                    Color.clear
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.linear(duration: 0.08)) { showSettingsPanel = false }
-                        }
-
-                    CanvasSettingsPanel(onDismiss: {
-                        withAnimation(.linear(duration: 0.08)) { showSettingsPanel = false }
-                    })
-                    .position(
-                        x: toolbarSide == .left
-                            ? toolbarX + 48 + 8 + 140
-                            : toolbarX - 8 - 140,
-                        y: geo.size.height - 120
-                    )
-                }
-
-                if let activePanelTool = customizingTool {
-                    Color.clear
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.linear(duration: 0.08)) {
-                                customizingTool = nil
-                            }
-                        }
-
-                    PenCustomizationPanel(
-                        tool: activePanelTool,
-                        settings: settingsBinding(for: activePanelTool),
-                        onDismiss: {
-                            withAnimation(.linear(duration: 0.08)) { customizingTool = nil }
-                        }
-                    )
-                    .position(
-                        x: toolbarSide == .left
-                            ? toolbarX + 48 + 8 + 130
-                            : toolbarX - 8 - 130,
-                        y: geo.size.height / 2
-                    )
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .padding(.leading, toolbarSide == .left ? tw + panelGap : 0)
+                    .padding(.trailing, toolbarSide == .right ? tw + panelGap : 0)
+                    .frame(maxWidth: .infinity,
+                           alignment: toolbarSide == .left ? .leading : .trailing)
                 }
 
                 if showLassoMenu {
@@ -485,12 +392,9 @@ struct CanvasScreen: View {
                 .ignoresSafeArea()
             }
             .onAppear {
-                toolbarAnchorX = toolbarSide == .left ? 0 : geo.size.width - 48
+                toolbarStore.send(.onAppear)
             }
-            .onChange(of: geo.size.width) { _, newWidth in
-                toolbarAnchorX = toolbarSide == .left ? 0 : newWidth - 48
-            }
-            .onChange(of: strokeCount) { _, _ in
+            .onChange(of: currentDrawing.strokes.count) { _, _ in
                 // Auto-remove links whose ink has been fully erased
                 links = links.filter { link in
                     currentDrawing.strokes.contains { stroke in
@@ -500,7 +404,6 @@ struct CanvasScreen: View {
             }
         }
         .ignoresSafeArea()
-        .preferredColorScheme(colorScheme)
         .sheet(isPresented: Binding(
             get: { activeLinkURL != nil },
             set: { if !$0 { activeLinkURL = nil } }

@@ -27,8 +27,11 @@ struct HeaderPanel: View {
     let onNavigate: (CanvasHeader) -> Void
     let onOpenLink: (URL) -> Void
     let onDismiss: () -> Void
-
+    
+    
+    // TODO: Can the reducer own the query? Does this have to live inside of the view?
     @Query(sort: \RoutedItem.routedAt, order: .reverse) private var allRoutedItems: [RoutedItem]
+    // TODO: At state should be driven the reducer
     @State private var selectedTab: PanelTab = .headers
     @State private var selectedCalendarEventID: String? = nil
 
@@ -79,16 +82,26 @@ struct HeaderPanel: View {
             }
         }
         .task(id: allRoutedItems.count) {
-            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess ||
-                  EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else { return }
+            guard
+                EKEventStore.authorizationStatus(for: .event) == .fullAccess ||
+                EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
+            else {
+                return
+            }
             let ekStore = EKEventStore()
             for item in calendarItems + reminderItems {
                 guard let identifier = item.eventKitIdentifier else { continue }
+                
                 switch item.destination {
                 case Integration.calendar.rawValue:
-                    if ekStore.event(withIdentifier: identifier) == nil { item.status = "deleted" }
+                    if ekStore.event(withIdentifier: identifier) == nil {
+                        // TODO: Can we avoid this by adapting models to idiomatic swift? instead of setting raw strings?
+                        item.status = "deleted"
+                    }
                 case Integration.reminders.rawValue:
-                    if (try? ekStore.calendarItem(withIdentifier: identifier)) == nil { item.status = "deleted" }
+                    if (ekStore.calendarItem(withIdentifier: identifier)) == nil {
+                        item.status = "deleted"
+                    }
                 default: break
                 }
             }
@@ -96,7 +109,9 @@ struct HeaderPanel: View {
     }
 
     // MARK: - Title bar
-
+    
+    
+    // TODO: Magic numbers everywhere
     private var titleBar: some View {
         HStack {
             Text(selectedTab.rawValue)
