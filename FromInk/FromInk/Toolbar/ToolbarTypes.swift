@@ -2,15 +2,13 @@ import Foundation
 
 /// Per-tool settings persisted across sessions.
 ///
-nonisolated
 struct ToolSettingsEntry: Identifiable, Equatable, Codable, Sendable {
-    nonisolated let id: ToolID
-    nonisolated var settings: PenSettings
+    let id: ToolID
+    var settings: PenSettings
 }
 
 /// What panel is currently open, if any.
 ///
-nonisolated
 enum PanelKind: Equatable, Sendable {
     case toolCustomization(ToolID)
     case templatePicker
@@ -19,14 +17,12 @@ enum PanelKind: Equatable, Sendable {
 
 /// Which side of the screen the toolbar is on.
 ///
-nonisolated
 enum ToolbarSide: String, Equatable, Codable, Sendable {
     case left, right
 }
 
 /// Typed identifiers for toolbar action buttons.
 ///
-nonisolated
 enum ToolbarActionID: String, Equatable, Sendable {
     case undo
     case redo

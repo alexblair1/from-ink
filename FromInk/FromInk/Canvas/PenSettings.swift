@@ -1,12 +1,10 @@
 import SwiftUI
 import PencilKit
 
-nonisolated
 struct PenSettings: Equatable, Codable, Sendable {
 
     // MARK: - Pen Type
 
-    nonisolated
     enum PenType: String, CaseIterable, Equatable, Codable, Sendable {
         case ballpoint
         case fineliner
@@ -65,7 +63,6 @@ struct PenSettings: Equatable, Codable, Sendable {
 
     // MARK: - Graphite Grade
 
-    nonisolated
     enum GraphiteGrade: Int, CaseIterable, Equatable, Codable, Sendable {
         case nineH = 0, threeH, hb, threeB, nineB
 

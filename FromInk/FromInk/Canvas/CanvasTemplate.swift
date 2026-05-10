@@ -1,6 +1,5 @@
 import CoreGraphics
 
-nonisolated
 enum CanvasTemplate: String, CaseIterable, Equatable, Codable, Sendable, Hashable {
     case none
     case linesWide
