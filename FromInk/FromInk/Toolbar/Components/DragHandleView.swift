@@ -25,8 +25,14 @@ struct DragHandleView: View {
                 }
                 .onEnded { value in
                     let dx = value.translation.width
-                    guard abs(dx) > abs(value.translation.height),
-                          abs(dx) > model.sideSwitchThreshold else { return }
+                    
+                    guard
+                        abs(dx) > abs(value.translation.height),
+                        abs(dx) > model.sideSwitchThreshold
+                    else {
+                        return
+                    }
+                    
                     let side: ToolbarSide = dx > 0 ? .right : .left
                     model.onDragEnded(side)
                 }
@@ -62,8 +68,8 @@ extension DragHandleView.Model {
         self.height = ds.layout.toolbarButtonHeight
         self.capsuleWidth = ds.layout.dragHandleCapsuleWidth
         self.capsuleHeight = ds.layout.dragHandleCapsuleHeight
-        self.capsuleSpacing = 3      // Visual spacing between the three capsule lines
-        self.sideSwitchThreshold = 40 // Minimum horizontal drag distance to trigger side switch
+        self.capsuleSpacing = ds.layout.dragHandleCapsuleSpacing
+        self.sideSwitchThreshold = ds.layout.dragHandleSwitchThreshold
         self.idleColor = ds.colors.ink3
         self.pressedColor = ds.colors.ink
     }

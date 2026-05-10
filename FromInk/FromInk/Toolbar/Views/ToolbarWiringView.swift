@@ -24,6 +24,8 @@ struct ToolbarWiringView: View {
 // MARK: - Adapter
 
 extension ToolbarWiringView {
+    
+    // TODO: This should be an initializer and there's too much state in here that should be driven by the reducer.
     static func makeModel(
         store: StoreOf<ToolbarFeature>,
         zones: [ToolbarZoneConfig]
@@ -34,11 +36,14 @@ extension ToolbarWiringView {
                 case .tool(let descriptor):
                     let isActive = store.activeToolID == descriptor.id
                     let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon ?? descriptor.icon
+                    
                     return .toolButton(ToolButtonView.Model(
                         id: descriptor.id.rawValue,
                         icon: icon,
                         isActive: isActive,
                         onTap: {
+                            // TODO: Code small
+                            
                             if isActive && descriptor.hasCustomization {
                                 store.send(.toolDoubleTapped(descriptor.id))
                             } else if !isActive {
@@ -67,11 +72,14 @@ extension ToolbarWiringView {
 
                 case .bolt:
                     guard store.isBoltVisible else { return nil }
-                    return .actionButton(ActionButtonView.Model(
-                        id: "bolt",
-                        icon: "bolt.fill",
-                        onTap: { store.send(.analyzeTapped) }
-                    ))
+                    
+                    return .actionButton(
+                        ActionButtonView.Model(
+                            id: "bolt",
+                            icon: "bolt.fill",
+                            onTap: { store.send(.analyzeTapped) }
+                        )
+                    )
 
                 case .dragHandle:
                     return .dragHandle(DragHandleView.Model(
@@ -79,8 +87,10 @@ extension ToolbarWiringView {
                     ))
                 }
             }
-
+            
+            // No late guards
             guard !items.isEmpty else { return nil }
+            
             return ToolbarView.Model.Zone(id: zone.id, items: items)
         }
 

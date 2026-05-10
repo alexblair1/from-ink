@@ -57,9 +57,12 @@ extension ToolbarView {
 
             var id: String {
                 switch self {
-                case .toolButton(let m): "tool-\(m.id)"
-                case .actionButton(let m): "action-\(m.id)"
-                case .dragHandle: "handle"
+                case .toolButton(let m): 
+                    "tool-\(m.id)"
+                case .actionButton(let m): 
+                    "action-\(m.id)"
+                case .dragHandle: 
+                    "handle"
                 }
             }
         }
