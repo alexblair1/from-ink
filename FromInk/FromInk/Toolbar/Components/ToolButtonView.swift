@@ -7,21 +7,16 @@ struct ToolButtonView: View {
     let model: Model
 
     var body: some View {
-        Button {
-            model.onTap()
-        } label: {
+        Button(action: model.onTap) {
             Image(systemName: model.icon)
                 .font(.system(size: model.iconSize, weight: .regular))
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(model.isActive ? model.activeForeground : model.inactiveForeground)
+                .foregroundStyle(model.foreground)
                 .frame(width: model.width, height: model.height)
-                .background(model.isActive ? model.activeBackground : .clear)
+                .background(model.background)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded { model.onDoubleTap() }
-        )
     }
 }
 
@@ -31,15 +26,12 @@ extension ToolButtonView {
     struct Model {
         let id: String
         let icon: String
-        let isActive: Bool
         let onTap: () -> Void
-        let onDoubleTap: () -> Void
         let width: CGFloat
         let height: CGFloat
         let iconSize: CGFloat
-        let activeForeground: Color
-        let inactiveForeground: Color
-        let activeBackground: Color
+        let foreground: Color
+        let background: Color
     }
 }
 
@@ -49,21 +41,18 @@ extension ToolButtonView.Model {
     init(
         id: String,
         icon: String,
-        isActive: Bool,
         onTap: @escaping () -> Void,
-        onDoubleTap: @escaping () -> Void = {},
+        foreground: Color,
+        background: Color,
         ds: DesignSystem = .standard
     ) {
         self.id = id
         self.icon = icon
-        self.isActive = isActive
         self.onTap = onTap
-        self.onDoubleTap = onDoubleTap
+        self.foreground = foreground
+        self.background = background
         self.width = ds.layout.toolbarWidth
         self.height = ds.layout.toolbarButtonHeight
         self.iconSize = ds.layout.toolbarIconSize
-        self.activeForeground = ds.colors.paperOnInk
-        self.inactiveForeground = ds.colors.ink2
-        self.activeBackground = ds.colors.ink
     }
 }

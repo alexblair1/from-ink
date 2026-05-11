@@ -46,6 +46,7 @@ struct LayoutTokens: Sendable {
     let dragHandleCapsuleHeight: CGFloat
     let dragHandleCapsuleSpacing: CGFloat
     let dragHandleSwitchThreshold: CGFloat
+    let toolbarPanelGap: CGFloat
     let timeBlockWidth: CGFloat
     let spineMinHeight: CGFloat
 
@@ -68,6 +69,7 @@ struct LayoutTokens: Sendable {
         dragHandleCapsuleHeight: 2,
         dragHandleCapsuleSpacing: 3,
         dragHandleSwitchThreshold: 40,
+        toolbarPanelGap: 8,
         timeBlockWidth: 72,
         spineMinHeight: 140
     )

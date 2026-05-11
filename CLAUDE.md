@@ -492,6 +492,230 @@ Color("canvas")           // never Color(hex: "#1A1A1A")
 
 ---
 
+## Code Styling
+
+### Reducer style
+
+**Flat case arms with `where` clauses over nested `if/else`:**
+
+```swift
+// Do
+case .pencilDoubleTapped where state.activeToolID == .eraser:
+    state.activeToolID = state.toolStack.popLast() ?? .pen
+    return .none
+
+case .pencilDoubleTapped:
+    state.toolStack.append(state.activeToolID)
+    state.activeToolID = .eraser
+    return .none
+
+// Don't
+case .pencilDoubleTapped:
+    if state.activeToolID == .eraser {
+        state.activeToolID = state.previousToolID
+    } else {
+        state.previousToolID = state.activeToolID
+        state.activeToolID = .eraser
+    }
+    return .none
+```
+
+**No methods on State.** Mutations happen inline in the reducer body. State is a value type — keep it a plain data container.
+
+```swift
+// Don't
+mutating func togglePanel(_ panel: PanelKind) {
+    openPanel = openPanel == panel ? nil : panel
+}
+
+// Do — inline in the reducer case
+state.openPanel = state.openPanel == .templatePicker ? nil : .templatePicker
+```
+
+**State should hold resolved values, not derived computations:**
+
+```swift
+// Don't — computed property hides a lookup + fallback
+var activeSettings: PenSettings {
+    toolSettings[id: activeToolID]?.settings ?? .default
+}
+
+// Do — stored property, set explicitly by the reducer when tool or settings change
+var activeSettings: PenSettings = .default
+```
+
+**No raw data on State that only exists to derive a boolean.** If the toolbar only cares whether the bolt is visible, store `isBoltVisible: Bool` — not `strokeCount: Int` with a computed `isBoltVisible`.
+
+**State that belongs to a parent feature stays on the parent.** Template selection is a canvas concern, not a toolbar concern. The toolbar sends `.templateSelected` as a forwarded action; the parent owns the state.
+
+### View / Model style
+
+**Views render what they're given — no conditional logic on domain state:**
+
+```swift
+// Don't — view decides colors based on isActive
+.foregroundStyle(model.isActive ? model.activeForeground : model.inactiveForeground)
+
+// Do — adapter resolves colors, view renders flat fields
+.foregroundStyle(model.foreground)
+```
+
+**The Model holds pre-resolved visual values. The adapter resolves state into those values:**
+
+```swift
+// Adapter (in wiring view)
+let ds = DesignSystem.standard
+return ToolButtonView.Model(
+    foreground: isActive ? ds.colors.paperOnInk : ds.colors.ink2,
+    background: isActive ? ds.colors.ink : .clear
+)
+
+// Model — no isActive field, just foreground and background
+struct Model {
+    let foreground: Color
+    let background: Color
+}
+```
+
+**Three-section file shape for every component:**
+
+```swift
+// 1. The view — reads flat fields off Model
+struct ActionButtonView: View {
+    let model: Model
+    var body: some View { ... }
+}
+
+// 2. The Model — stored properties only, no init
+extension ActionButtonView {
+    struct Model {
+        let icon: String
+        let onTap: () -> Void
+        let foreground: Color
+    }
+}
+
+// 3. The Model init — resolves from DesignSystem
+extension ActionButtonView.Model {
+    init(icon: String, onTap: @escaping () -> Void, ds: DesignSystem = .standard) {
+        self.icon = icon
+        self.onTap = onTap
+        self.foreground = ds.colors.ink2
+    }
+}
+```
+
+### TCA conventions
+
+**Never use the `@Reducer` macro.** The project uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` which causes a circular reference during macro expansion. Use manual `Reducer` conformance:
+
+```swift
+struct MyFeature: Reducer {
+    @ObservableState struct State: Equatable { ... }
+    enum Action { ... }
+    var body: some Reducer<State, Action> {
+        Reduce { state, action in ... }
+    }
+}
+```
+
+**One action per user intent.** The adapter sends a single action; the reducer decides what it means. Don't branch in the adapter.
+
+```swift
+// Don't — business logic in the adapter
+onTap: {
+    if isActive && descriptor.hasCustomization {
+        store.send(.toolDoubleTapped(descriptor.id))
+    } else if !isActive {
+        store.send(.toolSelected(descriptor.id))
+    }
+}
+
+// Do — one action, reducer decides
+onTap: { store.send(.toolTapped(descriptor.id)) }
+```
+
+**Use `ToolID(rawValue:)` in `@Sendable` closures** instead of `.pen` / `.eraser` statics, because `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes static properties main-actor-isolated.
+
+**Use `@preconcurrency Identifiable` for types stored in `IdentifiedArrayOf`** when the `Identifiable` conformance would otherwise be main-actor-isolated.
+
+**Replace the entire dependency in `withDependencies`, never mutate a single property.** Partial property overrides on dependency structs don't propagate reliably under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Use `LockIsolated` for captured values in `@Sendable` effect closures.
+
+```swift
+// Don't — partial override may not propagate
+withDependencies: {
+    $0.userPreferences.saveToolbarSide = { side in savedSide.setValue(side) }
+}
+
+// Do — replace the whole dependency
+withDependencies: {
+    $0.userPreferences = UserPreferences(
+        loadToolSettings: { [] },
+        saveToolSettings: { _, _ in },
+        saveToolbarSide: { side in savedSide.setValue(side) },
+        // ... all fields
+    )
+}
+```
+
+### File organization
+
+**One type per file.** Every struct, enum, and class gets its own file named after the type. No multi-type files.
+
+**Feature folder structure:**
+
+```
+Features/{FeatureName}/
+  Reducers/
+    {FeatureName}Feature.swift       # Reducer conformance, State, Action, body
+  Models/
+    {TypeName}.swift                  # One file per domain type (ToolID, PanelKind, etc.)
+  Views/
+    {FeatureName}View.swift           # Feature view (no TCA)
+    {FeatureName}WiringView.swift     # Wiring view + adapter init(store:)
+  Components/
+    {ComponentName}.swift             # Component views (view + Model + Model init)
+  Dependencies/
+    {DependencyName}.swift            # TCA dependency clients
+```
+
+**Naming conventions:**
+- Reducers: `{FeatureName}Feature.swift` — always suffixed with `Feature`
+- Wiring views: `{FeatureName}WiringView.swift` — always suffixed with `WiringView`
+- Models: named after the type they contain — `ToolID.swift`, `PanelKind.swift`, `LoadedSettings.swift`
+- Components: named after the view — `ToolButtonView.swift`, `ActionButtonView.swift`
+- Dependencies: named after the dependency — `UserPreferencesDependency.swift`
+
+**Reference implementation:** `Toolbar/` folder is the canonical example of this structure.
+
+### General style
+
+**120 character line limit.** Break lines at 120 characters. No exceptions.
+
+**No late returns.** Prefer `.filter` / `.map` chains over `guard` at the end of a closure.
+
+```swift
+// Don't
+let zones = configs.compactMap { zone -> Zone? in
+    let items = ...
+    guard !items.isEmpty else { return nil }
+    return Zone(items: items)
+}
+
+// Do
+let zones = configs
+    .map { zone in Zone(items: ...) }
+    .filter { !$0.items.isEmpty }
+```
+
+**No magic numbers in view bodies.** Every dimension, font size, spacing, and threshold comes from `model.*` or `LayoutTokens`. If a value is component-specific and not reusable, add it to `LayoutTokens` anyway with a descriptive name.
+
+**No `@Environment(\.ds)` or `DesignSystem.current`.** Design tokens resolve in the Model init via `ds: DesignSystem = .standard`.
+
+**No `@MainActor` on Model inits.** If a Model init needs main-actor access, the design is wrong — push the resolution to the adapter or restructure the token access.
+
+---
+
 ## Testing
 
 ### Unit Tests — `FromInkTests/`

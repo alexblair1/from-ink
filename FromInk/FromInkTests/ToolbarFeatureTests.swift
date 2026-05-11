@@ -5,30 +5,20 @@ import XCTest
 @MainActor
 final class ToolbarFeatureTests: XCTestCase {
 
-    // MARK: - Tool Selection
+    // MARK: - Tool Tapped — Switch Tool
 
-    func test_selectTool_switchesActive() async {
+    func test_toolTapped_switchesTool() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(activeToolID: .pen),
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.toolSelected(.marker)) {
-            $0.previousToolID = .pen
+        await store.send(.toolTapped(.marker)) {
             $0.activeToolID = .marker
         }
     }
 
-    func test_selectSameTool_noOp() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(activeToolID: .pen),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.toolSelected(.pen))
-    }
-
-    func test_selectTool_dismissesOpenPanel() async {
+    func test_toolTapped_dismissesOpenPanel() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(
                 activeToolID: .pen,
@@ -37,11 +27,55 @@ final class ToolbarFeatureTests: XCTestCase {
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.toolSelected(.marker)) {
-            $0.previousToolID = .pen
+        await store.send(.toolTapped(.marker)) {
             $0.activeToolID = .marker
             $0.openPanel = nil
         }
+    }
+
+    // MARK: - Tool Tapped — Active Tool (Customization Toggle)
+
+    func test_toolTapped_activeWithCustomization_opensPanel() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .pen),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolTapped(.pen)) {
+            $0.openPanel = .toolCustomization(.pen)
+        }
+    }
+
+    func test_toolTapped_activeWithCustomization_closesPanel() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(
+                activeToolID: .pen,
+                openPanel: .toolCustomization(.pen)
+            ),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolTapped(.pen)) {
+            $0.openPanel = nil
+        }
+    }
+
+    func test_toolTapped_activeWithoutCustomization_noOp() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .eraser),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolTapped(.eraser))
+    }
+
+    func test_toolTapped_lasso_activeNoOp() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .lasso),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolTapped(.lasso))
     }
 
     // MARK: - Pencil Double-Tap
@@ -53,7 +87,7 @@ final class ToolbarFeatureTests: XCTestCase {
         )
 
         await store.send(.pencilDoubleTapped) {
-            $0.previousToolID = .fountain
+            $0.toolStack = [.fountain]
             $0.activeToolID = .eraser
         }
     }
@@ -62,13 +96,25 @@ final class ToolbarFeatureTests: XCTestCase {
         let store = TestStore(
             initialState: ToolbarFeature.State(
                 activeToolID: .eraser,
-                previousToolID: .fountain
+                toolStack: [.fountain]
             ),
             reducer: { ToolbarFeature() }
         )
 
         await store.send(.pencilDoubleTapped) {
+            $0.toolStack = []
             $0.activeToolID = .fountain
+        }
+    }
+
+    func test_pencilDoubleTap_restoresDefaultWhenStackEmpty() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(activeToolID: .eraser),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.pencilDoubleTapped) {
+            $0.activeToolID = .pen
         }
     }
 
@@ -81,92 +127,79 @@ final class ToolbarFeatureTests: XCTestCase {
         )
 
         await store.send(.twoFingerHoldBegan) {
-            $0.previousToolID = .pen
+            $0.toolStack = [.pen]
             $0.activeToolID = .lasso
         }
 
         await store.send(.twoFingerHoldEnded) {
+            $0.toolStack = []
             $0.activeToolID = .pen
         }
     }
 
-    // MARK: - Panel Toggling
-
-    func test_doubleTapTool_opensPanel() async {
+    func test_twoFingerHold_nestedWithPencilDoubleTap() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(activeToolID: .pen),
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.toolDoubleTapped(.pen)) {
-            $0.openPanel = .toolCustomization(.pen)
+        // Pencil double-tap → eraser
+        await store.send(.pencilDoubleTapped) {
+            $0.toolStack = [.pen]
+            $0.activeToolID = .eraser
+        }
+
+        // Two-finger hold during eraser → lasso
+        await store.send(.twoFingerHoldBegan) {
+            $0.toolStack = [.pen, .eraser]
+            $0.activeToolID = .lasso
+        }
+
+        // Release hold → back to eraser
+        await store.send(.twoFingerHoldEnded) {
+            $0.toolStack = [.pen]
+            $0.activeToolID = .eraser
+        }
+
+        // Pencil double-tap again → back to pen
+        await store.send(.pencilDoubleTapped) {
+            $0.toolStack = []
+            $0.activeToolID = .pen
         }
     }
 
-    func test_doubleTapTool_closesPanel() async {
+    // MARK: - Tool Switch Clears Stack
+
+    func test_toolTapped_clearsStack() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(
-                activeToolID: .pen,
-                openPanel: .toolCustomization(.pen)
+                activeToolID: .eraser,
+                toolStack: [.pen]
             ),
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.toolDoubleTapped(.pen)) {
-            $0.openPanel = nil
-        }
-    }
-
-    func test_doubleTapDifferentTool_switchesPanel() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(
-                activeToolID: .pen,
-                openPanel: .toolCustomization(.pen)
-            ),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.toolDoubleTapped(.marker)) {
+        await store.send(.toolTapped(.marker)) {
+            $0.toolStack = []
             $0.activeToolID = .marker
-            $0.openPanel = .toolCustomization(.marker)
         }
     }
 
-    func test_toolCustomizationToggled_opensPanel() async {
+    // MARK: - Panels
+
+    func test_templatePickerToggled() async {
         let store = TestStore(
-            initialState: ToolbarFeature.State(activeToolID: .pen),
+            initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.toolCustomizationToggled(.pen)) {
-            $0.openPanel = .toolCustomization(.pen)
+        await store.send(.templatePickerToggled) {
+            $0.openPanel = .templatePicker
         }
-    }
 
-    func test_toolCustomizationToggled_closesPanel() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(
-                activeToolID: .pen,
-                openPanel: .toolCustomization(.pen)
-            ),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.toolCustomizationToggled(.pen)) {
+        await store.send(.templatePickerToggled) {
             $0.openPanel = nil
         }
-    }
-
-    func test_toolCustomizationToggled_doesNotChangeActiveTool() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(activeToolID: .pen),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.toolCustomizationToggled(.marker)) {
-            $0.openPanel = .toolCustomization(.marker)
-        }
-        // activeToolID stays .pen — toolCustomizationToggled only affects the panel
     }
 
     func test_settingsToggled() async {
@@ -184,21 +217,6 @@ final class ToolbarFeatureTests: XCTestCase {
         }
     }
 
-    func test_templatePickerToggled() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.templatePickerToggled) {
-            $0.openPanel = .templatePicker
-        }
-
-        await store.send(.templatePickerToggled) {
-            $0.openPanel = nil
-        }
-    }
-
     func test_panelDismissed() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(openPanel: .canvasSettings),
@@ -212,55 +230,40 @@ final class ToolbarFeatureTests: XCTestCase {
 
     // MARK: - Bolt Visibility
 
-    func test_boltNotVisibleBelow10Strokes() async {
+    func test_boltVisibilityChanged() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
 
-        await store.send(.strokeCountUpdated(9))
-        XCTAssertFalse(store.state.isBoltVisible)
-    }
+        await store.send(.boltVisibilityChanged(true)) {
+            $0.isBoltVisible = true
+        }
 
-    func test_boltVisibleAt10Strokes() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(),
-            reducer: { ToolbarFeature() }
-        )
-
-        await store.send(.strokeCountUpdated(10))
-        XCTAssertTrue(store.state.isBoltVisible)
-    }
-
-    // MARK: - Template Selection
-
-    func test_templateSelected_updatesAndDismissesPanel() async {
-        let store = TestStore(
-            initialState: ToolbarFeature.State(openPanel: .templatePicker),
-            reducer: { ToolbarFeature() },
-            withDependencies: {
-                $0.userPreferences.saveTemplate = { _ in }
-            }
-        )
-
-        await store.send(.templateSelected(.grid)) {
-            $0.template = .grid
-            $0.openPanel = nil
+        await store.send(.boltVisibilityChanged(false)) {
+            $0.isBoltVisible = false
         }
     }
 
     // MARK: - Side Changed
 
     func test_sideChanged_persists() async {
-        var savedSide: ToolbarSide?
+        let savedSide = LockIsolated<ToolbarSide?>(nil)
 
         let store = TestStore(
             initialState: ToolbarFeature.State(side: .left),
             reducer: { ToolbarFeature() },
             withDependencies: {
-                $0.userPreferences.saveToolbarSide = { side in
-                    savedSide = side
-                }
+                $0.userPreferences = UserPreferences(
+                    loadToolSettings: { [] },
+                    saveToolSettings: { _, _ in },
+                    loadToolbarSide: { .left },
+                    saveToolbarSide: { side in savedSide.setValue(side) },
+                    loadActiveToolID: { ToolID(rawValue: "pen") },
+                    saveActiveToolID: { _ in },
+                    loadTemplate: { .none },
+                    saveTemplate: { _ in }
+                )
             }
         )
 
@@ -268,33 +271,47 @@ final class ToolbarFeatureTests: XCTestCase {
             $0.side = .right
         }
 
-        XCTAssertEqual(savedSide, .right)
+        await store.finish()
+
+        XCTAssertEqual(savedSide.value, .right)
     }
 
     // MARK: - Settings Persistence
 
     func test_toolSettingsChanged_persists() async {
-        var savedID: ToolID?
-        var savedSettings: PenSettings?
+        let savedID = LockIsolated<ToolID?>(nil)
+        let savedSettings = LockIsolated<PenSettings?>(nil)
 
         let store = TestStore(
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() },
             withDependencies: {
-                $0.userPreferences.saveToolSettings = { id, settings in
-                    savedID = id
-                    savedSettings = settings
-                }
+                $0.userPreferences = UserPreferences(
+                    loadToolSettings: { [] },
+                    saveToolSettings: { id, settings in
+                        savedID.setValue(id)
+                        savedSettings.setValue(settings)
+                    },
+                    loadToolbarSide: { .left },
+                    saveToolbarSide: { _ in },
+                    loadActiveToolID: { ToolID(rawValue: "pen") },
+                    saveActiveToolID: { _ in },
+                    loadTemplate: { .none },
+                    saveTemplate: { _ in }
+                )
             }
         )
 
         let newSettings = PenSettings(penType: .fineliner, thicknessIndex: 3)
         await store.send(.toolSettingsChanged(.pen, newSettings)) {
             $0.toolSettings[id: .pen] = ToolSettingsEntry(id: .pen, settings: newSettings)
+            $0.activeSettings = newSettings
         }
 
-        XCTAssertEqual(savedID, .pen)
-        XCTAssertEqual(savedSettings, newSettings)
+        await store.finish()
+
+        XCTAssertEqual(savedID.value, .pen)
+        XCTAssertEqual(savedSettings.value, newSettings)
     }
 
     // MARK: - Lifecycle
@@ -304,29 +321,28 @@ final class ToolbarFeatureTests: XCTestCase {
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() },
             withDependencies: {
-                $0.userPreferences.loadToolSettings = {
-                    [ToolSettingsEntry(id: .pen, settings: PenSettings(penType: .fineliner))]
-                }
-                $0.userPreferences.loadToolbarSide = { .right }
-                $0.userPreferences.loadActiveToolID = { .fountain }
-                $0.userPreferences.loadTemplate = { .grid }
+                $0.userPreferences = UserPreferences(
+                    loadToolSettings: {
+                        [ToolSettingsEntry(id: ToolID(rawValue: "pen"), settings: PenSettings(penType: .fineliner))]
+                    },
+                    saveToolSettings: { _, _ in },
+                    loadToolbarSide: { .right },
+                    saveToolbarSide: { _ in },
+                    loadActiveToolID: { ToolID(rawValue: "fountain") },
+                    saveActiveToolID: { _ in },
+                    loadTemplate: { .none },
+                    saveTemplate: { _ in }
+                )
             }
         )
-
+        
         await store.send(.onAppear)
-
-        await store.receive(
-            .settingsLoaded(LoadedSettings(
-                toolSettings: [ToolSettingsEntry(id: .pen, settings: PenSettings(penType: .fineliner))],
-                side: .right,
-                activeToolID: .fountain,
-                template: .grid
-            ))
-        ) {
+        
+        await store.receive(\.settingsLoaded) {
             $0.toolSettings = [ToolSettingsEntry(id: .pen, settings: PenSettings(penType: .fineliner))]
             $0.side = .right
-            $0.activeToolID = .fountain
-            $0.template = .grid
+            $0.activeToolID = ToolID(rawValue: "fountain")
+            $0.activeSettings = .default // fountain has no saved settings, falls back to default
         }
     }
 
@@ -337,7 +353,6 @@ final class ToolbarFeatureTests: XCTestCase {
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-
         await store.send(.undoTapped)
     }
 
@@ -346,7 +361,6 @@ final class ToolbarFeatureTests: XCTestCase {
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-
         await store.send(.redoTapped)
     }
 
@@ -355,8 +369,15 @@ final class ToolbarFeatureTests: XCTestCase {
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-
         await store.send(.analyzeTapped)
+    }
+
+    func test_templateSelected_noStateChange() async {
+        let store = TestStore(
+            initialState: ToolbarFeature.State(),
+            reducer: { ToolbarFeature() }
+        )
+        await store.send(.templateSelected(.grid))
     }
 
     func test_pencilSqueezed_noStateChange() async {
@@ -364,7 +385,6 @@ final class ToolbarFeatureTests: XCTestCase {
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-
         await store.send(.pencilSqueezed)
     }
 }

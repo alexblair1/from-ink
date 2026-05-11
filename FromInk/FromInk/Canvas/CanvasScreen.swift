@@ -33,6 +33,8 @@ struct CanvasScreen: View {
 
     // Legacy state still needed until full CanvasFeature migration
     @State private var currentDrawing = PKDrawing()
+    @State private var activeTemplate: CanvasTemplate = .none
+    @State private var strokeCount: Int = 0
     @AppStorage("correctHandwriting") private var correctHandwriting = true
     #if DEBUG
     @State private var showDebugSheet = false
@@ -167,19 +169,10 @@ struct CanvasScreen: View {
 
     @Environment(\.undoManager) private var undoManager
 
-    /// Bridge: read the active tool from the toolbar store for CanvasView.
+    /// Bridge: ToolID → CanvasTool for the legacy CanvasView binding.
+    /// Uses rawValue matching so adding a new ToolID doesn't require a switch change.
     private var activeTool: CanvasTool {
-        // Map ToolID → CanvasTool for the legacy CanvasView binding
-        switch toolbarStore.activeToolID {
-        case .pen: .pen
-        case .fountain: .fountain
-        case .pencil: .pencil
-        case .marker: .marker
-        case .highlighter: .highlighter
-        case .eraser: .eraser
-        case .lasso: .lasso
-        default: .pen
-        }
+        CanvasTool(rawValue: toolbarStore.activeToolID.rawValue) ?? .pen
     }
 
     private var activeSettings: PenSettings {
@@ -204,7 +197,7 @@ struct CanvasScreen: View {
                         set: { _ in } // tool changes flow through the store, not the binding
                     ),
                     penSettings: activeSettings,
-                    template: toolbarStore.template,
+                    template: activeTemplate,
                     onTwoFingerHoldBegan: {
                         toolbarStore.send(.twoFingerHoldBegan)
                     },
@@ -214,7 +207,10 @@ struct CanvasScreen: View {
                     onPencilDoubleTap: {
                         toolbarStore.send(.pencilDoubleTapped)
                     },
-                    onStrokeCountChanged: { toolbarStore.send(.strokeCountUpdated($0)) },
+                    onStrokeCountChanged: { count in
+                        strokeCount = count
+                        toolbarStore.send(.boltVisibilityChanged(count >= 10))
+                    },
                     onDrawingChanged: { currentDrawing = $0 },
                     onScrolledNearBottom: onNearBottom,
                     onLassoReady: { image, viewRect, contentRect in
@@ -282,9 +278,7 @@ struct CanvasScreen: View {
 
                 if let panel = toolbarStore.openPanel {
                     let tw = LayoutTokens.standard.toolbarWidth
-                    let panelGap: CGFloat = 8
-                    // All panels: top aligned to toolbar's vertical center
-                    let panelTopY = geo.size.height / 2
+                    let panelGap = LayoutTokens.standard.toolbarPanelGap
 
                     Group {
                         switch panel {
@@ -302,8 +296,8 @@ struct CanvasScreen: View {
                         case .templatePicker:
                             TemplatePickerPanel(
                                 template: Binding(
-                                    get: { toolbarStore.template },
-                                    set: { toolbarStore.send(.templateSelected($0)) }
+                                    get: { activeTemplate },
+                                    set: { activeTemplate = $0; toolbarStore.send(.panelDismissed) }
                                 ),
                                 onDismiss: { toolbarStore.send(.panelDismissed) }
                             )

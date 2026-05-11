@@ -64,9 +64,18 @@ extension ToolDescriptor {
         hasCustomization: false,
         makePKTool: { _ in PKLassoTool() }
     )
-
+    
+    
+    // TODO: This doesn't belong here. Couples domain and ui.
+    
+    
     /// The ordered set of all writing tools. Toolbar renders from this array.
     static let allWritingTools: [ToolDescriptor] = [
         .pen, .fountain, .pencil, .marker, .highlighter, .eraser, .lasso
     ]
+
+    /// Look up a descriptor by ToolID. Returns nil for unknown IDs.
+    static func descriptor(for id: ToolID) -> ToolDescriptor? {
+        allWritingTools.first { $0.id == id }
+    }
 }

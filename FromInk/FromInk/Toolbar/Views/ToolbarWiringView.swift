@@ -17,59 +17,48 @@ struct ToolbarWiringView: View {
     }
 
     var body: some View {
-        ToolbarView(model: Self.makeModel(store: store, zones: zones))
+        ToolbarView(model: .init(store: store, zones: zones))
     }
 }
 
 // MARK: - Adapter
 
-extension ToolbarWiringView {
-    
-    // TODO: This should be an initializer and there's too much state in here that should be driven by the reducer.
-    static func makeModel(
-        store: StoreOf<ToolbarFeature>,
-        zones: [ToolbarZoneConfig]
-    ) -> ToolbarView.Model {
-        let viewZones = zones.compactMap { zone -> ToolbarView.Model.Zone? in
+extension ToolbarView.Model {
+    init(store: StoreOf<ToolbarFeature>, zones: [ToolbarZoneConfig]) {
+        let viewZones = zones.map { zone in
             let items: [ToolbarView.Model.Item] = zone.items.compactMap { item in
                 switch item {
                 case .tool(let descriptor):
                     let isActive = store.activeToolID == descriptor.id
                     let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon ?? descriptor.icon
+                    let ds = DesignSystem.standard
+
+                    return .toolButton(
+                        ToolButtonView.Model(
+                            id: descriptor.id.rawValue,
+                            icon: icon,
+                            onTap: { store.send(.toolTapped(descriptor.id)) },
+                            foreground: isActive ? ds.colors.paperOnInk : ds.colors.ink2,
+                            background: isActive ? ds.colors.ink : .clear
+                        )
+                    )
                     
-                    return .toolButton(ToolButtonView.Model(
-                        id: descriptor.id.rawValue,
-                        icon: icon,
-                        isActive: isActive,
-                        onTap: {
-                            // TODO: Code small
-                            
-                            if isActive && descriptor.hasCustomization {
-                                store.send(.toolDoubleTapped(descriptor.id))
-                            } else if !isActive {
-                                store.send(.toolSelected(descriptor.id))
-                            }
-                        },
-                        onDoubleTap: {
-                            guard descriptor.hasCustomization else { return }
-                            store.send(.toolDoubleTapped(descriptor.id))
-                        }
-                    ))
-
                 case .action(let actionID, let icon):
-                    return .actionButton(ActionButtonView.Model(
-                        id: actionID.rawValue,
-                        icon: icon,
-                        onTap: {
-                            switch actionID {
-                            case .undo: store.send(.undoTapped)
-                            case .redo: store.send(.redoTapped)
-                            case .template: store.send(.templatePickerToggled)
-                            case .settings: store.send(.settingsToggled)
+                    return .actionButton(
+                        ActionButtonView.Model(
+                            id: actionID.rawValue,
+                            icon: icon,
+                            onTap: {
+                                switch actionID {
+                                case .undo: store.send(.undoTapped)
+                                case .redo: store.send(.redoTapped)
+                                case .template: store.send(.templatePickerToggled)
+                                case .settings: store.send(.settingsToggled)
+                                }
                             }
-                        }
-                    ))
-
+                        )
+                    )
+                    
                 case .bolt:
                     guard store.isBoltVisible else { return nil }
                     
@@ -80,20 +69,22 @@ extension ToolbarWiringView {
                             onTap: { store.send(.analyzeTapped) }
                         )
                     )
-
+                    
                 case .dragHandle:
-                    return .dragHandle(DragHandleView.Model(
-                        onDragEnded: { side in store.send(.sideChanged(side)) }
-                    ))
+                    return .dragHandle(
+                        DragHandleView.Model(
+                            onDragEnded: { side in
+                                store.send(.sideChanged(side))
+                            }
+                        )
+                    )
                 }
             }
             
-            // No late guards
-            guard !items.isEmpty else { return nil }
-            
             return ToolbarView.Model.Zone(id: zone.id, items: items)
         }
-
-        return ToolbarView.Model(zones: viewZones, side: store.side)
+        .filter { !$0.items.isEmpty }
+        
+        self.init(zones: viewZones, side: store.side)
     }
 }
