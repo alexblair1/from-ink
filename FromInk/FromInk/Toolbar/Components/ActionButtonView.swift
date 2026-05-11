@@ -47,7 +47,7 @@ extension ActionButtonView.Model {
         self.onTap = onTap
         self.width = ds.layout.toolbarWidth
         self.height = ds.layout.toolbarButtonHeight
-        self.iconSize = ds.layout.toolbarIconSize
-        self.foreground = ds.colors.ink2
+        self.iconSize = ds.layout.actionIconSize
+        self.foreground = ds.colors.ink3
     }
 }

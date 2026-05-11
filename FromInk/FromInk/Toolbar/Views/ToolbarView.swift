@@ -30,7 +30,7 @@ struct ToolbarView: View {
         .overlay(alignment: model.borderAlignment) {
             Rectangle()
                 .fill(model.borderColor)
-                .frame(width: 1)
+                .frame(width: model.borderWidth)
         }
     }
 }
@@ -44,6 +44,7 @@ extension ToolbarView {
         let width: CGFloat
         let background: Color
         let borderColor: Color
+        let borderWidth: CGFloat
 
         struct Zone: Identifiable {
             let id: String
@@ -80,7 +81,8 @@ extension ToolbarView.Model {
         self.zones = zones
         self.borderAlignment = side == .left ? .trailing : .leading
         self.width = ds.layout.toolbarWidth
-        self.background = ds.colors.surface
+        self.background = ds.colors.paper
         self.borderColor = ds.colors.rule
+        self.borderWidth = ds.layout.borderWidth
     }
 }

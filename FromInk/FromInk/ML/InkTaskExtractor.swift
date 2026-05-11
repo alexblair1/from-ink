@@ -1,5 +1,5 @@
 import Vision
-import UIKit
+
 import PencilKit
 import NaturalLanguage
 import FoundationModels

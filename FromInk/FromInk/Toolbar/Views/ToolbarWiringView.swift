@@ -30,7 +30,8 @@ extension ToolbarView.Model {
                 switch item {
                 case .tool(let descriptor):
                     let isActive = store.activeToolID == descriptor.id
-                    let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon ?? descriptor.icon
+                    let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon
+                        ?? descriptor.icon
                     let ds = DesignSystem.standard
 
                     return .toolButton(
@@ -38,8 +39,10 @@ extension ToolbarView.Model {
                             id: descriptor.id.rawValue,
                             icon: icon,
                             onTap: { store.send(.toolTapped(descriptor.id)) },
-                            foreground: isActive ? ds.colors.paperOnInk : ds.colors.ink2,
-                            background: isActive ? ds.colors.ink : .clear
+                            foreground: isActive ? ds.colors.ink : ds.colors.ink2,
+                            background: isActive ? ds.colors.highlight : .clear,
+                            indicatorColor: isActive ? ds.colors.ink : .clear,
+                            indicatorWidth: ds.layout.toolbarActiveIndicatorWidth
                         )
                     )
                     

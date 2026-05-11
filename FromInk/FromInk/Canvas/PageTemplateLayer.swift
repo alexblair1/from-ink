@@ -1,4 +1,4 @@
-import UIKit
+
 import SwiftUI
 
 /// A non-interactive UIView that renders the active canvas template at full page height.

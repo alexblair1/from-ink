@@ -14,6 +14,11 @@ struct ToolButtonView: View {
                 .foregroundStyle(model.foreground)
                 .frame(width: model.width, height: model.height)
                 .background(model.background)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(model.indicatorColor)
+                        .frame(width: model.indicatorWidth)
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -32,6 +37,8 @@ extension ToolButtonView {
         let iconSize: CGFloat
         let foreground: Color
         let background: Color
+        let indicatorColor: Color
+        let indicatorWidth: CGFloat
     }
 }
 
@@ -44,6 +51,8 @@ extension ToolButtonView.Model {
         onTap: @escaping () -> Void,
         foreground: Color,
         background: Color,
+        indicatorColor: Color,
+        indicatorWidth: CGFloat,
         ds: DesignSystem = .standard
     ) {
         self.id = id
@@ -51,6 +60,8 @@ extension ToolButtonView.Model {
         self.onTap = onTap
         self.foreground = foreground
         self.background = background
+        self.indicatorColor = indicatorColor
+        self.indicatorWidth = indicatorWidth
         self.width = ds.layout.toolbarWidth
         self.height = ds.layout.toolbarButtonHeight
         self.iconSize = ds.layout.toolbarIconSize

@@ -11,7 +11,7 @@ struct DragHandleView: View {
     var body: some View {
         VStack(spacing: model.capsuleSpacing) {
             ForEach(0..<3, id: \.self) { _ in
-                Capsule()
+                Rectangle()
                     .fill(isDragging ? model.pressedColor : model.idleColor)
                     .frame(width: model.capsuleWidth, height: model.capsuleHeight)
             }
