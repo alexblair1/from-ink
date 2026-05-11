@@ -50,6 +50,10 @@ struct LayoutTokens: Sendable {
     let toolbarActiveIndicatorWidth: CGFloat
     let borderWidth: CGFloat
     let actionIconSize: CGFloat
+    let tabIconSize: CGFloat
+    let dismissIconSize: CGFloat
+    let dismissHitTarget: CGFloat
+    let headerPreviewMinHeight: CGFloat
     let timeBlockWidth: CGFloat
     let spineMinHeight: CGFloat
 
@@ -76,6 +80,10 @@ struct LayoutTokens: Sendable {
         toolbarActiveIndicatorWidth: 3,
         borderWidth: 1,
         actionIconSize: 17,
+        tabIconSize: 15,
+        dismissIconSize: 12,
+        dismissHitTarget: 28,
+        headerPreviewMinHeight: 80,
         timeBlockWidth: 72,
         spineMinHeight: 140
     )

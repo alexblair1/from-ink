@@ -26,9 +26,14 @@ struct CanvasScreen: View {
 
     @Environment(\.modelContext) private var modelContext
 
-    // Toolbar state — driven by TCA
+    // TCA stores
     @State private var toolbarStore = Store(initialState: ToolbarFeature.State()) {
         ToolbarFeature()
+    }
+    @State private var dispatchPanelStore = Store(
+        initialState: DispatchPanelFeature.State()
+    ) {
+        DispatchPanelFeature()
     }
 
     // Legacy state still needed until full CanvasFeature migration
@@ -56,7 +61,6 @@ struct CanvasScreen: View {
 
     // Headers
     @State private var headers: [CanvasHeader] = []
-    @State private var showHeaderPanel = false
     @State private var canvasScrollTarget: CGPoint? = nil
 
     // Routing
@@ -224,9 +228,8 @@ struct CanvasScreen: View {
                     scrollTo: $canvasScrollTarget,
                     headerStripOnRight: toolbarSide == .left,
                     onHeaderPanelRequested: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                            showHeaderPanel = true
-                        }
+                        syncDispatchPanelData()
+                        dispatchPanelStore.send(.presented)
                     }
                 )
                 .ignoresSafeArea()
@@ -340,50 +343,33 @@ struct CanvasScreen: View {
                         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
                 }
 
-                // Header panel tap-away dismiss
-                if showHeaderPanel {
+                // Dispatch panel
+                if dispatchPanelStore.isVisible {
                     Color.clear
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                showHeaderPanel = false
-                            }
+                            dispatchPanelStore.send(.dismissed)
                         }
-                }
 
-                // Header panel — always in hierarchy, slides in/out via offset
-                let panelOffset: CGFloat = showHeaderPanel ? 0
-                    : (toolbarSide == .left ? 420 : -420)
-                HeaderPanel(
-                    headers: headers,
-                    links: links,
-                    toolbarOnLeft: toolbarSide == .left,
-                    notebookID: notebookID,
-                    pageIndex: pageIndex,
-                    onNavigate: { header in
-                        let y = max(0, header.contentRect.minY - 120)
-                        canvasScrollTarget = CGPoint(x: 0, y: y)
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                            showHeaderPanel = false
+                    let ds = DesignSystem.standard
+                    DispatchPanelWiringView(store: dispatchPanelStore)
+                        .frame(width: ds.layout.panelWidth)
+                        .frame(maxHeight: .infinity)
+                        .overlay(
+                            alignment: toolbarSide == .left ? .leading : .trailing
+                        ) {
+                            Rectangle()
+                                .fill(ds.colors.rule)
+                                .frame(width: ds.layout.borderWidth)
                         }
-                    },
-                    onOpenLink: { url in
-                        activeLinkURL = url
-                    },
-                    onDismiss: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                            showHeaderPanel = false
-                        }
-                    }
-                )
-                .frame(maxHeight: .infinity, alignment: .top)
-                .frame(maxWidth: .infinity,
-                       alignment: toolbarSide == .left ? .trailing : .leading)
-                .offset(x: panelOffset)
-                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showHeaderPanel)
-                .allowsHitTesting(showHeaderPanel)
-                .ignoresSafeArea()
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: toolbarSide == .left ? .trailing : .leading
+                        )
+                        .transition(.move(edge: toolbarSide == .left ? .trailing : .leading))
+                        .ignoresSafeArea()
+                }
             }
             .onAppear {
                 toolbarStore.send(.onAppear)
@@ -498,6 +484,51 @@ struct CanvasScreen: View {
                 )
             }
         }
+        .onChange(of: dispatchPanelStore.isVisible) { _, visible in
+            guard visible else { return }
+            syncDispatchPanelData()
+        }
+        .onChange(of: dispatchPanelStore.navigateToHeaderID) { _, headerID in
+            guard let headerID else { return }
+            if let header = headers.first(where: { $0.id == headerID }) {
+                let y = max(0, header.contentRect.minY - 120)
+                canvasScrollTarget = CGPoint(x: 0, y: y)
+            }
+            dispatchPanelStore.send(.dismissed)
+        }
+        .onChange(of: dispatchPanelStore.openLinkURL) { _, url in
+            guard let url else { return }
+            activeLinkURL = url
+            dispatchPanelStore.send(.dismissed)
+        }
+    }
+
+    // MARK: - Dispatch Panel Bridge
+
+    private func syncDispatchPanelData() {
+        dispatchPanelStore.send(
+            .headersUpdated(
+                headers.map {
+                    DispatchHeaderItem(
+                        id: $0.id,
+                        ocrText: $0.ocrText,
+                        image: $0.image,
+                        positionY: $0.contentRect.minY
+                    )
+                }
+            )
+        )
+        dispatchPanelStore.send(
+            .linksUpdated(
+                links.map {
+                    DispatchLinkItem(
+                        id: $0.id,
+                        recognizedText: $0.recognizedText,
+                        url: $0.url
+                    )
+                }
+            )
+        )
     }
 }
 
