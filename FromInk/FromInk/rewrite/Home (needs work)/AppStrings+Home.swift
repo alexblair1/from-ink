@@ -107,5 +107,20 @@ extension AppStrings {
             value: "due",
             comment: "Due reminders count label"
         )
+        static let onTheShelf = NSLocalizedString(
+            "home.onTheShelf",
+            value: "on the shelf",
+            comment: "Notebook count suffix"
+        )
+        static let synced = NSLocalizedString(
+            "home.synced",
+            value: "Synced",
+            comment: "Sync status prefix"
+        )
+        static let justNow = NSLocalizedString(
+            "home.justNow",
+            value: "just now",
+            comment: "Sync status just now"
+        )
     }
 }
