@@ -19,22 +19,25 @@ enum ToolbarZoneItem: Equatable, Sendable {
 // MARK: - Default configuration
 
 extension ToolbarZoneConfig {
-    static func standard() -> [ToolbarZoneConfig] {
-        [
+    static func standard(isCompact: Bool = false) -> [ToolbarZoneConfig] {
+        var actionItems: [ToolbarZoneItem] = [
+            .action(.undo, icon: "arrow.uturn.backward"),
+            .action(.redo, icon: "arrow.uturn.forward"),
+            .action(.template, icon: "square.grid.3x3"),
+            .action(.settings, icon: "gearshape"),
+        ]
+
+        if isCompact {
+            actionItems.append(.action(.dispatch, icon: "tray"))
+        }
+
+        return [
             ToolbarZoneConfig(id: "handle", items: [.dragHandle]),
             ToolbarZoneConfig(id: "bolt", items: [.bolt]),
             ToolbarZoneConfig(id: "writing", items:
                 ToolDescriptor.allWritingTools.map { .tool($0) }
             ),
-            ToolbarZoneConfig(
-                id: "actions",
-                items: [
-                    .action(.undo, icon: "arrow.uturn.backward"),
-                    .action(.redo, icon: "arrow.uturn.forward"),
-                    .action(.template, icon: "square.grid.3x3"),
-                    .action(.settings, icon: "gearshape")
-                ]
-            ),
+            ToolbarZoneConfig(id: "actions", items: actionItems),
         ]
     }
 }

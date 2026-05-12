@@ -5,4 +5,5 @@ enum ToolbarActionID: String, Equatable, Sendable {
     case redo
     case template
     case settings
+    case dispatch
 }

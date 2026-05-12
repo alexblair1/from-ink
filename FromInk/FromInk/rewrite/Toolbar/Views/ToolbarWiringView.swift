@@ -57,6 +57,7 @@ extension ToolbarView.Model {
                                 case .redo: store.send(.redoTapped)
                                 case .template: store.send(.templatePickerToggled)
                                 case .settings: store.send(.settingsToggled)
+                                case .dispatch: store.send(.dispatchTapped)
                                 }
                             }
                         )

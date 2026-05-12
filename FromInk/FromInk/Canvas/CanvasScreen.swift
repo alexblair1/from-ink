@@ -172,6 +172,7 @@ struct CanvasScreen: View {
     }
 
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     /// Bridge: ToolID → CanvasTool for the legacy CanvasView binding.
     /// Uses rawValue matching so adding a new ToolID doesn't require a switch change.
@@ -262,7 +263,10 @@ struct CanvasScreen: View {
                     .position(x: viewX, y: viewY)
                 }
 
-                ToolbarWiringView(store: toolbarStore)
+                ToolbarWiringView(
+                    store: toolbarStore,
+                    zones: ToolbarZoneConfig.standard(isCompact: sizeClass == .compact)
+                )
                     .frame(maxHeight: .infinity, alignment: .center)
                     .frame(
                         maxWidth: .infinity,
@@ -343,8 +347,8 @@ struct CanvasScreen: View {
                         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
                 }
 
-                // Dispatch panel
-                if dispatchPanelStore.isVisible {
+                // Dispatch panel — iPad (regular width): side panel
+                if sizeClass == .regular && dispatchPanelStore.isVisible {
                     Color.clear
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
@@ -367,7 +371,9 @@ struct CanvasScreen: View {
                             maxWidth: .infinity,
                             alignment: toolbarSide == .left ? .trailing : .leading
                         )
-                        .transition(.move(edge: toolbarSide == .left ? .trailing : .leading))
+                        .transition(
+                            .move(edge: toolbarSide == .left ? .trailing : .leading)
+                        )
                         .ignoresSafeArea()
                 }
             }
@@ -384,6 +390,14 @@ struct CanvasScreen: View {
             }
         }
         .ignoresSafeArea()
+        .sheet(
+            isPresented: Binding(
+                get: { sizeClass == .compact && dispatchPanelStore.isVisible },
+                set: { if !$0 { dispatchPanelStore.send(.dismissed) } }
+            )
+        ) {
+            DispatchPanelWiringView(store: dispatchPanelStore)
+        }
         .sheet(isPresented: Binding(
             get: { activeLinkURL != nil },
             set: { if !$0 { activeLinkURL = nil } }
@@ -500,6 +514,12 @@ struct CanvasScreen: View {
             guard let url else { return }
             activeLinkURL = url
             dispatchPanelStore.send(.dismissed)
+        }
+        .onChange(of: toolbarStore.isDispatchRequested) { _, requested in
+            guard requested else { return }
+            syncDispatchPanelData()
+            dispatchPanelStore.send(.presented)
+            toolbarStore.send(.dispatchAcknowledged)
         }
     }
 

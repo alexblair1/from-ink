@@ -4,6 +4,7 @@ import ComposableArchitecture
 /// Wiring view for the dispatch panel.
 /// Contains zero layout — exactly one expression in the body.
 ///
+// TODO: Does this all scale? How easy can we add tabs in the dispatch view?
 struct DispatchPanelWiringView: View {
     let store: StoreOf<DispatchPanelFeature>
 

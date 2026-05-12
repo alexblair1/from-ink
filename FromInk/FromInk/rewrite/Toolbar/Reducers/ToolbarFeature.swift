@@ -18,6 +18,7 @@ struct ToolbarFeature: Reducer {
         var openPanel: PanelKind? = nil
         var side: ToolbarSide = .left
         var isBoltVisible: Bool = false
+        var isDispatchRequested: Bool = false
     }
 
     @CasePathable
@@ -47,6 +48,8 @@ struct ToolbarFeature: Reducer {
         case undoTapped
         case redoTapped
         case analyzeTapped
+        case dispatchTapped
+        case dispatchAcknowledged
         case templateSelected(CanvasTemplate)
 
         // Lifecycle
@@ -141,6 +144,14 @@ struct ToolbarFeature: Reducer {
                 return .none
 
             // MARK: - Forwarded to parent
+
+            case .dispatchTapped:
+                state.isDispatchRequested = true
+                return .none
+
+            case .dispatchAcknowledged:
+                state.isDispatchRequested = false
+                return .none
 
             case .undoTapped, .redoTapped, .analyzeTapped, .templateSelected:
                 return .none
