@@ -12,31 +12,18 @@ struct HomeExpandedBrief: View {
     let model: Model
 
     private let ds = DesignSystem.standard
-    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HairlineRule()
                 .padding(.bottom, ds.spacing.base)
 
-            if sizeClass == .regular {
-                // Two-column layout for iPad
-                HStack(alignment: .top, spacing: 0) {
-                    editorialColumn
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            editorialColumn
 
-                    HairlineRule(.vertical)
-                        .padding(.horizontal, ds.spacing.lg)
+            HairlineRule()
+                .padding(.vertical, ds.spacing.base)
 
-                    highlightsColumn
-                        .frame(width: 320, alignment: .leading)
-                }
-            } else {
-                // Stacked layout for iPhone
-                editorialColumn
-                highlightsColumn
-                    .padding(.top, ds.spacing.base)
-            }
+            highlightsColumn
 
             // Footer actions
             footerActions
