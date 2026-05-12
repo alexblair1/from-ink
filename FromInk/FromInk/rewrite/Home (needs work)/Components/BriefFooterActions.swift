@@ -10,12 +10,14 @@ struct BriefFooterActions: View {
         VStack(spacing: 0) {
             HairlineRule()
 
-            HStack(spacing: model.innerSpacing) {
+            HStack {
                 InkButton(
                     "\(model.detailsLabel) →",
                     style: .filled,
                     action: model.onViewDetails
                 )
+
+                Spacer()
 
                 Button(action: model.onCollapse) {
                     HStack(spacing: model.collapseIconSpacing) {
@@ -31,8 +33,6 @@ struct BriefFooterActions: View {
                     .foregroundStyle(model.collapseColor)
                 }
                 .buttonStyle(.plain)
-
-                Spacer()
             }
             .padding(.top, model.topPadding)
         }

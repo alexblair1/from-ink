@@ -110,7 +110,12 @@ struct HomeFeatureView: View {
             ),
             dateBlock: MastheadDateBlock.Model(
                 weekday: Date().formatted(.dateTime.weekday(.wide)),
-                monthDay: Date().formatted(.dateTime.month(.wide).day()),
+                monthDay: Date().formatted(.dateTime.month(.wide).day())
+            ),
+            lede: BriefLede.Model(
+                text: briefSentence(state: state)
+            ),
+            countsBar: BriefCountsBar.Model(
                 eventCount: state.events.count,
                 reminderCount: state.reminders.count,
                 isExpanded: isBriefExpanded,
@@ -119,9 +124,6 @@ struct HomeFeatureView: View {
                         isBriefExpanded.toggle()
                     }
                 }
-            ),
-            lede: BriefLede.Model(
-                text: briefSentence(state: state)
             ),
             editorsNote: EditorsNoteSection.Model(
                 paragraphs: editorsNoteParagraphs(state: state)
@@ -204,6 +206,7 @@ struct HomeFeatureView: View {
             let category = index == 0
                 ? AppStrings.Home.nextUp
                 : AppStrings.Home.upcoming
+            let badge = eventBadge(event, now: now)
             rows.append(
                 HighlightRow.Model(
                     id: "event-\(index)",
@@ -212,7 +215,8 @@ struct HomeFeatureView: View {
                     title: event.title,
                     time: event.startDate.formatted(
                         .dateTime.hour().minute()
-                    )
+                    ),
+                    trailingBadge: badge
                 )
             )
         }
@@ -221,6 +225,7 @@ struct HomeFeatureView: View {
             let category = reminder.dueDate.map {
                 $0 < now ? AppStrings.Home.overdue : AppStrings.Home.today
             } ?? AppStrings.Home.today
+            let badge = reminder.dueDate.map { reminderBadge($0, now: now) } ?? ""
             rows.append(
                 HighlightRow.Model(
                     id: "reminder-\(index)",
@@ -229,7 +234,8 @@ struct HomeFeatureView: View {
                     title: reminder.title,
                     time: reminder.dueDate?.formatted(
                         .dateTime.hour().minute()
-                    ) ?? ""
+                    ) ?? "",
+                    trailingBadge: badge
                 )
             )
         }
@@ -243,6 +249,35 @@ struct HomeFeatureView: View {
         if seconds < 60 { return "\(AppStrings.Home.synced) \(AppStrings.Home.justNow)" }
         let minutes = seconds / 60
         return "\(AppStrings.Home.synced.lowercased()) \(minutes)m ago"
+    }
+
+    private func eventBadge(
+        _ event: CalendarEventSnapshot,
+        now: Date
+    ) -> String {
+        let calendar = Calendar.current
+        if calendar.isDate(event.startDate, inSameDayAs: now)
+            && calendar.isDate(event.endDate, inSameDayAs: now)
+            && calendar.dateComponents(
+                [.hour], from: event.startDate, to: event.endDate
+            ).hour ?? 0 >= 23 {
+            return "All day"
+        }
+        let minutes = Int(event.startDate.timeIntervalSince(now) / 60)
+        if minutes <= 0 { return "Now" }
+        if minutes < 60 { return "In \(minutes) m" }
+        let hours = minutes / 60
+        return "In \(hours) h"
+    }
+
+    private func reminderBadge(_ dueDate: Date, now: Date) -> String {
+        let minutes = Int(dueDate.timeIntervalSince(now) / 60)
+        if minutes <= 0 { return "Overdue" }
+        if minutes < 60 { return "In \(minutes) m" }
+        let hours = minutes / 60
+        if hours < 24 { return "In \(hours) h" }
+        let days = hours / 24
+        return "In \(days) d"
     }
 
     private func relativeTimeLabel(_ date: Date) -> String {

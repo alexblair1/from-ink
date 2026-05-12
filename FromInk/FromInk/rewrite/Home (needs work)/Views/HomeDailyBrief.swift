@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The daily brief section: meta row, date, lede, and expandable editorial + highlights.
+/// The daily brief section: meta row, date, lede, counts bar, and expandable content.
 /// Feature view — no TCA imports.
 ///
 struct HomeDailyBrief: View {
@@ -11,21 +11,26 @@ struct HomeDailyBrief: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-
-            // Components handle their own horizontal padding
+            // Shared top — identical in collapsed and expanded
             BriefMetaRow(model: model.metaRow)
                 .padding(.top, ds.spacing.md)
 
             MastheadDateBlock(model: model.dateBlock)
+                .padding(.horizontal, ds.spacing.lg)
                 .padding(.top, ds.spacing.sm)
 
             BriefLede(model: model.lede)
 
-            // Bottom rule (collapsed) / separator before editor's note (expanded)
             HairlineRule()
                 .padding(.top, ds.spacing.base)
                 .padding(.horizontal, ds.spacing.lg)
 
+            BriefCountsBar(model: model.countsBar)
+
+            HairlineRule()
+                .padding(.horizontal, ds.spacing.lg)
+
+            // Expanded content
             if isExpanded {
                 EditorsNoteSection(model: model.editorsNote)
 
@@ -70,6 +75,7 @@ extension HomeDailyBrief {
         let metaRow: BriefMetaRow.Model
         let dateBlock: MastheadDateBlock.Model
         let lede: BriefLede.Model
+        let countsBar: BriefCountsBar.Model
         let editorsNote: EditorsNoteSection.Model
         let highlights: [HighlightRow.Model]
         let footerActions: BriefFooterActions.Model
