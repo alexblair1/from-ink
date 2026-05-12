@@ -8,41 +8,47 @@ struct MastheadDateBlock: View {
     let model: Model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: model.innerSpacing) {
-            // Date + collapse toggle
-            HStack(alignment: .firstTextBaseline) {
-                dateText
-                Spacer()
+        HStack(alignment: .bottom) {
+            dateText
+
+            Spacer()
+
+            // Right column: toggle + counts, bottom-aligned with the date
+            VStack(alignment: .trailing, spacing: model.innerSpacing) {
                 Button(action: model.onToggle) {
                     HStack(spacing: model.toggleSpacing) {
                         Text(model.toggleLabel)
                             .underline(color: model.toggleColor)
                         Image(systemName: model.toggleIcon)
-                            .font(.system(size: model.toggleIconSize, weight: .medium))
+                            .font(.system(
+                                size: model.toggleIconSize,
+                                weight: .medium
+                            ))
                     }
                     .font(model.toggleFont)
                     .tracking(model.toggleTracking)
                     .foregroundStyle(model.toggleColor)
                 }
                 .buttonStyle(.plain)
-            }
 
-            // Counts row
-            HStack(spacing: model.countsSpacing) {
-                Spacer()
-                HStack(spacing: model.countInnerSpacing) {
-                    Image(systemName: "calendar")
-                        .font(model.countIconFont)
-                        .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(model.countColor)
-                    MonoLabel(model.eventsLabel, color: model.countColor)
-                }
-                HStack(spacing: model.countInnerSpacing) {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .font(model.countIconFont)
-                        .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(model.countColor)
-                    MonoLabel(model.remindersLabel, color: model.countColor)
+                HStack(spacing: model.countsSpacing) {
+                    HStack(spacing: model.countInnerSpacing) {
+                        Image(systemName: "calendar")
+                            .font(model.countIconFont)
+                            .symbolRenderingMode(.monochrome)
+                            .foregroundStyle(model.countColor)
+                        MonoLabel(model.eventsLabel, color: model.countColor)
+                    }
+                    HStack(spacing: model.countInnerSpacing) {
+                        Image(systemName: "line.3.horizontal.decrease")
+                            .font(model.countIconFont)
+                            .symbolRenderingMode(.monochrome)
+                            .foregroundStyle(model.countColor)
+                        MonoLabel(
+                            model.remindersLabel,
+                            color: model.countColor
+                        )
+                    }
                 }
             }
         }

@@ -11,10 +11,8 @@ struct HomeDailyBrief: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Rectangle()
-                .fill(ds.colors.ink)
-                .frame(height: 2)
 
+            // Components handle their own horizontal padding
             BriefMetaRow(model: model.metaRow)
                 .padding(.top, ds.spacing.md)
 
@@ -23,25 +21,28 @@ struct HomeDailyBrief: View {
 
             BriefLede(model: model.lede)
 
+            // Bottom rule (collapsed) / separator before editor's note (expanded)
+            HairlineRule()
+                .padding(.top, ds.spacing.base)
+                .padding(.horizontal, ds.spacing.lg)
+
             if isExpanded {
                 EditorsNoteSection(model: model.editorsNote)
 
                 HairlineRule()
-                    .padding(.horizontal, ds.spacing.lg)
                     .padding(.vertical, ds.spacing.base)
+                    .padding(.horizontal, ds.spacing.lg)
 
                 highlightsSection
                     .padding(.horizontal, ds.spacing.lg)
 
                 BriefFooterActions(model: model.footerActions)
-            }
 
-            Rectangle()
-                .fill(ds.colors.ink)
-                .frame(height: ds.layout.borderWidth)
-                .padding(.top, ds.spacing.base)
+                HairlineRule()
+                    .padding(.top, ds.spacing.base)
+                    .padding(.horizontal, ds.spacing.lg)
+            }
         }
-        .padding(.horizontal, ds.spacing.lg)
     }
 
     private var highlightsSection: some View {

@@ -2,14 +2,12 @@ import SwiftUI
 import SwiftData
 import ComposableArchitecture
 
-/// Feature view that bridges real data into the stateless `HomeScreen`.
+/// Feature view that bridges real data into the stateless home screen.
 ///
 /// Owns:
 ///   - `DailyBriefFeature` TCA store (weather, events, reminders, AI brief)
 ///   - SwiftData queries for `Notebook` and `Folder`
 ///   - Navigation state (active notebook, new-notebook sheet)
-///
-/// Delegates all rendering to `HomeScreen` via its `Model`.
 ///
 struct HomeFeatureView: View {
     @Query(sort: \Notebook.lastOpenedAt, order: .reverse) private var notebooks: [Notebook]
@@ -21,6 +19,7 @@ struct HomeFeatureView: View {
         DailyBriefFeature()
     }
     @State private var searchText = ""
+    @State private var isBriefExpanded = false
     @State private var activeNotebook: Notebook? = nil
     @State private var showNewNotebookSheet = false
     @State private var showSettings = false
@@ -28,7 +27,9 @@ struct HomeFeatureView: View {
 
     private var filteredNotebooks: [Notebook] {
         guard !searchText.isEmpty else { return notebooks }
-        return notebooks.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+        return notebooks.filter {
+            $0.title.localizedCaseInsensitiveContains(searchText)
+        }
     }
 
     private var rootNotebooks: [Notebook] {
@@ -36,169 +37,223 @@ struct HomeFeatureView: View {
     }
 
     var body: some View {
-        HomeScreen(model: homeModel)
-            .onAppear {
-                briefStore.send(.appeared)
-                seedNotebookIfNeeded()
-            }
-            .fullScreenCover(item: $activeNotebook) { notebook in
-                NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
-            }
-            .overlay {
-                if showSettings {
-                    SettingsScreen(onDismiss: { showSettings = false })
-                        .transition(.opacity)
-                }
-            }
-            .animation(ds.animation.standard, value: showSettings)
-            .overlay {
-                if showNewNotebookSheet {
-                    NewNotebookOverlay(
-                        title: $newNotebookTitle,
-                        onCreate: {
-                            let notebook = Notebook(
-                                title: newNotebookTitle.isEmpty ? AppStrings.Common.untitled : newNotebookTitle
-                            )
-                            modelContext.insert(notebook)
-                            try? modelContext.save()
-                            showNewNotebookSheet = false
-                            activeNotebook = notebook
-                        },
-                        onCancel: {
-                            showNewNotebookSheet = false
-                        }
-                    )
+        HomeScreenView(
+            model: homeScreenModel,
+            searchText: $searchText,
+            isBriefExpanded: $isBriefExpanded
+        )
+        .onAppear {
+            briefStore.send(.appeared)
+            seedNotebookIfNeeded()
+        }
+        .fullScreenCover(item: $activeNotebook) { notebook in
+            NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
+        }
+        .overlay {
+            if showSettings {
+                SettingsScreen(onDismiss: { showSettings = false })
                     .transition(.opacity)
-                }
             }
-            .animation(ds.animation.standard, value: showNewNotebookSheet)
+        }
+        .animation(ds.animation.standard, value: showSettings)
+        .overlay {
+            if showNewNotebookSheet {
+                NewNotebookOverlay(
+                    title: $newNotebookTitle,
+                    onCreate: {
+                        let notebook = Notebook(
+                            title: newNotebookTitle.isEmpty
+                                ? AppStrings.Common.untitled
+                                : newNotebookTitle
+                        )
+                        modelContext.insert(notebook)
+                        try? modelContext.save()
+                        showNewNotebookSheet = false
+                        activeNotebook = notebook
+                    },
+                    onCancel: { showNewNotebookSheet = false }
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(ds.animation.standard, value: showNewNotebookSheet)
     }
 
-    // MARK: - Model bridge
+    // MARK: - Model Bridge
 
-    private var homeModel: HomeScreen.Model {
-        HomeScreen.Model(
-            masthead: mastheadModel,
-            searchText: $searchText,
-            onSearchChanged: { searchText = $0 },
-            folders: folders.map { folder in
-                HomeScreen.Model.FolderItem(
-                    id: folder.id,
-                    name: folder.name,
-                    notebookCount: notebooks.filter { $0.folderID == folder.id }.count,
-                    icon: "folder"
-                )
-            },
-            notebooks: rootNotebooks.map { notebook in
-                HomeScreen.Model.NotebookItem(
-                    id: notebook.id,
-                    title: notebook.title,
-                    subtitle: notebook.lastOpenedAt.formatted(.relative(presentation: .named)),
-                    coverColor: coverColor(for: notebook)
-                )
-            },
-            onFolder: { _ in /* folder navigation — not yet wired */ },
-            onNotebook: { id in
-                if let notebook = notebooks.first(where: { $0.id == id }) {
+    private var homeScreenModel: HomeScreenView.Model {
+        HomeScreenView.Model(
+            topBar: topBarModel,
+            dailyBrief: dailyBriefModel,
+            shelf: shelfModel,
+            notebooks: notebookCards
+        )
+    }
+
+    private var topBarModel: HomeTopBar.Model {
+        HomeTopBar.Model(
+            onSettings: { showSettings = true },
+            onCompose: {
+                newNotebookTitle = ""
+                showNewNotebookSheet = true
+            }
+        )
+    }
+
+    private var dailyBriefModel: HomeDailyBrief.Model {
+        let state = briefStore.withState { $0 }
+
+        return HomeDailyBrief.Model(
+            metaRow: BriefMetaRow.Model(
+                syncLabel: syncLabel(for: state.lastRefreshed),
+                shortDate: shortDateLabel
+            ),
+            dateBlock: MastheadDateBlock.Model(
+                weekday: Date().formatted(.dateTime.weekday(.wide)),
+                monthDay: Date().formatted(.dateTime.month(.wide).day()),
+                eventCount: state.events.count,
+                reminderCount: state.reminders.count,
+                isExpanded: isBriefExpanded,
+                onToggle: {
+                    withAnimation(ds.animation.standard) {
+                        isBriefExpanded.toggle()
+                    }
+                }
+            ),
+            lede: BriefLede.Model(
+                text: briefSentence(state: state)
+            ),
+            editorsNote: EditorsNoteSection.Model(
+                paragraphs: editorsNoteParagraphs(state: state)
+            ),
+            highlights: highlightRows(state: state),
+            footerActions: BriefFooterActions.Model(
+                onViewDetails: { },
+                onCollapse: {
+                    withAnimation(ds.animation.standard) {
+                        isBriefExpanded = false
+                    }
+                }
+            )
+        )
+    }
+
+    private var shelfModel: HomeNotebookShelf.Model {
+        HomeNotebookShelf.Model(notebooks: notebookCards)
+    }
+
+    private var notebookCards: [HomeNotebookShelf.NotebookCardModel] {
+        rootNotebooks.map { notebook in
+            HomeNotebookShelf.NotebookCardModel(
+                id: notebook.id,
+                title: notebook.title,
+                timeLabel: relativeTimeLabel(notebook.lastOpenedAt),
+                onTap: {
                     notebook.lastOpenedAt = Date()
                     try? modelContext.save()
                     activeNotebook = notebook
                 }
-            },
-            onNewNotebook: {
-                newNotebookTitle = ""
-                showNewNotebookSheet = true
-            },
-            onSettings: { showSettings = true }
-        )
+            )
+        }
     }
 
-    private var mastheadModel: HomeMasthead.Model {
-        let state = briefStore.withState { $0 }
+    // MARK: - Brief Helpers
 
-        return HomeMasthead.Model(
-            weekday: Date().formatted(.dateTime.weekday(.wide)),
-            monthDay: Date().formatted(.dateTime.month(.wide).day()),
-            syncLabel: syncLabel(for: state.lastRefreshed),
-            briefSentence: briefSentence(state: state),
-            eventCount: state.events.count,
-            reminderCount: state.reminders.count,
-            birthdayCount: 0,
-            weather: state.weather.map { weather in
-                HomeMasthead.Model.WeatherInfo(
-                    symbolName: weather.symbolName,
-                    transitionSymbol: nil,
-                    temperature: weather.formattedTemperature,
-                    sunrise: nil,
-                    sunset: nil
-                )
-            },
-            expandedBrief: expandedBriefModel(state: state),
-            onViewDetails: { }
-        )
+    private var shortDateLabel: String {
+        let d = Date()
+        let weekday = d.formatted(.dateTime.weekday(.abbreviated)).uppercased()
+        let date = d.formatted(.dateTime.month(.twoDigits).day(.twoDigits).year(.twoDigits))
+        return "\(weekday) · \(date)"
     }
 
-    // MARK: - Brief helpers
-
-    /// The masthead shows only the first sentence — a concise headline.
-    /// The full multi-sentence focus lives in the expanded editor's note.
     private func briefSentence(state: DailyBriefFeature.State) -> String {
         if let focus = state.brief?.focus, !focus.isEmpty {
             return firstSentence(of: focus)
         }
-        return firstSentence(of: narrativeFallback(events: state.events, reminders: state.reminders))
+        return firstSentence(of: narrativeFallback(
+            events: state.events,
+            reminders: state.reminders
+        ))
     }
 
-    private func expandedBriefModel(state: DailyBriefFeature.State) -> HomeExpandedBrief.Model {
+    private func editorsNoteParagraphs(state: DailyBriefFeature.State) -> [String] {
         var paragraphs: [String] = []
         if let brief = state.brief {
             if !brief.focus.isEmpty { paragraphs.append(brief.focus) }
             if !brief.suggestion.isEmpty { paragraphs.append(brief.suggestion) }
         }
         if paragraphs.isEmpty {
-            paragraphs = [narrativeFallback(events: state.events, reminders: state.reminders)]
+            paragraphs = [narrativeFallback(
+                events: state.events,
+                reminders: state.reminders
+            )]
         }
+        return paragraphs
+    }
 
-        var highlights: [HomeExpandedBrief.Model.Highlight] = []
-
-        // Next 3 upcoming events
+    private func highlightRows(
+        state: DailyBriefFeature.State
+    ) -> [HighlightRow.Model] {
+        var rows: [HighlightRow.Model] = []
         let now = Date()
-        let upcomingEvents = state.events.filter { $0.startDate >= now || $0.endDate >= now }
+
+        let upcomingEvents = state.events.filter {
+            $0.startDate >= now || $0.endDate >= now
+        }
         for (index, event) in upcomingEvents.prefix(3).enumerated() {
-            let label = index == 0 ? AppStrings.Home.nextUp : AppStrings.Home.upcoming
-            highlights.append(.init(
-                icon: "calendar",
-                label: label,
-                text: "\(event.title) · \(event.startDate.formatted(.dateTime.hour().minute()))"
-            ))
+            let category = index == 0
+                ? AppStrings.Home.nextUp
+                : AppStrings.Home.upcoming
+            rows.append(
+                HighlightRow.Model(
+                    id: "event-\(index)",
+                    category: category,
+                    icon: "calendar",
+                    title: event.title,
+                    time: event.startDate.formatted(
+                        .dateTime.hour().minute()
+                    )
+                )
+            )
         }
 
-        // Up to 3 due/overdue reminders
-        for reminder in state.reminders.prefix(3) {
-            let dueLabel = reminder.dueDate.map {
+        for (index, reminder) in state.reminders.prefix(3).enumerated() {
+            let category = reminder.dueDate.map {
                 $0 < now ? AppStrings.Home.overdue : AppStrings.Home.today
             } ?? AppStrings.Home.today
-            highlights.append(.init(
-                icon: "checklist",
-                label: dueLabel,
-                text: reminder.title
-            ))
+            rows.append(
+                HighlightRow.Model(
+                    id: "reminder-\(index)",
+                    category: category,
+                    icon: "clock",
+                    title: reminder.title,
+                    time: reminder.dueDate?.formatted(
+                        .dateTime.hour().minute()
+                    ) ?? ""
+                )
+            )
         }
 
-        return HomeExpandedBrief.Model(
-            paragraphs: paragraphs,
-            highlights: highlights,
-            onViewDetails: { },
-            onCollapse: { }
-        )
+        return rows
     }
 
     private func syncLabel(for date: Date?) -> String {
         guard let date else { return "loading" }
         let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "synced just now" }
+        if seconds < 60 { return "\(AppStrings.Home.synced) \(AppStrings.Home.justNow)" }
         let minutes = seconds / 60
-        return "synced \(minutes)m ago"
+        return "\(AppStrings.Home.synced.lowercased()) \(minutes)m ago"
+    }
+
+    private func relativeTimeLabel(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 { return "Now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes) m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours) h" }
+        let days = hours / 24
+        return "\(days) d"
     }
 
     private func narrativeFallback(
@@ -210,27 +265,28 @@ struct HomeFeatureView: View {
         }
         var parts: [String] = []
         switch events.count {
-        case 0: parts.append("No events scheduled today.")
-        case 1: parts.append("You have \(events[0].title) at \(events[0].startDate.formatted(.dateTime.hour().minute())) today.")
+        case 0:
+            parts.append("No events scheduled today.")
+        case 1:
+            let time = events[0].startDate.formatted(.dateTime.hour().minute())
+            parts.append("You have \(events[0].title) at \(time) today.")
         default:
-            let listed = events.prefix(3).map { "\($0.title) at \($0.startDate.formatted(.dateTime.hour().minute()))" }
+            let listed = events.prefix(3).map {
+                "\($0.title) at \($0.startDate.formatted(.dateTime.hour().minute()))"
+            }
             let tail = events.count > 3 ? " and \(events.count - 3) more" : ""
             parts.append("Today: \(listed.joined(separator: ", "))\(tail).")
         }
         if !reminders.isEmpty {
-            parts.append("\(reminders.count) reminder\(reminders.count == 1 ? "" : "s") due.")
+            let s = reminders.count == 1 ? "" : "s"
+            parts.append("\(reminders.count) reminder\(s) due.")
         }
         return parts.joined(separator: " ")
     }
 
     private func firstSentence(of text: String) -> String {
         guard let range = text.range(of: ".", options: .literal) else { return text }
-        let sentence = String(text[text.startIndex...range.lowerBound])
-        return sentence
-    }
-
-    private func coverColor(for notebook: Notebook) -> Color {
-        Color(hex: notebook.coverColorHex) ?? ColorTokens.standard.ink
+        return String(text[text.startIndex...range.lowerBound])
     }
 
     // MARK: - Seed
@@ -242,5 +298,4 @@ struct HomeFeatureView: View {
             try? modelContext.save()
         }
     }
-
 }

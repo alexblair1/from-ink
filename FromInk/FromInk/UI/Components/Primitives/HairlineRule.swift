@@ -13,7 +13,7 @@ struct HairlineRule: View {
     let thickness: CGFloat
     let style: Style
 
-    init(_ axis: Axis = .horizontal, thickness: CGFloat = 0.5, style: Style = .standard) {
+    init(_ axis: Axis = .horizontal, thickness: CGFloat = 1, style: Style = .standard) {
         self.axis = axis
         self.thickness = thickness
         self.style = style
