@@ -1,10 +1,4 @@
-//
-//  FromInkApp.swift
-//  FromInk
-//
-//  Created by Alex Blair on 5/1/26.
-//
-
+import ComposableArchitecture
 import SwiftUI
 import SwiftData
 
@@ -12,12 +6,25 @@ import SwiftData
 struct FromInkApp: App {
     @AppStorage("appearanceSetting") private var appearance: AppearanceSetting = .system
 
+    private let container: AppDependencyContainer
+    private let store: StoreOf<AppFeature>
+
+    init() {
+        let container = AppDependencyContainer.live()
+        self.container = container
+        self.store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: { deps in
+            container.install(into: &deps)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppRootWiringView(store: store)
                 .designSystem(.standard)
                 .preferredColorScheme(appearance.colorScheme)
         }
-        .modelContainer(for: [Item.self, RoutedItem.self, Notebook.self, Folder.self])
+        .modelContainer(container.modelContainerForSwiftUI)
     }
 }

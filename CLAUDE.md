@@ -17,6 +17,8 @@ The following EDDs are the authoritative specifications for their respective dom
 | **Toolbar** | `Documentation/toolbar_edd.md` | ToolbarFeature reducer, ToolID, ToolDescriptor, toolbar zones, panel presentation, per-tool settings persistence, Apple Pencil gesture mapping |
 | **PKCE** | `Documentation/pkce_edd.md` | OAuthService + KeychainService TCA clients, PKCEEngine, provider configs, token lifecycle, auth state machine, multi-account support |
 | **Integration Matrix** | `Documentation/integration_matrix_edd.md` | V1 native Apple integrations, V2 OAuth PKCE integrations, URL scheme integrations, dropped integrations, the PKCE rule |
+| **Bootstrap** | `Documentation/bootstrap_edd.md` | AppDependencyContainer composition root, BootstrapFeature state machine, stage DAG, failure model, launch UI, app entry point |
+| **Dates** | `Documentation/dates_edd.md` | CalendarContext dependency, day-key semantics, SwiftData + CloudKit date rules, DST-safe arithmetic, FM date parsing, no bare `Date()` |
 
 **Key cross-references:**
 - View layer taxonomy (Component / Feature / Wiring) and the Style pattern apply to ALL view code — including toolbar views, settings, and home screen.
@@ -454,6 +456,73 @@ When adding or replacing icons, default to SF Symbols rather than custom assets,
 
 ---
 
+## Localization: AppStrings
+
+All user-facing strings are centralized in the `AppStrings` enum and injected into views through the Model layer — never hardcoded in view bodies, adapters, or reducers.
+
+### Structure
+
+`AppStrings` lives at `UI/DesignSystem/AppStrings.swift` and is extended per feature in `AppStrings+{Feature}.swift` files colocated with their feature:
+
+```swift
+// In AppStrings+Settings.swift (colocated with Settings/)
+extension AppStrings {
+    enum Settings {
+        static let title = NSLocalizedString(
+            "settings.title",
+            value: "Settings",
+            comment: "Settings screen title"
+        )
+    }
+}
+```
+
+### Rules
+
+1. **Every user-facing string goes through `AppStrings`.** No string literals in `Text(...)`, `Button(...)`, or Model properties that render as user-visible text. Log messages, debug strings, and SwiftData keys are exempt.
+2. **Use `NSLocalizedString(_:value:comment:)`.** The `value` parameter is the English default. The `comment` describes context for translators. The key uses dot-separated namespacing: `"{feature}.{identifier}"`.
+3. **Strings are injected through the Model layer.** The adapter or Model init resolves `AppStrings.Feature.label` into a `String` property on the Model. The view reads `model.title` — it never references `AppStrings` directly.
+4. **One `AppStrings+{Feature}.swift` file per feature.** Do not add strings for a new feature to an existing feature's extension. Keep the mapping 1:1.
+5. **Foundation Models output is not localized.** AI-generated text (focus paragraphs, suggestions) passes through as-is. Only the surrounding chrome (section headers, buttons, labels) goes through `AppStrings`.
+
+```swift
+// Correct — string resolved in adapter, view reads model.title
+struct BootstrapFailureView: View {
+    let model: Model
+    var body: some View {
+        Text(model.title)       // "Unable to Start" — from AppStrings
+        Button(action: model.onRetry) {
+            Text(model.retryLabel)  // "Try Again" — from AppStrings
+        }
+    }
+}
+
+extension BootstrapFailureView {
+    struct Model {
+        let title: String
+        let retryLabel: String
+        let onRetry: () -> Void
+    }
+}
+
+// In the adapter / wiring view:
+BootstrapFailureView(model: .init(
+    title: AppStrings.Bootstrap.unableToStart,
+    retryLabel: AppStrings.Bootstrap.tryAgain,
+    onRetry: { store.send(.bootstrap(.retry)) }
+))
+```
+
+```swift
+// Don't — hardcoded string in view body
+Text("Unable to Start")
+
+// Don't — view references AppStrings directly
+Text(AppStrings.Bootstrap.unableToStart)
+```
+
+---
+
 ## Design System
 
 > **Full specification:** See `Documentation/design_system_edd.md` for the complete token definitions, Style struct pattern, and component view contract.
@@ -825,4 +894,6 @@ Do not mock `VNRecognizeTextRequest` — use real fixtures of known handwriting 
 - Do not put hot-path drawing code through TCA — 60fps PaperKit callbacks stay imperative
 - Do not use `cornerRadius` or spring animations anywhere in UI chrome
 - Do not hardcode hex color values — always use named Color Sets via `Color("token-name")`
+- Do not hardcode user-facing strings in views, adapters, or reducers — all UI text goes through `AppStrings` and is injected via the Model layer
+- Do not reference `AppStrings` directly in view bodies — resolve strings in the adapter or Model init, views read `model.label`
 - Do not submit to the App Store before deploying the CloudKit schema to Production

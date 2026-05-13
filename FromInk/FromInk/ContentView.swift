@@ -1,26 +1,10 @@
 import SwiftUI
 
+/// Legacy bootstrap view — replaced by AppRootWiringView.
+/// Kept temporarily until Xcode project references are cleaned up.
+///
 struct ContentView: View {
-    @State private var isLaunching = true
-
-    private let ds = DesignSystem.standard
-
     var body: some View {
-        ZStack {
-            HomeFeatureView()
-                .opacity(isLaunching ? 0 : 1)
-
-            if isLaunching {
-                LaunchScreen()
-                    .transition(.opacity)
-            }
-        }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                withAnimation(.linear(duration: 0.3)) {
-                    isLaunching = false
-                }
-            }
-        }
+        HomeFeatureView(initialBrief: nil)
     }
 }
