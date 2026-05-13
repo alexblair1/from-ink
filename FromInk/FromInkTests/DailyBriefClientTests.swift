@@ -37,6 +37,7 @@ final class DailyBriefClientTests: XCTestCase {
                 )
             },
             refresh: { fatalError("Should not be called") },
+            fetch: { _ in nil },
             calendarChanges: { AsyncStream { $0.finish() } }
         )
 
@@ -66,6 +67,7 @@ final class DailyBriefClientTests: XCTestCase {
                 )
             },
             refresh: { fatalError("Should not be called") },
+            fetch: { _ in nil },
             calendarChanges: { AsyncStream { $0.finish() } }
         )
 
@@ -96,6 +98,7 @@ final class DailyBriefClientTests: XCTestCase {
                     highlights: []
                 )
             },
+            fetch: { _ in nil },
             calendarChanges: { AsyncStream { $0.finish() } }
         )
 
@@ -129,6 +132,7 @@ final class DailyBriefClientTests: XCTestCase {
                 )
             },
             refresh: { fatalError("Should not be called") },
+            fetch: { _ in nil },
             calendarChanges: { stream }
         )
 

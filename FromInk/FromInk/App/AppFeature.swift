@@ -5,16 +5,14 @@ struct AppFeature: Reducer {
     @ObservableState
     struct State: Equatable {
         var bootstrap: BootstrapFeature.State = .init()
+        var home: HomeFeature.State?
     }
 
     @CasePathable
     enum Action {
         case bootstrap(BootstrapFeature.Action)
-        case calendarChanged
-        case briefRefreshed(DailyBriefSnapshot)
+        case home(HomeFeature.Action)
     }
-
-    @Dependency(\.dailyBriefClient) var dailyBriefClient
 
     var body: some Reducer<State, Action> {
         Scope(state: \.bootstrap, action: \.bootstrap) {
@@ -23,30 +21,26 @@ struct AppFeature: Reducer {
 
         Reduce { state, action in
             switch action {
-            case .bootstrap(.stageCompleted(.briefSeed, _)):
-                return .run { send in
-                    for await _ in dailyBriefClient.calendarChanges() {
-                        await send(.calendarChanged)
-                    }
+            case .bootstrap(.delegate(.bootCompleted(let brief, _))):
+                var homeState = HomeFeature.State()
+                if let brief {
+                    homeState.briefState = .loaded(brief)
                 }
-                .cancellable(id: "calendarObservation")
+                state.home = homeState
+                return .none
 
-            case .calendarChanged:
-                return .run { send in
-                    do {
-                        let snapshot = try await dailyBriefClient.fetchOrGenerate()
-                        await send(.briefRefreshed(snapshot))
-                    } catch {}
-                }
-
-            case .briefRefreshed(let snapshot):
-                state.bootstrap.seededBrief = snapshot
+            case .bootstrap(.delegate(.bootFailed)):
                 return .none
 
             case .bootstrap:
                 return .none
+
+            case .home:
+                return .none
             }
         }
+        .ifLet(\.home, action: \.home) {
+            HomeFeature()
+        }
     }
-
 }

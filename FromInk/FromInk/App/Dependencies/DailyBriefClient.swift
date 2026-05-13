@@ -9,69 +9,26 @@ private let log = Logger(subsystem: "com.fromink.app", category: "DailyBrief")
 struct DailyBriefClient: Sendable {
     var fetchOrGenerate: @Sendable () async throws -> DailyBriefSnapshot
     var refresh: @Sendable () async throws -> DailyBriefSnapshot
+    var fetch: @Sendable (String) async -> DailyBriefSnapshot?
     var calendarChanges: @Sendable () -> AsyncStream<Void>
 }
 
 // MARK: - DependencyKey
 
 extension DailyBriefClient: DependencyKey {
+    /// Minimal fallback — not a functioning implementation.
+    /// The real live client is built via .live() factory in AppDependencyContainer.
     static let liveValue = DailyBriefClient(
-        fetchOrGenerate: {
-            @Dependency(\.calendarContext) var cal
-            let now = cal.now()
-            return DailyBriefSnapshot(
-                dayKey: cal.dayKey(now),
-                focusText: "No events or reminders today. A clear day for deep work.",
-                suggestionText: "",
-                eventCount: 0,
-                reminderCount: 0,
-                generatedAt: now,
-                highlights: []
-            )
-        },
-        refresh: {
-            @Dependency(\.calendarContext) var cal
-            let now = cal.now()
-            return DailyBriefSnapshot(
-                dayKey: cal.dayKey(now),
-                focusText: "No events or reminders today. A clear day for deep work.",
-                suggestionText: "",
-                eventCount: 0,
-                reminderCount: 0,
-                generatedAt: now,
-                highlights: []
-            )
-        },
+        fetchOrGenerate: { throw CancellationError() },
+        refresh: { throw CancellationError() },
+        fetch: { _ in nil },
         calendarChanges: { AsyncStream { $0.finish() } }
     )
 
     static let testValue = DailyBriefClient(
-        fetchOrGenerate: {
-            @Dependency(\.calendarContext) var cal
-            let now = cal.now()
-            return DailyBriefSnapshot(
-                dayKey: cal.dayKey(now),
-                focusText: "A clear day for deep work.",
-                suggestionText: "",
-                eventCount: 0,
-                reminderCount: 0,
-                generatedAt: now,
-                highlights: []
-            )
-        },
-        refresh: {
-            @Dependency(\.calendarContext) var cal
-            let now = cal.now()
-            return DailyBriefSnapshot(
-                dayKey: cal.dayKey(now),
-                focusText: "Refreshed brief.",
-                suggestionText: "",
-                eventCount: 0,
-                reminderCount: 0,
-                generatedAt: now,
-                highlights: []
-            )
-        },
+        fetchOrGenerate: { throw CancellationError() },
+        refresh: { throw CancellationError() },
+        fetch: { _ in nil },
         calendarChanges: { AsyncStream { $0.finish() } }
     )
 }
@@ -112,6 +69,9 @@ extension DailyBriefClient {
                     foundationModels: foundationModels,
                     cal: calendarContext
                 )
+            },
+            fetch: { dayKey in
+                await _fetch(forDayKey: dayKey, modelContext: modelContext)
             },
             calendarChanges: {
                 AsyncStream { continuation in
@@ -224,6 +184,20 @@ private func _refresh(
         foundationModels: foundationModels,
         cal: cal
     )
+}
+
+// MARK: - Read-only fetch
+
+@MainActor
+private func _fetch(
+    forDayKey dayKey: String,
+    modelContext: SyncedModelContextDependency
+) -> DailyBriefSnapshot? {
+    let context = modelContext.context()
+    guard let record = try? loadRecord(forDayKey: dayKey, context: context) else {
+        return nil
+    }
+    return DailyBriefSnapshot(record: record)
 }
 
 // MARK: - SwiftData operations
@@ -372,7 +346,7 @@ private func buildHighlights(
 
     let upcoming = events.filter { $0.startDate >= now || $0.endDate >= now }
     for (index, event) in upcoming.prefix(3).enumerated() {
-        let category = index == 0 ? "Next up" : "Upcoming"
+        let category = index == 0 ? AppStrings.Home.nextUp : AppStrings.Home.upcoming
         highlights.append(
             StoredHighlight(
                 category: category,
@@ -388,8 +362,8 @@ private func buildHighlights(
 
     for reminder in reminders.prefix(3) {
         let category = reminder.dueDate.map {
-            $0 < now ? "Overdue" : "Today"
-        } ?? "Today"
+            $0 < now ? AppStrings.Home.overdue : AppStrings.Home.today
+        } ?? AppStrings.Home.today
         highlights.append(
             StoredHighlight(
                 category: category,
@@ -413,16 +387,16 @@ private func eventBadge(
 ) -> String {
     let userCal = cal.userCalendar()
     let hours = userCal.dateComponents([.hour], from: event.startDate, to: event.endDate).hour ?? 0
-    if cal.isSameDay(event.startDate, now) && hours >= 23 { return "All day" }
+    if cal.isSameDay(event.startDate, now) && hours >= 23 { return AppStrings.Home.allDay }
     let minutes = Int(event.startDate.timeIntervalSince(now) / 60)
-    if minutes <= 0 { return "Now" }
+    if minutes <= 0 { return AppStrings.Home.now }
     if minutes < 60 { return "In \(minutes) m" }
     return "In \(minutes / 60) h"
 }
 
 private func reminderBadge(_ dueDate: Date, now: Date) -> String {
     let minutes = Int(dueDate.timeIntervalSince(now) / 60)
-    if minutes <= 0 { return "Overdue" }
+    if minutes <= 0 { return AppStrings.Home.overdue }
     if minutes < 60 { return "In \(minutes) m" }
     let hours = minutes / 60
     if hours < 24 { return "In \(hours) h" }
@@ -471,12 +445,12 @@ private func rawFocusFallback(
     reminders: [ReminderSnapshot]
 ) -> String {
     guard !events.isEmpty || !reminders.isEmpty else {
-        return "No events or reminders today. A clear day for deep work."
+        return AppStrings.Home.noEventsToday
     }
     var parts: [String] = []
     switch events.count {
     case 0:
-        parts.append("No events scheduled today.")
+        parts.append(AppStrings.Home.noEventsScheduled)
     case 1:
         let time = events[0].startDate.formatted(.dateTime.hour().minute())
         parts.append("You have \(events[0].title) at \(time) today.")

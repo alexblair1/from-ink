@@ -24,6 +24,7 @@ struct TypographyTokens: Sendable {
 
     let editorBody: Font
     let editorHeading: Font
+    let noteBody: Font
     let monoLabel: Font
     let monoSmall: Font
 
@@ -53,6 +54,7 @@ struct TypographyTokens: Sendable {
         caption:       .caption,
         editorBody:    .system(size: 18, weight: .regular, design: .serif),
         editorHeading: .system(size: 24, weight: .semibold, design: .serif).italic(),
+        noteBody:      .system(size: 16, weight: .regular, design: .default),
         monoLabel:     .system(size: 11, weight: .medium, design: .monospaced),
         monoSmall:     .system(size: 10, weight: .regular, design: .monospaced)
     )

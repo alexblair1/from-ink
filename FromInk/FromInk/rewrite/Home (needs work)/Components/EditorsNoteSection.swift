@@ -63,9 +63,9 @@ extension EditorsNoteSection.Model {
         self.labelColor = ds.colors.ink2
         self.labelIconSize = 11
         self.labelIconSpacing = 6
-        self.bodyFont = ds.typography.editorBody
-        self.bodyColor = ds.colors.ink
-        self.lineSpacing = 5
+        self.bodyFont = ds.typography.noteBody
+        self.bodyColor = ds.colors.ink2
+        self.lineSpacing = 6
         self.paragraphSpacing = ds.spacing.md
         self.horizontalPadding = ds.spacing.lg
         self.topPadding = ds.spacing.base

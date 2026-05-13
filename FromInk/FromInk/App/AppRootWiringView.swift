@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Root wiring view. Switches on bootstrap phase:
 /// - .launching: LaunchScreen
-/// - .ready: HomeFeatureView
+/// - .ready: HomeWiringView (scoped to HomeFeature)
 /// - .failed: BootstrapFailureView with retry
 ///
 /// The .task fires BootstrapFeature.start — the one allowed
@@ -11,8 +11,6 @@ import SwiftUI
 ///
 struct AppRootWiringView: View {
     let store: StoreOf<AppFeature>
-
-    private let ds = DesignSystem.standard
 
     var body: some View {
         ZStack {
@@ -22,7 +20,9 @@ struct AppRootWiringView: View {
                     .transition(.opacity)
 
             case .ready:
-                HomeFeatureView(initialBrief: store.bootstrap.seededBrief)
+                if let homeStore = store.scope(state: \.home, action: \.home) {
+                    HomeWiringView(store: homeStore)
+                }
 
             case .failed:
                 BootstrapFailureView(

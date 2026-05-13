@@ -101,7 +101,7 @@ extension HomeNotebookShelf.Model {
         notebooks: [HomeNotebookShelf.NotebookCardModel],
         ds: DesignSystem = .standard
     ) {
-        self.sectionTitle = "Notebooks"
+        self.sectionTitle = AppStrings.Home.notebooks
         self.notebookCount = notebooks.count
         self.sortLabel = "\(AppStrings.Home.lastModified) ↓"
         self.notebooks = notebooks

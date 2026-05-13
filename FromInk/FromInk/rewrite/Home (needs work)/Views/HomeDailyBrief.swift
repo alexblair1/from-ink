@@ -48,6 +48,8 @@ struct HomeDailyBrief: View {
                     .padding(.horizontal, ds.spacing.lg)
             }
         }
+        .clipped()
+        .animation(ds.animation.standard, value: isExpanded)
     }
 
     private var highlightsSection: some View {

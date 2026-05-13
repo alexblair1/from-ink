@@ -122,5 +122,30 @@ extension AppStrings {
             value: "just now",
             comment: "Sync status just now"
         )
+        static let allDay = NSLocalizedString(
+            "home.allDay",
+            value: "All day",
+            comment: "All-day event badge"
+        )
+        static let now = NSLocalizedString(
+            "home.now",
+            value: "Now",
+            comment: "Current event or recent time badge"
+        )
+        static let notebooks = NSLocalizedString(
+            "home.notebooks",
+            value: "Notebooks",
+            comment: "Notebooks shelf section title"
+        )
+        static let noEventsToday = NSLocalizedString(
+            "home.noEventsToday",
+            value: "No events or reminders today. A clear day for deep work.",
+            comment: "Empty brief fallback text"
+        )
+        static let noEventsScheduled = NSLocalizedString(
+            "home.noEventsScheduled",
+            value: "No events scheduled today.",
+            comment: "Empty calendar fallback text"
+        )
     }
 }

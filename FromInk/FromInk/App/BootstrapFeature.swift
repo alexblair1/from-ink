@@ -11,7 +11,7 @@ struct BootstrapFeature: Reducer {
         var completedStages: Set<Stage> = []
         var degradations: Set<Degradation> = []
         var error: BootstrapError?
-        var seededBrief: DailyBriefSnapshot?
+        var _seededBrief: DailyBriefSnapshot?
 
         enum Phase: Equatable {
             case launching
@@ -41,6 +41,15 @@ struct BootstrapFeature: Reducer {
         case stageFailedRequired(Stage, BootstrapError)
         case briefSeeded(DailyBriefSnapshot)
         case retry
+        case delegate(Delegate)
+
+        enum Delegate: Equatable {
+            case bootCompleted(
+                brief: DailyBriefSnapshot?,
+                degradations: Set<Degradation>
+            )
+            case bootFailed(BootstrapError)
+        }
     }
 
     var body: some Reducer<State, Action> {
@@ -61,31 +70,41 @@ struct BootstrapFeature: Reducer {
 
                 let effect = nextStage(after: stage, state: state)
 
-                // briefSeed is the terminal stage — transition to ready.
                 if state.completedStages.contains(.briefSeed) {
                     state.phase = .ready
                     state.currentStage = nil
+                    return .merge(
+                        effect,
+                        .send(.delegate(.bootCompleted(
+                            brief: state._seededBrief,
+                            degradations: state.degradations
+                        )))
+                    )
                 }
 
                 return effect
 
             case .briefSeeded(let snapshot):
-                state.seededBrief = snapshot
+                state._seededBrief = snapshot
                 return .none
 
             case .stageFailedRequired(_, let error):
                 state.phase = .failed
                 state.currentStage = nil
                 state.error = error
-                return .none
+                return .send(.delegate(.bootFailed(error)))
 
             case .retry:
                 state.phase = .launching
                 state.error = nil
+                state._seededBrief = nil
                 state.completedStages.removeAll()
                 state.degradations.removeAll()
                 state.currentStage = .storage
                 return runStorage()
+
+            case .delegate:
+                return .none
             }
         }
     }
@@ -176,3 +195,4 @@ struct BootstrapFeature: Reducer {
         }
     }
 }
+
