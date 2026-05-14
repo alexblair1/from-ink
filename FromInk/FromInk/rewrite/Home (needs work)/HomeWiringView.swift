@@ -12,6 +12,7 @@ struct HomeWiringView: View {
     @Query(sort: \Notebook.lastOpenedAt, order: .reverse) private var notebooks: [Notebook]
     @Query(sort: \Folder.sortOrder) private var folders: [Folder]
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
 
     private let ds = DesignSystem.standard
 
@@ -44,6 +45,11 @@ struct HomeWiringView: View {
         .onAppear {
             store.send(.appeared)
             seedNotebookIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                store.send(.foregrounded)
+            }
         }
         .fullScreenCover(item: $activeNotebook) { notebook in
             NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
@@ -96,7 +102,10 @@ struct HomeWiringView: View {
             topBar: topBarModel,
             dailyBrief: dailyBriefModel,
             shelf: shelfModel,
-            notebooks: notebookCards
+            notebooks: notebookCards,
+            emptyState: rootNotebooks.isEmpty
+                ? HomeEmptyState.Model(onCreateNotebook: { store.send(.newNotebookTapped) })
+                : nil
         )
     }
 

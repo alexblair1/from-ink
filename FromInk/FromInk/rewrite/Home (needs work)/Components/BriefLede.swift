@@ -39,7 +39,7 @@ extension BriefLede.Model {
         ds: DesignSystem = .standard
     ) {
         self.text = text
-        self.font = .system(size: 19, weight: .light, design: .serif)
+        self.font = ds.typography.briefLede
         self.color = ds.colors.ink
         self.lineSpacing = ds.spacing.xs
         self.horizontalPadding = ds.spacing.lg

@@ -22,7 +22,6 @@ struct HomeTopBar: View {
 
             Text(model.title)
                 .font(model.titleFont)
-                .italic()
                 .foregroundStyle(model.titleColor)
                 .tracking(model.titleTracking)
 
@@ -74,11 +73,11 @@ extension HomeTopBar.Model {
         ds: DesignSystem = .standard
     ) {
         self.title = AppStrings.Home.title
-        self.leadingIcon = "sun.max"
+        self.leadingIcon = "gearshape"
         self.trailingIcon = "square.and.pencil"
         self.onSettings = onSettings
         self.onCompose = onCompose
-        self.titleFont = .system(size: 18, weight: .regular, design: .serif)
+        self.titleFont = ds.typography.wordmark
         self.titleColor = ds.colors.ink
         self.titleTracking = 0.4
         self.iconColor = ds.colors.ink

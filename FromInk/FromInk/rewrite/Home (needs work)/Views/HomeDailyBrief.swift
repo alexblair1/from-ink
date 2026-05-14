@@ -7,56 +7,42 @@ struct HomeDailyBrief: View {
     let model: Model
     @Binding var isExpanded: Bool
 
-    private let ds = DesignSystem.standard
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Shared top — identical in collapsed and expanded
             BriefMetaRow(model: model.metaRow)
-                .padding(.top, ds.spacing.md)
+                .padding(.top, model.sectionSpacing)
 
             MastheadDateBlock(model: model.dateBlock)
-                .padding(.horizontal, ds.spacing.lg)
-                .padding(.top, ds.spacing.sm)
+                .padding(.horizontal, model.horizontalPadding)
+                .padding(.top, model.innerSpacing)
 
-            BriefLede(model: model.lede)
+            EditorsNoteSection(model: model.editorsNote)
 
             HairlineRule()
-                .padding(.top, ds.spacing.base)
-                .padding(.horizontal, ds.spacing.lg)
+                .padding(.top, model.ruleSpacing)
+                .padding(.horizontal, model.horizontalPadding)
 
             BriefCountsBar(model: model.countsBar)
 
             HairlineRule()
-                .padding(.horizontal, ds.spacing.lg)
+                .padding(.horizontal, model.horizontalPadding)
 
-            // Expanded content
+            // Expanded content — events calendar
             if isExpanded {
-                EditorsNoteSection(model: model.editorsNote)
-
-                HairlineRule()
-                    .padding(.vertical, ds.spacing.base)
-                    .padding(.horizontal, ds.spacing.lg)
-
                 highlightsSection
-                    .padding(.horizontal, ds.spacing.lg)
 
                 BriefFooterActions(model: model.footerActions)
 
                 HairlineRule()
-                    .padding(.top, ds.spacing.base)
-                    .padding(.horizontal, ds.spacing.lg)
+                    .padding(.top, model.ruleSpacing)
+                    .padding(.horizontal, model.horizontalPadding)
             }
         }
-        .clipped()
-        .animation(ds.animation.standard, value: isExpanded)
     }
 
     private var highlightsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MonoLabel(AppStrings.Home.highlights, color: ds.colors.ink2)
-                .padding(.bottom, ds.spacing.sm)
-
             ForEach(
                 Array(model.highlights.enumerated()),
                 id: \.element.id
@@ -67,6 +53,7 @@ struct HomeDailyBrief: View {
                 HighlightRow(model: highlight)
             }
         }
+        .padding(.horizontal, model.horizontalPadding)
     }
 }
 
@@ -81,5 +68,40 @@ extension HomeDailyBrief {
         let editorsNote: EditorsNoteSection.Model
         let highlights: [HighlightRow.Model]
         let footerActions: BriefFooterActions.Model
+        let highlightsLabel: String
+        let highlightsLabelColor: Color
+        let horizontalPadding: CGFloat
+        let sectionSpacing: CGFloat
+        let innerSpacing: CGFloat
+        let ruleSpacing: CGFloat
+    }
+}
+
+// MARK: - Model init
+
+extension HomeDailyBrief.Model {
+    init(
+        metaRow: BriefMetaRow.Model,
+        dateBlock: MastheadDateBlock.Model,
+        lede: BriefLede.Model,
+        countsBar: BriefCountsBar.Model,
+        editorsNote: EditorsNoteSection.Model,
+        highlights: [HighlightRow.Model],
+        footerActions: BriefFooterActions.Model,
+        ds: DesignSystem = .standard
+    ) {
+        self.metaRow = metaRow
+        self.dateBlock = dateBlock
+        self.lede = lede
+        self.countsBar = countsBar
+        self.editorsNote = editorsNote
+        self.highlights = highlights
+        self.footerActions = footerActions
+        self.highlightsLabel = AppStrings.Home.highlights
+        self.highlightsLabelColor = ds.colors.ink2
+        self.horizontalPadding = ds.spacing.lg
+        self.sectionSpacing = ds.spacing.md
+        self.innerSpacing = ds.spacing.sm
+        self.ruleSpacing = ds.spacing.base
     }
 }

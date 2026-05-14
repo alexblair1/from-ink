@@ -56,6 +56,16 @@ struct LayoutTokens: Sendable {
     let headerPreviewMinHeight: CGFloat
     let timeBlockWidth: CGFloat
     let spineMinHeight: CGFloat
+    let notebookCardWidth: CGFloat
+    let notebookCardHeight: CGFloat
+    let notebookSpineWidth: CGFloat
+    let notebookCardSpacing: CGFloat
+    let searchIconSize: CGFloat
+    let chevronSize: CGFloat
+    let labelIconSize: CGFloat
+    let emptyStateIconSize: CGFloat
+    let mastheadTracking: CGFloat
+    let scrimOpacity: Double
 
     static let standard = LayoutTokens(
         hitTarget: 44,
@@ -85,7 +95,17 @@ struct LayoutTokens: Sendable {
         dismissHitTarget: 28,
         headerPreviewMinHeight: 80,
         timeBlockWidth: 72,
-        spineMinHeight: 140
+        spineMinHeight: 140,
+        notebookCardWidth: 116,
+        notebookCardHeight: 154,
+        notebookSpineWidth: 6,
+        notebookCardSpacing: 18,
+        searchIconSize: 16,
+        chevronSize: 14,
+        labelIconSize: 11,
+        emptyStateIconSize: 36,
+        mastheadTracking: -1.12,
+        scrimOpacity: 0.25
     )
 }
 

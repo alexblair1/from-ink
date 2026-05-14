@@ -36,9 +36,7 @@ struct HomeSearchField: View {
         .padding(.horizontal, model.fieldPaddingH)
         .padding(.vertical, model.fieldPaddingV)
         .background(model.background)
-        .overlay(
-            Rectangle().strokeBorder(model.borderColor, lineWidth: model.borderWidth)
-        )
+        .clipShape(RoundedRectangle(cornerRadius: model.cornerRadius))
         .padding(.horizontal, model.outerPaddingH)
         .padding(.vertical, model.outerPaddingV)
     }
@@ -56,6 +54,7 @@ extension HomeSearchField {
         let background: Color
         let borderColor: Color
         let borderWidth: CGFloat
+        let cornerRadius: CGFloat
         let iconSize: CGFloat
         let innerSpacing: CGFloat
         let fieldPaddingH: CGFloat
@@ -72,15 +71,16 @@ extension HomeSearchField.Model {
         self.placeholder = AppStrings.Home.searchPlaceholder
         self.font = ds.typography.subheadline
         self.textColor = ds.colors.ink
-        self.iconColor = ds.colors.ink2
+        self.iconColor = ds.colors.ink3
         self.clearColor = ds.colors.ink3
         self.background = ds.colors.surface
-        self.borderColor = ds.colors.rule
-        self.borderWidth = ds.layout.borderWidth
-        self.iconSize = 15
+        self.borderColor = .clear
+        self.borderWidth = 0
+        self.cornerRadius = ds.cornerRadius.row
+        self.iconSize = ds.layout.searchIconSize
         self.innerSpacing = ds.spacing.sm
-        self.fieldPaddingH = ds.spacing.md
-        self.fieldPaddingV = ds.spacing.sm
+        self.fieldPaddingH = ds.spacing.base
+        self.fieldPaddingV = ds.spacing.md
         self.outerPaddingH = ds.spacing.lg
         self.outerPaddingV = ds.spacing.base
     }

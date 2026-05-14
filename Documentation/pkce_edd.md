@@ -703,7 +703,135 @@ func test_connect_linear_success() async {
 
 ---
 
-## 16. Open Questions
+## 16. Proactive Token Maintenance
+
+Tokens must stay warm even when the user isn't making API calls. A "connected" integration that silently becomes disconnected because a refresh token expired during inactivity is a critical UX failure.
+
+### 16.1 Three-layer refresh strategy
+
+**Layer 1 — Foreground sweep (mandatory, V1).**
+When the app foregrounds (via `HomeFeature.foregrounded`), sweep all `IntegrationAccount` entries from the Keychain. Refresh any token expiring within the next hour. Cost: one Keychain read + zero HTTP calls if nothing is near expiry.
+
+**Layer 2 — Background app refresh (mandatory for Slack and Airtable).**
+Register a `BGAppRefreshTask` that runs periodically (iOS schedules opportunistically). The task sweeps all accounts and refreshes tokens expiring within 24 hours, then re-registers the next task. Must complete within the 30-second background execution budget.
+
+This is critical for providers that rotate refresh tokens on every use (Slack ~30 days, Airtable ~60 days). If the refresh token is never exercised, the connection is permanently lost.
+
+**Layer 3 — Token health model (V1 settings UI).**
+A derived `TokenHealth` enum surfaces connection quality in the settings UI:
+
+```swift
+enum TokenHealth: Equatable {
+    case healthy             // expires in > 24h, or no expiry
+    case expiringSoon        // expires in < 24h
+    case expired             // access token gone, refresh token available
+    case reconnectRequired   // refresh failed 401, full re-auth needed
+}
+```
+
+Settings shows a subtle indicator per provider — green dot for healthy, amber for expiring, red for reconnect required.
+
+### 16.2 Provider-specific refresh behavior
+
+| Provider | Refresh token behavior | Risk level | Required layer |
+|---|---|---|---|
+| Linear | No expiry on refresh tokens | Low | Layer 1 sufficient |
+| GitHub | Access tokens don't expire (PAT-like) | Low | No refresh needed |
+| Slack | Refresh token rotates on each use, ~30 day expiry | **High** | Layer 2 mandatory |
+| Canva | Standard refresh, ~30 day expiry | Medium | Layer 2 recommended |
+| Asana | Refresh token ~1 year | Low | Layer 1 sufficient |
+| Todoist | Access token doesn't expire | Low | No refresh needed |
+| Airtable | Refresh token rotates, ~60 day expiry | **High** | Layer 2 mandatory |
+
+### 16.3 Revocation handling
+
+A revoked refresh token is discovered when a refresh attempt returns 401. This can happen during an API call, the foreground sweep, or background refresh. There is no push notification — discovery is always on-attempt.
+
+**State transition:** The connection moves to `.reconnectRequired` (not `.disconnected` — the user didn't disconnect, the provider did):
+
+```
+.connected → refresh returns 401 → .reconnectRequired
+```
+
+**UX behavior:**
+- Non-intrusive banner on home screen or settings: "Linear connection expired — tap to reconnect."
+- One tap starts `ASWebAuthenticationSession` for full re-authorization.
+- If the user ignores it, the app functions normally — Dispatch skips routing to that provider.
+- No modal alerts, no retry loops, no silent account deletion.
+
+### 16.4 Refresh serialization
+
+Token refresh must be serialized per-account. If two API calls both detect an expired token simultaneously and both call `refresh`, the second refresh may invalidate the first's new token on providers that rotate refresh tokens. The `OAuthService` live implementation must gate refresh to one-at-a-time per account using an actor or `LockIsolated` flag, with subsequent callers awaiting the in-flight refresh result.
+
+### 16.5 Architectural placement
+
+- **Layer 1 (foreground sweep):** `AppFeature` intercepts `.home(.foregrounded)`, fires a sweep effect via `OAuthService`
+- **Layer 2 (background refresh):** `BackgroundTaskService` TCA dependency, registered in `AppDependencyContainer`, scheduled during bootstrap
+- **Layer 3 (token health):** Derived on `IntegrationFeature.State`, surfaced in settings UI
+- **Serialization:** Internal to `OAuthService.liveValue` — callers don't need to know
+
+### 16.6 Bootstrap integration
+
+During `BootstrapFeature.runAuthRestore()` (an optional stage), `KeychainService.accounts` is called for each provider to restore `AuthConnectionState` to `.connected` for saved accounts. Tokens that are already expired at boot time trigger an immediate refresh attempt. If the refresh fails with 401, the account is marked `.reconnectRequired` and surfaced as a `Degradation.authNotRestored` on the bootstrap state.
+
+---
+
+## 17. Implementation Corrections
+
+Issues identified during staff review that must be addressed during implementation:
+
+### 17.1 No `@Reducer` macro
+
+The `IntegrationFeature` sketch in §13 uses `@Reducer`. This project uses `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` which causes circular reference during macro expansion. Use manual `Reducer` conformance per CLAUDE.md.
+
+### 17.2 `OAuthToken.isExpired` must not use bare `Date()`
+
+Per the dates EDD, bare `Date()` is prohibited outside `CalendarContext.liveValue` and `@Model` property defaults. `isExpired` cannot be a computed property on the token since value types can't read `@Dependency`. Move the check into `OAuthService.validToken`:
+
+```swift
+// Inside validToken(config, accountID):
+let isExpired = token.expiresAt.map { cal.now() >= $0 } ?? false
+```
+
+Remove `var isExpired` from `OAuthToken`.
+
+### 17.3 `expires_in` → `expiresAt` conversion
+
+OAuth token responses return `expires_in` (seconds from now), not `expiresAt` (absolute date). The code exchange response parser must convert using `CalendarContext`:
+
+```swift
+let expiresAt = response.expiresIn.map { cal.now().addingTimeInterval(TimeInterval($0)) }
+```
+
+### 17.4 Force unwraps in PKCEEngine
+
+`URLComponents(url:resolvingAgainstBaseURL:)` (§5 line 230) and `components.url!` (line 240) can fail. Replace with `guard let` + thrown error. Similarly, `callbackURL.queryValue(for: "code")!` (§7 line 361) must be guarded — error redirects omit the code parameter.
+
+### 17.5 `OAuthError` Equatable conformance
+
+`browserFailed(Error)` wraps `any Error` which is not `Equatable`. TCA actions containing this error require `Equatable`. Add manual conformance comparing by case, not by payload (same pattern as `BootstrapError`).
+
+### 17.6 `ASWebAuthenticationSession` retention
+
+The session object created inside `withCheckedThrowingContinuation` (§11) can be deallocated before the callback fires if nothing retains it. The caller must hold a strong reference — typically via an actor property or a captured local in the `OAuthService` live implementation.
+
+### 17.7 Test values must use `CalendarContext.fixed()`
+
+§14 test values use bare `Date()` and `Date().addingTimeInterval(3600)`. Replace with `CalendarContext.fixed(now:)` for deterministic tests.
+
+---
+
+## 18. Open Questions
+
+| # | Question | Impact |
+|---|---|---|
+| 1 | Should `Integration` enum be extended with the new providers (Canva, Asana, Todoist, Airtable), or should V2 providers use a separate type? | Affects the entire routing/dispatch pipeline. Extending `Integration` is simpler but couples V1 and V2 code. |
+| 2 | How do we handle Todoist's Dynamic Client Registration? | Todoist may require a registration step before the standard PKCE flow. Needs investigation. |
+| 3 | Should the settings screen show connection status for all 7 providers, or only ones the user has expressed interest in? | UX decision — showing all 7 could overwhelm; showing only enabled ones requires a discovery/marketplace UI. |
+| 4 | How do we fetch `displayName` for each provider? | Each provider has a different "get current user" API endpoint. This is the one provider-specific piece of code needed per integration. |
+| 5 | Should we support multiple accounts per provider in V1, or defer to V2? | Multi-account (e.g., personal + work GitHub) is architecturally supported but adds UI complexity. |
+| 6 | Where does the `OAuthProviderConfig.clientID` live? | It's not a secret (PKCE eliminates that concern), but it's environment-specific. Options: build configuration, xcconfig file, or hardcoded constants. |
+| 7 | Should background refresh (Layer 2) be V1 or V2? | Slack and Airtable require it for connection stability. If those providers ship in V2, background refresh can defer. If either ships in V1, it's mandatory. |
 
 | # | Question | Impact |
 |---|---|---|

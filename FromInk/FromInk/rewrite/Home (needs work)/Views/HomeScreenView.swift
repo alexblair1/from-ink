@@ -8,12 +8,11 @@ struct HomeScreenView: View {
     @Binding var searchText: String
     @Binding var isBriefExpanded: Bool
 
-    private let ds = DesignSystem.standard
     @State private var stickyHeaderHeight: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .top) {
-            ds.colors.paper.ignoresSafeArea()
+            model.backgroundColor.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -28,11 +27,11 @@ struct HomeScreenView: View {
                         HomeNotebookShelf(model: model.shelf)
                     }
 
-                    if model.notebooks.isEmpty {
-                        homeEmptyState
+                    if let emptyState = model.emptyState {
+                        HomeEmptyState(model: emptyState)
                     }
 
-                    Spacer().frame(height: ds.spacing.xxl)
+                    Spacer().frame(height: model.bottomSpacing)
                 }
             }
 
@@ -45,27 +44,13 @@ struct HomeScreenView: View {
                     text: $searchText
                 )
             }
-            .background(ds.colors.paper)
+            .background(model.backgroundColor)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
                 stickyHeaderHeight = height
             }
         }
-    }
-
-    private var homeEmptyState: some View {
-        VStack(spacing: ds.spacing.md) {
-            Spacer().frame(height: ds.spacing.xxl)
-            Text(AppStrings.Home.startWriting)
-                .font(ds.typography.editorBody)
-                .foregroundStyle(ds.colors.ink)
-            Text(AppStrings.Home.emptySubtitle)
-                .font(ds.typography.subheadline)
-                .foregroundStyle(ds.colors.ink2)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, ds.spacing.lg)
     }
 }
 
@@ -77,5 +62,29 @@ extension HomeScreenView {
         let dailyBrief: HomeDailyBrief.Model
         let shelf: HomeNotebookShelf.Model
         let notebooks: [HomeNotebookShelf.NotebookCardModel]
+        let emptyState: HomeEmptyState.Model?
+        let backgroundColor: Color
+        let bottomSpacing: CGFloat
+    }
+}
+
+// MARK: - Model init
+
+extension HomeScreenView.Model {
+    init(
+        topBar: HomeTopBar.Model,
+        dailyBrief: HomeDailyBrief.Model,
+        shelf: HomeNotebookShelf.Model,
+        notebooks: [HomeNotebookShelf.NotebookCardModel],
+        emptyState: HomeEmptyState.Model? = nil,
+        ds: DesignSystem = .standard
+    ) {
+        self.topBar = topBar
+        self.dailyBrief = dailyBrief
+        self.shelf = shelf
+        self.notebooks = notebooks
+        self.emptyState = emptyState
+        self.backgroundColor = ds.colors.paper
+        self.bottomSpacing = ds.spacing.xxl
     }
 }

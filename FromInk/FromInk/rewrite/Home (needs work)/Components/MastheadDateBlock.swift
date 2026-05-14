@@ -22,7 +22,6 @@ struct MastheadDateBlock: View {
         +
         Text("\(model.monthDay).")
             .font(model.monthDayFont)
-            .italic()
             .foregroundStyle(model.monthDayColor)
     }
 }
@@ -52,11 +51,11 @@ extension MastheadDateBlock.Model {
     ) {
         self.weekday = weekday
         self.monthDay = monthDay
-        self.weekdayFont = .system(size: 56, weight: .regular, design: .serif)
+        self.weekdayFont = ds.typography.mastheadWeekday
         self.weekdayColor = ds.colors.ink
-        self.weekdayTracking = -1.12
+        self.weekdayTracking = ds.layout.mastheadTracking
         self.commaColor = ds.colors.ink2
-        self.monthDayFont = .system(size: 40, weight: .regular, design: .serif)
+        self.monthDayFont = ds.typography.mastheadMonthDay
         self.monthDayColor = ds.colors.ink2
     }
 }

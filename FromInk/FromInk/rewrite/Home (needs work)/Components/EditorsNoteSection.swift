@@ -61,10 +61,10 @@ extension EditorsNoteSection.Model {
         self.label = AppStrings.Home.editorsNote
         self.paragraphs = paragraphs
         self.labelColor = ds.colors.ink2
-        self.labelIconSize = 11
-        self.labelIconSpacing = 6
-        self.bodyFont = ds.typography.noteBody
-        self.bodyColor = ds.colors.ink2
+        self.labelIconSize = ds.layout.labelIconSize
+        self.labelIconSpacing = ds.spacing.xs
+        self.bodyFont = ds.typography.briefLede
+        self.bodyColor = ds.colors.ink
         self.lineSpacing = 6
         self.paragraphSpacing = ds.spacing.md
         self.horizontalPadding = ds.spacing.lg

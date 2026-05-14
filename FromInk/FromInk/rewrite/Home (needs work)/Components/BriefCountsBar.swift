@@ -106,7 +106,7 @@ extension BriefCountsBar.Model {
         self.countsSpacing = ds.spacing.lg
         self.countInnerSpacing = ds.spacing.xs
         self.chevronColor = ds.colors.ink
-        self.chevronSize = 14
+        self.chevronSize = ds.layout.chevronSize
         self.chevronHitTarget = ds.layout.hitTarget
         self.horizontalPadding = ds.spacing.lg
         self.verticalPadding = ds.spacing.base

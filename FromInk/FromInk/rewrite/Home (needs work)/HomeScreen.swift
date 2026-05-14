@@ -49,7 +49,7 @@ struct HomeScreen: View {
 
                     // ── Empty state ─────────────────────────
                     if model.folders.isEmpty && model.notebooks.isEmpty {
-                        HomeEmptyState(onCreateNotebook: model.onNewNotebook)
+                        HomeEmptyState(model: .init(onCreateNotebook: model.onNewNotebook))
                     }
 
                     Spacer().frame(height: ds.spacing.xxl)

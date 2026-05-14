@@ -30,6 +30,7 @@ struct HomeFeature: Reducer {
     @CasePathable
     enum Action: Equatable {
         case appeared
+        case foregrounded
         case briefLoaded(DailyBriefSnapshot?)
         case calendarChanged
         case briefRefreshed(DailyBriefSnapshot)
@@ -54,6 +55,29 @@ struct HomeFeature: Reducer {
                     loadBrief(forDayKey: dayKey),
                     observeCalendarChanges()
                 )
+
+            case .foregrounded:
+                let now = cal.now()
+                let newDayKey = cal.dayKey(now)
+                let currentDayKey: String? = {
+                    if case .loaded(let snapshot) = state.briefState {
+                        return snapshot.dayKey
+                    }
+                    return nil
+                }()
+                state.currentDate = now
+                if currentDayKey != newDayKey {
+                    state.briefState = .loading
+                    return .run { send in
+                        do {
+                            let snapshot = try await dailyBriefClient.fetchOrGenerate()
+                            await send(.briefRefreshed(snapshot))
+                        } catch {
+                            log.error("Foreground refresh failed: \(error)")
+                        }
+                    }
+                }
+                return .none
 
             case .briefLoaded(.some(let snapshot)):
                 state.briefState = .loaded(snapshot)

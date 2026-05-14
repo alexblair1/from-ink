@@ -6,8 +6,6 @@ import SwiftUI
 struct HomeNotebookShelf: View {
     let model: Model
 
-    private let ds = DesignSystem.standard
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeader(
@@ -16,10 +14,10 @@ struct HomeNotebookShelf: View {
                     count: model.notebookCount
                 ),
                 trailing: {
-                    MonoLabel(model.sortLabel, color: ds.colors.ink2)
+                    MonoLabel(model.sortLabel, color: model.sortLabelColor)
                 }
             )
-            .padding(.horizontal, ds.spacing.lg)
+            .padding(.horizontal, model.outerPadding)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: model.cardSpacing) {
@@ -27,8 +25,8 @@ struct HomeNotebookShelf: View {
                         notebookCard(notebook)
                     }
                 }
-                .padding(.horizontal, ds.spacing.lg)
-                .padding(.vertical, ds.spacing.base)
+                .padding(.horizontal, model.outerPadding)
+                .padding(.vertical, model.scrollVerticalPadding)
             }
         }
     }
@@ -40,27 +38,27 @@ struct HomeNotebookShelf: View {
             VStack(alignment: .leading, spacing: model.cardInnerSpacing) {
                 HStack(spacing: 0) {
                     Rectangle()
-                        .fill(ds.colors.ink)
+                        .fill(model.spineColor)
                         .frame(width: model.spineWidth)
 
-                    ds.colors.paper
+                    model.cardFillColor
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(width: model.cardWidth, height: model.cardHeight)
                 .overlay(
                     Rectangle().strokeBorder(
-                        ds.colors.rule,
+                        model.cardBorderColor,
                         lineWidth: model.cardBorderWidth
                     )
                 )
 
                 Text(notebook.title)
                     .font(model.titleFont)
-                    .foregroundStyle(ds.colors.ink)
+                    .foregroundStyle(model.titleColor)
                     .lineLimit(1)
                     .frame(width: model.cardWidth, alignment: .leading)
 
-                MonoLabel(notebook.timeLabel, size: 9, color: ds.colors.ink2)
+                MonoLabel(notebook.timeLabel, size: 9, color: model.timeLabelColor)
                     .frame(width: model.cardWidth, alignment: .leading)
             }
             .contentShape(Rectangle())
@@ -84,6 +82,14 @@ extension HomeNotebookShelf {
         let cardBorderWidth: CGFloat
         let spineWidth: CGFloat
         let titleFont: Font
+        let outerPadding: CGFloat
+        let scrollVerticalPadding: CGFloat
+        let sortLabelColor: Color
+        let spineColor: Color
+        let cardFillColor: Color
+        let cardBorderColor: Color
+        let titleColor: Color
+        let timeLabelColor: Color
     }
 
     struct NotebookCardModel: Identifiable {
@@ -105,12 +111,20 @@ extension HomeNotebookShelf.Model {
         self.notebookCount = notebooks.count
         self.sortLabel = "\(AppStrings.Home.lastModified) ↓"
         self.notebooks = notebooks
-        self.cardSpacing = 18
+        self.cardSpacing = ds.layout.notebookCardSpacing
         self.cardInnerSpacing = ds.spacing.sm
-        self.cardWidth = 116
-        self.cardHeight = 154
+        self.cardWidth = ds.layout.notebookCardWidth
+        self.cardHeight = ds.layout.notebookCardHeight
         self.cardBorderWidth = ds.layout.borderWidth
-        self.spineWidth = 6
-        self.titleFont = .system(size: 13, weight: .regular, design: .serif)
+        self.spineWidth = ds.layout.notebookSpineWidth
+        self.titleFont = ds.typography.cardTitle
+        self.outerPadding = ds.spacing.lg
+        self.scrollVerticalPadding = ds.spacing.base
+        self.sortLabelColor = ds.colors.ink2
+        self.spineColor = ds.colors.ink
+        self.cardFillColor = ds.colors.paper
+        self.cardBorderColor = ds.colors.rule
+        self.titleColor = ds.colors.ink
+        self.timeLabelColor = ds.colors.ink2
     }
 }
