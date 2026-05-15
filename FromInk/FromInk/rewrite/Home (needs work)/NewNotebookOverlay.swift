@@ -20,29 +20,22 @@ struct NewNotebookOverlay: View {
     var body: some View {
         ZStack {
             // Scrim
-            ds.colors.ink.opacity(0.25)
+            ds.colors.ink.opacity(ds.layout.scrimOpacity)
                 .ignoresSafeArea()
                 .onTapGesture { onCancel() }
 
             // Card
             VStack(alignment: .leading, spacing: 0) {
-                // Header
                 header
-
                 HairlineRule()
-
-                // Notebook preview + title field
                 notebookInput
-
                 HairlineRule()
-
-                // Actions
                 actions
             }
-            .frame(width: 380)
+            .frame(width: ds.layout.dialogWidth)
             .background(ds.colors.paper)
             .overlay(
-                Rectangle().strokeBorder(ds.colors.ink, lineWidth: 1)
+                Rectangle().strokeBorder(ds.colors.ink, lineWidth: ds.layout.borderWidth)
             )
         }
         .onAppear {
@@ -67,15 +60,13 @@ struct NewNotebookOverlay: View {
 
     private var notebookInput: some View {
         HStack(spacing: ds.spacing.base) {
-            // Mini notebook illustration
             notebookPreview
 
-            // Title field
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: ds.spacing.xs) {
                 MonoLabel(AppStrings.Home.titleLabel, size: 9, color: ds.colors.ink3)
 
                 TextField(AppStrings.Common.untitled, text: $title)
-                    .font(.system(size: 20, weight: .regular, design: .serif))
+                    .font(ds.typography.inputTitle)
                     .foregroundStyle(ds.colors.ink)
                     .focused($isFocused)
                     .onSubmit { onCreate() }
@@ -93,13 +84,13 @@ struct NewNotebookOverlay: View {
             HStack(spacing: 0) {
                 Rectangle()
                     .fill(ds.colors.ink)
-                    .frame(width: 6)
+                    .frame(width: ds.layout.notebookSpineWidth)
                 Rectangle()
                     .fill(ds.colors.paper)
                     .overlay(alignment: .leading) {
                         Rectangle()
-                            .fill(ds.colors.ink.opacity(0.85))
-                            .frame(width: 1)
+                            .fill(ds.colors.ink2)
+                            .frame(width: ds.layout.borderWidth)
                             .padding(.leading, ds.spacing.sm)
                     }
             }
@@ -107,7 +98,7 @@ struct NewNotebookOverlay: View {
         }
         .frame(width: ds.layout.thumbnailSize, height: 84)
         .overlay(
-            Rectangle().strokeBorder(ds.colors.rule, lineWidth: 0.5)
+            Rectangle().strokeBorder(ds.colors.rule, lineWidth: ds.layout.borderWidth)
         )
     }
 
@@ -115,7 +106,6 @@ struct NewNotebookOverlay: View {
 
     private var actions: some View {
         HStack(spacing: 0) {
-            // Cancel
             Button(action: onCancel) {
                 Text(AppStrings.Common.cancel)
                     .font(ds.typography.subheadline)
@@ -127,11 +117,10 @@ struct NewNotebookOverlay: View {
 
             HairlineRule(.vertical)
 
-            // Create & Open
             Button(action: onCreate) {
                 HStack(spacing: ds.spacing.sm) {
                     Text(AppStrings.Home.createAndOpen)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(ds.typography.buttonLabel)
                     Image(systemName: "arrow.right")
                         .font(ds.typography.caption)
                 }
@@ -142,6 +131,6 @@ struct NewNotebookOverlay: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(height: 52)
+        .frame(height: ds.layout.sheetHeaderHeight)
     }
 }

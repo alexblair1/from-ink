@@ -53,6 +53,19 @@ final class AppDependencyContainer {
 
     private(set) lazy var locationService: LocationService = .liveValue
 
+    // MARK: - Auth
+
+    private(set) lazy var keychainService: KeychainService = .liveValue
+
+    private(set) lazy var backgroundTokenRefresh: BackgroundTokenRefreshService = .liveValue
+
+    private(set) lazy var oauthService: OAuthService = {
+        OAuthService.live(
+            keychain: keychainService,
+            calendarContext: calendarContext
+        )
+    }()
+
     // MARK: - Composite
 
     private(set) lazy var dailyBriefClient: DailyBriefClient = {
@@ -78,6 +91,9 @@ final class AppDependencyContainer {
         deps.eventKitService = eventKitService
         deps.weatherService = weatherService
         deps.locationService = locationService
+        deps.keychainService = keychainService
+        deps.oauthService = oauthService
+        deps.backgroundTokenRefresh = backgroundTokenRefresh
         deps.dailyBriefClient = dailyBriefClient
     }
 

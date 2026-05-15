@@ -10,6 +10,18 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<string>fetch</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fromink</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>com.fromink.app</string>
+		</dict>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>From Ink uses your location to show local weather in the Daily Brief.</string>
@@ -17,5 +29,13 @@
 	<string>From Ink creates calendar events from your handwritten tasks.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>From Ink saves reminders from your handwritten tasks.</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.fromink.app.token-refresh</string>
+	</array>
+	<key>NSContactsUsageDescription</key>
+	<string>From Ink resolves names from your notes to contacts for calls and messages.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>From Ink uses the camera to scan documents into searchable pages.</string>
 </dict>
 </plist>

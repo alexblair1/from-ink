@@ -89,7 +89,7 @@ extension HighlightRow.Model {
         self.icon = icon
         self.title = title
         self.time = time
-        self.timeSeparator = "  —  "
+        self.timeSeparator = "  \u{2014}  "
         self.trailingBadge = trailingBadge
         self.categoryColor = ds.colors.ink2
         self.iconColor = ds.colors.ink

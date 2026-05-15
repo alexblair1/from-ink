@@ -14,6 +14,8 @@ struct AppFeature: Reducer {
         case home(HomeFeature.Action)
     }
 
+    @Dependency(\.oauthService) var oauthService
+
     var body: some Reducer<State, Action> {
         Scope(state: \.bootstrap, action: \.bootstrap) {
             BootstrapFeature()
@@ -34,6 +36,11 @@ struct AppFeature: Reducer {
 
             case .bootstrap:
                 return .none
+
+            case .home(.foregrounded):
+                return .run { _ in
+                    await oauthService.sweepExpiring(3600)
+                }
 
             case .home:
                 return .none

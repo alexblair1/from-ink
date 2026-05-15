@@ -17,6 +17,8 @@ struct FromInkApp: App {
         } withDependencies: { deps in
             container.install(into: &deps)
         }
+        // Register background tasks before app finishes launching.
+        container.backgroundTokenRefresh.register()
     }
 
     var body: some Scene {

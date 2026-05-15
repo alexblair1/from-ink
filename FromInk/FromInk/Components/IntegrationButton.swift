@@ -48,7 +48,7 @@ struct IntegrationButtonRow: View {
 #Preview {
     HStack(spacing: 4) {
         IntegrationButton(integration: .linear, isSelected: true)
-        IntegrationButton(integration: .github, isSelected: false)
+        IntegrationButton(integration: .slack, isSelected: false)
         IntegrationButton(integration: .reminders, isSelected: false)
         IntegrationButton(integration: .calendar, isSelected: true)
         IntegrationButton(integration: .mail, isSelected: false)

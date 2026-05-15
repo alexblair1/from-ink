@@ -92,7 +92,7 @@ struct CanvasScreen: View {
                     case .needsCalendarUI:
                         activeSheet = .calendarEdit(task)
                     }
-                case .linear, .github, .mail:
+                case .linear, .slack, .mail, .messages, .contacts:
                     break  // stub — covered by future integration issues
                 }
             } catch let error as RoutingError {

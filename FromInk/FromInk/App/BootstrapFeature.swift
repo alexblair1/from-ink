@@ -22,6 +22,7 @@ struct BootstrapFeature: Reducer {
 
     enum Stage: String, CaseIterable, Equatable, Hashable {
         case storage
+        case authRestore
         case eventKitPermission
         case foundationModelsWarmup
         case briefSeed
@@ -32,6 +33,7 @@ struct BootstrapFeature: Reducer {
         case remindersPermissionDenied
         case foundationModelsUnavailable
         case briefSeedSkipped(reason: String)
+        case authNotRestored
     }
 
     enum Action: Equatable {
@@ -121,12 +123,13 @@ struct BootstrapFeature: Reducer {
         switch stage {
         case .storage:
             return .merge(
+                runAuthRestore(),
                 runEventKitPermission(),
                 runFoundationModelsWarmup()
             )
 
-        case .eventKitPermission, .foundationModelsWarmup:
-            let deps: Set<Stage> = [.eventKitPermission, .foundationModelsWarmup]
+        case .authRestore, .eventKitPermission, .foundationModelsWarmup:
+            let deps: Set<Stage> = [.authRestore, .eventKitPermission, .foundationModelsWarmup]
             return deps.isSubset(of: state.completedStages)
                 ? runBriefSeed()
                 : .none
@@ -147,6 +150,31 @@ struct BootstrapFeature: Reducer {
                 await send(.stageCompleted(.storage, []))
             } catch {
                 await send(.stageFailedRequired(.storage, .storageUnavailable(error)))
+            }
+        }
+    }
+
+    private func runAuthRestore() -> Effect<Action> {
+        .run { send in
+            @Dependency(\.keychainService) var keychain
+            @Dependency(\.oauthService) var oauth
+            @Dependency(\.backgroundTokenRefresh) var bgRefresh
+            await send(.stageStarted(.authRestore))
+            var degradations: [Degradation] = []
+            do {
+                let accounts = try keychain.allAccounts()
+                if accounts.isEmpty {
+                    await send(.stageCompleted(.authRestore, []))
+                    return
+                }
+                // Sweep tokens expiring within 1 hour.
+                await oauth.sweepExpiring(3600)
+                // Schedule recurring background refresh for Slack's 30-day token.
+                bgRefresh.scheduleNext()
+                await send(.stageCompleted(.authRestore, degradations))
+            } catch {
+                degradations.append(.authNotRestored)
+                await send(.stageCompleted(.authRestore, degradations))
             }
         }
     }
