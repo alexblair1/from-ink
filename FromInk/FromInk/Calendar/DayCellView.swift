@@ -5,10 +5,13 @@ import SwiftUI
 /// Composes (top → bottom): a bottom-anchored vertical tick, an optional 1pt
 /// baseline marker dot (iPad only), the day-of-week letter, the day number,
 /// and an optional "TODAY" mini-label (iPad only). Tick height encodes
-/// hierarchy — today > week-start (Mon) > weekday > weekend.
+/// hierarchy — today > week-start (first day of user's week) > weekday >
+/// weekend (per `Calendar.isDateInWeekend(_:)`).
 ///
 /// Stateless Component view. The Model holds resolved visual values; the view
-/// branches on nothing.
+/// branches on nothing. Localization (script, digit system, week-start, weekend
+/// definition, today-label translation) is resolved inside the Model init from
+/// the supplied `Date` + `Calendar` + `Locale`.
 ///
 struct DayCellView: View {
     let model: Model
@@ -122,30 +125,58 @@ extension DayCellView.Model {
 
 extension DayCellView.Model {
 
-    /// Convenience init that resolves all visual values from semantic inputs.
+    /// Convenience init that resolves every visual and textual value from a
+    /// Date plus the user's `Calendar` and `Locale`.
+    ///
+    /// All locale-sensitive choices are made here:
+    /// - **Day-of-week letter** uses the calendar's `veryShortStandaloneWeekdaySymbols`
+    ///   under the user's locale (e.g. "M" en-US, "月" ja-JP, "ن" ar-SA, "ב" he-IL).
+    /// - **Day number** is formatted with the user's locale's numbering system
+    ///   (e.g. "13" en-US, "१३" hi-IN, "١٣" ar-SA, "๑๓" th-TH).
+    /// - **`isWeekStart`** is `weekday(date) == calendar.firstWeekday` — Sunday in
+    ///   US Gregorian, Monday in EU, Saturday in IR/IL/SA.
+    /// - **`isWeekend`** uses `calendar.isDateInWeekend(_:)` — Sat+Sun in Gregorian,
+    ///   Fri+Sat in Islamic, etc.
+    /// - **`isToday`** uses `calendar.isDate(_, inSameDayAs:)` against the supplied
+    ///   `today` (must come from `CalendarContext.now()` — never `Date()`).
+    /// - **Today mini-label** uses `AppStrings.Calendar.todayLabel` (translated).
     ///
     /// - Parameters:
     ///   - device: Selects iPad (56pt cell) or iPhone (44pt cell) sizing.
-    ///   - dayLetter: Single character for the day-of-week (e.g. "T").
-    ///   - dayNumber: Day-of-month as a string (e.g. "6").
-    ///   - isToday: Whether this cell represents today's date.
-    ///   - isWeekStart: Whether this cell is a Monday (start of week).
-    ///   - isWeekend: Whether this cell is a Saturday or Sunday.
+    ///   - date: The calendar date this cell represents.
+    ///   - today: The user's current local day, used for `isToday` comparison.
+    ///   - calendar: The user's preferred calendar (from `CalendarContext.userCalendar()`).
+    ///   - locale: The user's preferred locale (from `CalendarContext.userLocale()`).
     ///   - isSelected: Whether this cell is currently centered under the pointer.
     ///   - distanceFromSelection: Absolute distance in cells from the selected cell — drives the opacity falloff so far-away cells fade out toward the mask edges.
     ///   - ds: Design system token bundle.
     init(
         device: Device,
-        dayLetter: String,
-        dayNumber: String,
-        isToday: Bool,
-        isWeekStart: Bool,
-        isWeekend: Bool,
+        date: Date,
+        today: Date,
+        calendar: Calendar,
+        locale: Locale,
         isSelected: Bool,
         distanceFromSelection: Int,
         ds: DesignSystem = .standard
     ) {
+        var cal = calendar
+        cal.locale = locale
+
+        let weekdayIndex = cal.component(.weekday, from: date) - 1
+        let weekdaySymbols = cal.veryShortStandaloneWeekdaySymbols
+        let dayLetter = (0..<weekdaySymbols.count).contains(weekdayIndex)
+            ? weekdaySymbols[weekdayIndex]
+            : ""
+
+        let dayValue = cal.component(.day, from: date)
+        let dayNumber = dayValue.formatted(.number.locale(locale))
+
+        let isToday = cal.isDate(date, inSameDayAs: today)
+        let isWeekStart = cal.component(.weekday, from: date) == cal.firstWeekday
+        let isWeekend = cal.isDateInWeekend(date)
         let distance = max(0, distanceFromSelection)
+
         switch device {
         case .iPad:
             self.cellWidth = 56
@@ -167,7 +198,7 @@ extension DayCellView.Model {
             self.dayNumberItalic = isToday && !isSelected
             self.dayNumberTopSpacing = 4
             let showTodayLabel = isToday && !isSelected
-            self.todayLabel = showTodayLabel ? "today" : nil
+            self.todayLabel = showTodayLabel ? AppStrings.Calendar.todayLabel : nil
             self.todayLabelFont = showTodayLabel ? .system(size: 7.5, weight: .medium, design: .monospaced) : nil
             self.todayLabelTracking = showTodayLabel ? 0.8 : nil
             self.todayLabelColor = showTodayLabel ? ds.colors.ink3 : nil

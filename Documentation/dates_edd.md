@@ -281,7 +281,7 @@ extension CalendarContext {
     /// Default test context — 2026-05-13 00:00 UTC, America/New_York,
     /// Gregorian, en_US_POSIX. Override via `withDependencies` for boundary cases.
     static let testValue = CalendarContext.fixed(
-        now: Date(timeIntervalSince1970: 1_778_803_200)  // 2026-05-13 00:00 UTC
+        now: Date(timeIntervalSince1970: 1_778_630_400)  // 2026-05-13 00:00 UTC
     )
 }
 ```
@@ -633,7 +633,7 @@ The standard pattern: substitute `calendarContext` via `.fixed(now:timeZone:cale
 
 ```swift
 func test_dailyBrief_regenerates_whenDayKeyChanges() async {
-    let midnight = Date(timeIntervalSince1970: 1_778_803_200)  // 2026-05-13 00:00 UTC
+    let midnight = Date(timeIntervalSince1970: 1_778_630_400)  // 2026-05-13 00:00 UTC
 
     let store = TestStore(initialState: DailyBriefFeature.State()) {
         DailyBriefFeature()
@@ -656,7 +656,7 @@ The day-key must be `"2026-05-13"` for the same UTC `Date` regardless of the use
 
 ```swift
 func test_dayKey_isCalendarIndependent() {
-    let utcNoon = Date(timeIntervalSince1970: 1_778_846_400)  // 2026-05-13 12:00 UTC
+    let utcNoon = Date(timeIntervalSince1970: 1_778_673_600)  // 2026-05-13 12:00 UTC
 
     let contexts: [(String, CalendarContext)] = [
         ("en_US Gregorian", .fixed(
@@ -696,7 +696,7 @@ The same UTC moment must produce different day-keys when devices are in differen
 
 ```swift
 func test_dayKey_reflectsUserTimezone() {
-    let moment = Date(timeIntervalSince1970: 1_778_881_500)  // 2026-05-13 21:45 UTC
+    let moment = Date(timeIntervalSince1970: 1_778_708_700)  // 2026-05-13 21:45 UTC
 
     let nyc = CalendarContext.fixed(
         now: moment, timeZone: TimeZone(identifier: "America/New_York")!
@@ -716,7 +716,7 @@ Spring-forward in `America/New_York`, 2026: clocks jump from 02:00 → 03:00 on 
 
 ```swift
 func test_add_handlesSpringForward() {
-    let beforeDST = Date(timeIntervalSince1970: 1_741_408_200)  // 2026-03-08 06:30 UTC = 01:30 EST
+    let beforeDST = Date(timeIntervalSince1970: 1_772_951_400)  // 2026-03-08 06:30 UTC = 01:30 EST
     let cal = CalendarContext.fixed(
         now: beforeDST,
         timeZone: TimeZone(identifier: "America/New_York")!
