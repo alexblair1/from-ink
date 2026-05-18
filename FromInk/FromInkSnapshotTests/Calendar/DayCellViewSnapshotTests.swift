@@ -27,7 +27,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: true,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -43,7 +44,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -59,7 +61,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: true,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -75,7 +78,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 1
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -91,7 +95,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 1
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -107,7 +112,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 4
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -124,7 +130,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 10
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -141,7 +148,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 30
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -159,7 +167,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: true,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -177,7 +186,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -193,7 +203,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: true,
                 distance: 0
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -209,7 +220,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 1
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -225,7 +237,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 4
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
@@ -242,7 +255,8 @@ final class DayCellViewSnapshotTests: XCTestCase {
                 isSelected: false,
                 distance: 30
             ),
-            as: .image(layout: .sizeThatFits)
+            as: .image(layout: .sizeThatFits),
+            record: true
         )
     }
 
