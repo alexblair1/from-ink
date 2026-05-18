@@ -13,8 +13,16 @@ struct HomeWiringView: View {
     @Query(sort: \Folder.sortOrder) private var folders: [Folder]
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    @Dependency(\.calendarContext) private var calendarContext
 
     private let ds = DesignSystem.standard
+
+    /// Days each side of "today" included in the wheel — matches the React
+    /// design mock. Once the journal extent is queryable from SwiftData this
+    /// will become `max(45, daysSinceEarliestBrief)`.
+    private static let wheelRange = 45
 
     @State private var activeNotebook: Notebook? = nil
 
@@ -68,6 +76,7 @@ struct HomeWiringView: View {
             }
         }
         .animation(ds.animation.standard, value: store.isNewNotebookSheetOpen)
+        .animation(ds.animation.standard, value: store.isWheelOpen)
     }
 
     // MARK: - New Notebook Overlay
@@ -105,7 +114,10 @@ struct HomeWiringView: View {
             notebooks: notebookCards,
             emptyState: rootNotebooks.isEmpty
                 ? HomeEmptyState.Model(onCreateNotebook: { store.send(.newNotebookTapped) })
-                : nil
+                : nil,
+            nonFocalOpacity: store.isWheelOpen ? 0.10 : 1.0,
+            nonFocalIsInteractive: !store.isWheelOpen,
+            onScrimTap: store.isWheelOpen ? { store.send(.wheelToggled) } : nil
         )
     }
 
@@ -134,6 +146,17 @@ struct HomeWiringView: View {
                 weekday: store.currentDate.formatted(.dateTime.weekday(.wide)),
                 monthDay: store.currentDate.formatted(.dateTime.month(.wide).day())
             ),
+            onDateTapped: { store.send(.wheelToggled) },
+            timeWarpWheel: store.isWheelOpen ? buildTimeWarpWheel() : nil,
+            mastheadPill: MastheadPill.Model(
+                text: mastheadPillText(),
+                isExpanded: store.isWheelOpen
+            ),
+            backToTodayAction: store.isWarped ? {
+                store.send(.dateWarpedTo(calendarContext.now()))
+            } : nil,
+            onDoneTapped: store.isWheelOpen ? { store.send(.wheelToggled) } : nil,
+            onScrimTap: store.isWheelOpen ? { store.send(.wheelToggled) } : nil,
             lede: BriefLede.Model(
                 text: firstSentence(of: snapshot.focusText)
             ),
@@ -150,7 +173,9 @@ struct HomeWiringView: View {
             footerActions: BriefFooterActions.Model(
                 onViewDetails: { },
                 onCollapse: { store.send(.toggleBriefExpanded) }
-            )
+            ),
+            nonFocalOpacity: store.isWheelOpen ? 0.10 : 1.0,
+            nonFocalIsInteractive: !store.isWheelOpen
         )
     }
 
@@ -165,7 +190,7 @@ struct HomeWiringView: View {
                 title: notebook.title,
                 timeLabel: relativeTimeLabel(notebook.lastOpenedAt),
                 onTap: {
-                    notebook.lastOpenedAt = Date()
+                    notebook.lastOpenedAt = calendarContext.now()
                     try? modelContext.save()
                     store.send(.notebookTapped(id: notebook.id))
                     activeNotebook = notebook
@@ -174,18 +199,79 @@ struct HomeWiringView: View {
         }
     }
 
+    // MARK: - Masthead pill text
+
+    /// Resolves the pill text:
+    /// - Wheel open OR on today → `"Scrub dates"`.
+    /// - Warped (closed) → locale-formatted relative date ("3 days ago",
+    ///   "in 1 week", etc.) via `RelativeDateTimeFormatter`.
+    private func mastheadPillText() -> String {
+        let isViewingToday = calendarContext.isToday(store.currentDate)
+        if store.isWheelOpen || isViewingToday {
+            return AppStrings.Home.scrubDates
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = calendarContext.userLocale()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(
+            for: store.currentDate,
+            relativeTo: calendarContext.now()
+        )
+    }
+
+    // MARK: - Time Warp Wheel
+
+    private func buildTimeWarpWheel() -> TimeWarpWheelScroller.Model {
+        let today = calendarContext.now()
+        let calendar = calendarContext.userCalendar()
+        let dates = (-Self.wheelRange...Self.wheelRange).compactMap { offset in
+            calendarContext.add(.day, offset, today)
+        }
+        let device: TimeWarpWheelView.Model.Device =
+            horizontalSizeClass == .regular ? .iPad : .iPhone
+
+        return TimeWarpWheelScroller.Model(
+            device: device,
+            dates: dates,
+            selectedDate: store.currentDate,
+            today: today,
+            calendar: calendar,
+            locale: calendarContext.userLocale(),
+            timeZone: calendarContext.userTimeZone(),
+            onDateSelected: { date in
+                store.send(.dateWarpedTo(date))
+            }
+        )
+    }
+
     // MARK: - Brief Helpers
 
     private var emptyBriefSnapshot: DailyBriefSnapshot {
         DailyBriefSnapshot(
             dayKey: "",
-            focusText: AppStrings.Home.noEventsToday,
+            focusText: emptyBriefMessage,
             suggestionText: "",
             eventCount: 0,
             reminderCount: 0,
-            generatedAt: Date(),
+            generatedAt: calendarContext.now(),
             highlights: []
         )
+    }
+
+    /// Locale-aware empty message that distinguishes the warped case from
+    /// today. When viewing today's empty state, the user is presumably
+    /// looking at "today is quiet"; when warped, they're looking at a day
+    /// that simply has no recorded brief.
+    private var emptyBriefMessage: String {
+        guard !calendarContext.isToday(store.currentDate) else {
+            return AppStrings.Home.noEventsToday
+        }
+        let formatted = store.currentDate.formatted(
+            .dateTime.weekday(.wide).month(.wide).day().year()
+                .locale(calendarContext.userLocale())
+        )
+        return AppStrings.Home.noBriefForDate(formatted)
     }
 
     private var shortDateLabel: String {
@@ -217,23 +303,32 @@ struct HomeWiringView: View {
     }
 
     private func syncLabel(for date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 {
-            return "\(AppStrings.Home.synced) \(AppStrings.Home.justNow)"
-        }
-        let minutes = seconds / 60
-        return "\(AppStrings.Home.synced.lowercased()) \(minutes)m ago"
+        AppStrings.Home.syncedRelative(relativeFormatter.localizedString(
+            for: date,
+            relativeTo: calendarContext.now()
+        ))
     }
 
+    /// Locale-aware "last touched" label — e.g. "5 minutes ago" / "il y a
+    /// 5 minutes" / "٥ دقائق". Sub-minute durations collapse to the
+    /// localized "Now" label to match the prior visual rhythm.
     private func relativeTimeLabel(_ date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
+        let seconds = abs(calendarContext.now().timeIntervalSince(date))
         if seconds < 60 { return AppStrings.Home.now }
-        let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes) m" }
-        let hours = minutes / 60
-        if hours < 24 { return "\(hours) h" }
-        let days = hours / 24
-        return "\(days) d"
+        return relativeFormatter.localizedString(
+            for: date,
+            relativeTo: calendarContext.now()
+        )
+    }
+
+    /// Lazily-built locale-aware formatter. `RelativeDateTimeFormatter` is
+    /// expensive to construct (CLDR table lookup), so we cache one and rebuild
+    /// only if the user's locale changes mid-render via `.autoupdatingCurrent`.
+    private var relativeFormatter: RelativeDateTimeFormatter {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = calendarContext.userLocale()
+        formatter.unitsStyle = .abbreviated
+        return formatter
     }
 
     private func firstSentence(of text: String) -> String {

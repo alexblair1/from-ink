@@ -14,6 +14,11 @@ struct HomeFeature: Reducer {
         var isSettingsOpen: Bool = false
         var isNewNotebookSheetOpen: Bool = false
         var isRefreshing: Bool = false
+        var isWheelOpen: Bool = false
+        /// True iff the user has warped to a non-today day. While warped,
+        /// `.foregrounded` and `.calendarChanged` are no-ops — they target
+        /// "today's" brief and would clobber the warp.
+        var isWarped: Bool = false
         var searchText: String = ""
 
         init(currentDate: Date? = nil) {
@@ -42,6 +47,12 @@ struct HomeFeature: Reducer {
         case newNotebookDismissed
         case notebookCreated(title: String)
         case notebookTapped(id: UUID)
+        /// User tapped the masthead date — open or close the Time Warp wheel.
+        case wheelToggled
+        /// User scrolled the Time Warp wheel to a new day. Updates
+        /// `currentDate` and reloads the brief for that day-key. No-op if the
+        /// new date is the same user-local day as the current one.
+        case dateWarpedTo(Date)
     }
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
@@ -58,6 +69,10 @@ struct HomeFeature: Reducer {
                 )
 
             case .foregrounded:
+                // Warped users keep their warp across background→foreground.
+                // Auto-refresh logic only applies when viewing "today".
+                guard !state.isWarped else { return .none }
+
                 let now = cal.now()
                 state.currentDate = now
 
@@ -91,6 +106,8 @@ struct HomeFeature: Reducer {
                 return .none
 
             case .calendarChanged:
+                // Skip while warped — would clobber the warped brief with today's.
+                guard !state.isWarped else { return .none }
                 // Skip if a foreground refresh is already in-flight.
                 guard !state.isRefreshing else { return .none }
 
@@ -136,6 +153,28 @@ struct HomeFeature: Reducer {
 
             case .notebookTapped:
                 return .none
+
+            case .wheelToggled:
+                state.isWheelOpen.toggle()
+                return .none
+
+            case .dateWarpedTo(let newDate):
+                // Same user-local day → no-op (wheel snap fires repeatedly
+                // during settle; the reducer absorbs the duplicates).
+                guard !cal.isSameDay(newDate, state.currentDate) else { return .none }
+                state.currentDate = newDate
+                // `isWarped` tracks "not viewing today". Warping back to
+                // today clears the flag and re-arms .foregrounded /
+                // .calendarChanged refreshes.
+                state.isWarped = !cal.isToday(newDate)
+                let dayKey = cal.dayKey(newDate)
+                // Cancel any in-flight foreground or calendar-change refresh
+                // — they target "today" and would clobber the warped brief.
+                return .run { send in
+                    let snapshot = await dailyBriefClient.fetch(dayKey)
+                    await send(.briefLoaded(snapshot))
+                }
+                .cancellable(id: "briefRefresh", cancelInFlight: true)
             }
         }
     }

@@ -23,13 +23,18 @@ struct HomeScreenView: View {
                         isExpanded: $isBriefExpanded
                     )
 
-                    if !model.notebooks.isEmpty {
-                        HomeNotebookShelf(model: model.shelf)
-                    }
+                    Group {
+                        if !model.notebooks.isEmpty {
+                            HomeNotebookShelf(model: model.shelf)
+                        }
 
-                    if let emptyState = model.emptyState {
-                        HomeEmptyState(model: emptyState)
+                        if let emptyState = model.emptyState {
+                            HomeEmptyState(model: emptyState)
+                        }
                     }
+                    .opacity(model.nonFocalOpacity)
+                    .allowsHitTesting(model.nonFocalIsInteractive)
+                    .overlay(scrimOverlay(action: model.onScrimTap))
 
                     Spacer().frame(height: model.bottomSpacing)
                 }
@@ -45,11 +50,26 @@ struct HomeScreenView: View {
                 )
             }
             .background(model.backgroundColor)
+            .opacity(model.nonFocalOpacity)
+            .allowsHitTesting(model.nonFocalIsInteractive)
+            .overlay(scrimOverlay(action: model.onScrimTap))
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
                 stickyHeaderHeight = height
             }
+        }
+    }
+
+    /// Transparent tap-target overlay used to dismiss the wheel when the user
+    /// taps a faded (non-focal) area. Returns an empty view when no scrim
+    /// action is supplied.
+    @ViewBuilder
+    private func scrimOverlay(action: (() -> Void)?) -> some View {
+        if let action {
+            Color.clear
+                .contentShape(.rect)
+                .onTapGesture { action() }
         }
     }
 }
@@ -65,6 +85,15 @@ extension HomeScreenView {
         let emptyState: HomeEmptyState.Model?
         let backgroundColor: Color
         let bottomSpacing: CGFloat
+        /// Opacity for sections outside the wheel's focus (top bar, shelf,
+        /// empty state). `1.0` normally; `~0.10` when the wheel is open.
+        let nonFocalOpacity: Double
+        /// Whether non-focal sections accept hit-testing. Disabled while the
+        /// wheel is open so taps don't fall through to faded notebooks/etc.
+        let nonFocalIsInteractive: Bool
+        /// Action fired when the user taps a faded non-focal area to
+        /// dismiss the wheel. `nil` when the wheel is closed.
+        let onScrimTap: (() -> Void)?
     }
 }
 
@@ -77,6 +106,9 @@ extension HomeScreenView.Model {
         shelf: HomeNotebookShelf.Model,
         notebooks: [HomeNotebookShelf.NotebookCardModel],
         emptyState: HomeEmptyState.Model? = nil,
+        nonFocalOpacity: Double = 1.0,
+        nonFocalIsInteractive: Bool = true,
+        onScrimTap: (() -> Void)? = nil,
         ds: DesignSystem = .standard
     ) {
         self.topBar = topBar
@@ -86,5 +118,8 @@ extension HomeScreenView.Model {
         self.emptyState = emptyState
         self.backgroundColor = ds.colors.paper
         self.bottomSpacing = ds.spacing.xxl
+        self.nonFocalOpacity = nonFocalOpacity
+        self.nonFocalIsInteractive = nonFocalIsInteractive
+        self.onScrimTap = onScrimTap
     }
 }

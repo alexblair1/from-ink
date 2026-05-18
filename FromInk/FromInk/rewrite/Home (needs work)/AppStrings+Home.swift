@@ -147,5 +147,37 @@ extension AppStrings {
             value: "No events scheduled today.",
             comment: "Empty calendar fallback text"
         )
+        static let scrubDates = NSLocalizedString(
+            "home.scrubDates",
+            value: "Scrub dates",
+            comment: "Time Warp wheel disclosure label, shown beside the masthead date."
+        )
+
+        /// Shown when the user has warped to a past or future day with no
+        /// recorded brief. The `%@` placeholder takes a locale-formatted
+        /// long date — e.g. "No brief for Tuesday, May 7, 2026."
+        static func noBriefForDate(_ formattedDate: String) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "home.noBriefForDate",
+                    value: "No brief for %@.",
+                    comment: "Empty brief message shown when the user has warped to a day with no recorded brief. Placeholder is the localized long-form date."
+                ),
+                formattedDate
+            )
+        }
+
+        /// "Synced %@" where %@ is a locale-formatted relative time like
+        /// "just now" or "5 minutes ago". Translators may reorder.
+        static func syncedRelative(_ relative: String) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "home.syncedRelative",
+                    value: "Synced %@",
+                    comment: "Sync status. %@ is a locale-formatted relative time produced by RelativeDateTimeFormatter (e.g. 'just now', '5 minutes ago')."
+                ),
+                relative
+            )
+        }
     }
 }

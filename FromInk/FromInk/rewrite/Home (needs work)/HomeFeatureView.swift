@@ -113,6 +113,10 @@ struct HomeFeatureView: View {
                 weekday: Date().formatted(.dateTime.weekday(.wide)),
                 monthDay: Date().formatted(.dateTime.month(.wide).day())
             ),
+            // Legacy entry point — wheel not wired here. The TCA-based
+            // HomeWiringView is the canonical home view.
+            onDateTapped: { },
+            timeWarpWheel: nil,
             lede: BriefLede.Model(
                 text: firstSentence(of: snapshot.focusText)
             ),
