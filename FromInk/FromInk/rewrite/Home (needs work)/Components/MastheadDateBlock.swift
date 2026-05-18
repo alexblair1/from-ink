@@ -9,20 +9,28 @@ struct MastheadDateBlock: View {
 
     var body: some View {
         (
-            Text(model.weekday)
-                .foregroundStyle(model.weekdayColor)
+            (
+                Text(model.weekday)
+                    .foregroundStyle(model.weekdayColor)
+                +
+                Text(",")
+                    .foregroundStyle(model.commaColor)
+            )
+            .font(model.weekdayFont)
+            .tracking(model.weekdayTracking)
             +
-            Text(",")
-                .foregroundStyle(model.commaColor)
+            Text(" ")
+            +
+            Text("\(model.monthDay).")
+                .font(model.monthDayFont)
+                .foregroundStyle(model.monthDayColor)
         )
-        .font(model.weekdayFont)
-        .tracking(model.weekdayTracking)
-        +
-        Text(" ")
-        +
-        Text("\(model.monthDay).")
-            .font(model.monthDayFont)
-            .foregroundStyle(model.monthDayColor)
+        // Single-line + minimumScaleFactor protects against verbose
+        // localized weekdays ("Mittwoch", "الأربعاء", "水曜日") and narrow
+        // containers (iPhone, iPad split view). Falls back to wrapping
+        // only if the text can't shrink to fit.
+        .lineLimit(model.lineLimit)
+        .minimumScaleFactor(model.minimumScaleFactor)
     }
 }
 
@@ -38,6 +46,8 @@ extension MastheadDateBlock {
         let commaColor: Color
         let monthDayFont: Font
         let monthDayColor: Color
+        let lineLimit: Int
+        let minimumScaleFactor: CGFloat
     }
 }
 
@@ -47,15 +57,24 @@ extension MastheadDateBlock.Model {
     init(
         weekday: String,
         monthDay: String,
+        compact: Bool = false,
         ds: DesignSystem = .standard
     ) {
         self.weekday = weekday
         self.monthDay = monthDay
-        self.weekdayFont = ds.typography.mastheadWeekday
+        self.weekdayFont = compact
+            ? ds.typography.mastheadWeekdayCompact
+            : ds.typography.mastheadWeekday
         self.weekdayColor = ds.colors.ink
         self.weekdayTracking = ds.layout.mastheadTracking
         self.commaColor = ds.colors.ink2
-        self.monthDayFont = ds.typography.mastheadMonthDay
+        self.monthDayFont = compact
+            ? ds.typography.mastheadMonthDayCompact
+            : ds.typography.mastheadMonthDay
         self.monthDayColor = ds.colors.ink2
+        // Compact width never wraps — shrinks instead. Regular width may
+        // wrap for very long compositions but doesn't usually need to.
+        self.lineLimit = compact ? 1 : 2
+        self.minimumScaleFactor = compact ? 0.5 : 0.8
     }
 }

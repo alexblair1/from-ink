@@ -1,30 +1,24 @@
 import SwiftUI
 
-/// The small mono-styled affordance rendered after the masthead date.
+/// The chevron affordance rendered after the masthead date — the visual
+/// indicator that the date is tappable to open the Time Warp wheel.
 ///
-/// Carries two pieces of state-derived information:
-/// 1. **Chevron rotation** — rotated 180° when the wheel is open, signalling
-///    the disclosure-style relationship between the masthead and the wheel.
-/// 2. **Label text** — `"SCRUB DATES"` when the wheel is open or the user is
-///    viewing today; a locale-formatted relative date (e.g. `"3 DAYS AGO"`,
-///    `"IN 1 WEEK"`) when the user is warped to a non-today day.
+/// Originally included a "SCRUB DATES" / relative-time text label, but the
+/// label took too much horizontal space on iPhone and didn't survive
+/// verbose translations cleanly. The component is now just the chevron,
+/// rendered larger to read as a clear button affordance on its own.
 ///
-/// Stateless component — both pieces are pre-resolved in the `Model` init.
+/// Rotates 180° when the wheel is open. Color follows full ink when open,
+/// quieted (ink2) when closed.
 ///
 struct MastheadPill: View {
     let model: Model
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "chevron.down")
-                .font(.system(size: model.chevronSize, weight: .medium))
-                .rotationEffect(model.chevronRotation)
-            Text(model.text)
-                .font(.system(size: model.fontSize, weight: .medium, design: .monospaced))
-                .tracking(model.tracking)
-                .textCase(.uppercase)
-        }
-        .foregroundStyle(model.foreground)
+        Image(systemName: "chevron.down")
+            .font(.system(size: model.chevronSize, weight: .medium))
+            .rotationEffect(model.chevronRotation)
+            .foregroundStyle(model.foreground)
     }
 }
 
@@ -32,11 +26,8 @@ struct MastheadPill: View {
 
 extension MastheadPill {
     struct Model: Equatable {
-        let text: String
         let chevronRotation: Angle
         let chevronSize: CGFloat
-        let fontSize: CGFloat
-        let tracking: CGFloat
         let foreground: Color
     }
 }
@@ -45,15 +36,13 @@ extension MastheadPill {
 
 extension MastheadPill.Model {
     init(
-        text: String,
         isExpanded: Bool,
         ds: DesignSystem = .standard
     ) {
-        self.text = text
         self.chevronRotation = isExpanded ? .degrees(180) : .zero
-        self.chevronSize = 10
-        self.fontSize = 10
-        self.tracking = 1.4
+        // Larger than the previous 10pt text-companion size so the chevron
+        // reads as an affordance on its own without a text label.
+        self.chevronSize = 16
         // Quieter when wheel closed; full-ink when open — matches the
         // React "color: wheelOpen ? t.ink : t.ink2" rule.
         self.foreground = isExpanded ? ds.colors.ink : ds.colors.ink2

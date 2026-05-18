@@ -30,6 +30,27 @@ final class BackToTodayButtonSnapshotTests: XCTestCase {
         )
     }
 
+    func test_verboseFrenchLabel_scalesDown() {
+        // "AUJOURD'HUI" is 11 characters — at natural 10pt mono the button
+        // grows to ~170pt and crowds the masthead. With minimumScaleFactor
+        // 0.7 + allowsTightening, the text shrinks within the pinned 180pt
+        // frame. Snapshot locks the visual.
+        assertSnapshot(
+            of: makeView(label: "Aujourd'hui"),
+            as: .image(layout: .sizeThatFits),
+            record: false
+        )
+    }
+
+    func test_russianLabel_scalesDown() {
+        // "СЕГОДНЯ" — also wider than English.
+        assertSnapshot(
+            of: makeView(label: "Сегодня"),
+            as: .image(layout: .sizeThatFits),
+            record: false
+        )
+    }
+
     /// Pinned frame width. `.sizeThatFits` collapses Text inside HStacks
     /// without an explicit width hint. 180pt is comfortable for ← + "TODAY"
     /// with mono tracking.

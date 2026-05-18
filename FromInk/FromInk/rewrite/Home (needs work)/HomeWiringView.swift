@@ -144,14 +144,12 @@ struct HomeWiringView: View {
             ),
             dateBlock: MastheadDateBlock.Model(
                 weekday: store.currentDate.formatted(.dateTime.weekday(.wide)),
-                monthDay: store.currentDate.formatted(.dateTime.month(.wide).day())
+                monthDay: store.currentDate.formatted(.dateTime.month(.wide).day()),
+                compact: horizontalSizeClass == .compact
             ),
             onDateTapped: { store.send(.wheelToggled) },
             timeWarpWheel: store.isWheelOpen ? buildTimeWarpWheel() : nil,
-            mastheadPill: MastheadPill.Model(
-                text: mastheadPillText(),
-                isExpanded: store.isWheelOpen
-            ),
+            mastheadPill: MastheadPill.Model(isExpanded: store.isWheelOpen),
             mastheadAccessibilityLabel: store.currentDate.formatted(
                 .dateTime.weekday(.wide).month(.wide).day().year()
                     .locale(calendarContext.userLocale())
@@ -204,27 +202,6 @@ struct HomeWiringView: View {
                 }
             )
         }
-    }
-
-    // MARK: - Masthead pill text
-
-    /// Resolves the pill text:
-    /// - Wheel open OR on today → `"Scrub dates"`.
-    /// - Warped (closed) → locale-formatted relative date ("3 days ago",
-    ///   "in 1 week", etc.) via `RelativeDateTimeFormatter`.
-    private func mastheadPillText() -> String {
-        let isViewingToday = calendarContext.isToday(store.currentDate)
-        if store.isWheelOpen || isViewingToday {
-            return AppStrings.Home.scrubDates
-        }
-
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = calendarContext.userLocale()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(
-            for: store.currentDate,
-            relativeTo: calendarContext.now()
-        )
     }
 
     // MARK: - Time Warp Wheel

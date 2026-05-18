@@ -42,6 +42,12 @@ struct TypographyTokens: Sendable {
     let mastheadWeekday: Font
     /// Masthead month/day — New York 40pt regular italic.
     let mastheadMonthDay: Font
+    /// Masthead weekday for compact width class (iPhone, split-view).
+    /// Smaller than the regular variant to accommodate verbose localized
+    /// weekday names — "Mittwoch", "الأربعاء", "水曜日" — without wrapping.
+    let mastheadWeekdayCompact: Font
+    /// Masthead month/day for compact width class.
+    let mastheadMonthDayCompact: Font
     /// Button label — SF Pro 15pt medium.
     let buttonLabel: Font
 
@@ -80,6 +86,8 @@ struct TypographyTokens: Sendable {
         inputTitle:       .system(size: 20, weight: .regular, design: .serif),
         mastheadWeekday:  .system(size: 56, weight: .regular, design: .serif),
         mastheadMonthDay: .system(size: 40, weight: .regular, design: .serif).italic(),
+        mastheadWeekdayCompact:  .system(size: 32, weight: .regular, design: .serif),
+        mastheadMonthDayCompact: .system(size: 22, weight: .regular, design: .serif).italic(),
         buttonLabel:      .system(size: 15, weight: .medium, design: .default)
     )
 }

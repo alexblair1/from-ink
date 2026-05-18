@@ -1,34 +1,67 @@
 import SwiftUI
-import UIKit
 
 /// The interactive Time Warp wheel — wraps a horizontal `ScrollView` of
 /// `DayCellView`s with snap-to-cell behavior and reports the centered cell
 /// back to the caller.
 ///
+/// ## Composition
+///
 /// Differs from `TimeWarpWheelView` only in the cell-strip layer:
 /// `TimeWarpWheelView` lays cells out with a static `.offset(x:)`,
 /// `TimeWarpWheelScroller` lays them out with `ScrollView + LazyHStack +
-/// scrollTargetBehavior(.viewAligned)`. The chrome (baseline rule, center
+/// CenteredCellScrollTargetBehavior`. The chrome (baseline rule, center
 /// pointer, edge fade) is intentionally duplicated rather than abstracted —
 /// the duplication is ~30 lines and keeps each view legible without a
 /// generic chrome wrapper.
 ///
-/// State ownership:
+/// ## Input model
+///
+/// Mirrors the React design source (`time-warp.jsx`):
+/// - **Drag / scroll**: native `ScrollView` snap via `CenteredCellScrollTargetBehavior`
+/// - **Tap cell**: fires `onDateSelected` directly
+/// - **`←` / `→` keys**: walks the wheel by ±1 day via `.onKeyPress`
+/// - **`ESC` key**: closes the wheel via the optional `onClose` callback
+/// - Auto-focuses on appear so keyboard input is immediate
+///
+/// ## State ownership
+///
 /// - **Local `@State scrolledID`**: transient UI state — the day the user is
 ///   currently parked on. Initialized from the model's `selectedDayKey` and
 ///   updated by SwiftUI's native scroll snap.
 /// - **Parent owns `selectedDate`**: domain state. Pushed in via the model.
-///   The dual `.onChange` keeps both directions in sync.
+///   The dual `.onChange` keeps both directions in sync; the guard
+///   `newID != model.selectedDayKey` in `handleUserScroll` filters out
+///   programmatic syncs (which would otherwise echo back to the parent).
 ///
-/// Haptics fire on every snapped-day change. We don't need a "did we finish
-/// initial setup" flag — `handleUserScroll`'s guard already drops the case
-/// where the scroll binding's value matches the model's, which covers both
-/// the initial render and any programmatic sync.
+/// ## Why the custom `ScrollTargetBehavior`
+///
+/// SwiftUI's built-in `.scrollTargetBehavior(.viewAligned)` snaps cells to
+/// the scroll view's leading edge regardless of what `.scrollPosition(anchor:)`
+/// says. That produces an asymmetric bug: programmatic position writes (e.g.
+/// a "Today" button) center correctly, but user-driven scroll snaps land
+/// off-center. `CenteredCellScrollTargetBehavior` snaps `target.rect.midX`
+/// to the nearest cell center, which matches the wheel's stationary
+/// indicator triangle. See `feedback_scroll_snap_alignment.md` in memory.
+///
+/// ## Accessibility
+///
+/// - Each cell carries a locale-aware full-date `accessibilityLabel`
+///   (e.g. "Wednesday, May 13, 2026").
+/// - The selected cell adds `.isSelected`; unselected cells include a
+///   localized hint.
+/// - The wheel is `.focusable()` for the hardware-keyboard focus engine.
+/// - Haptics use `UIImpactFeedbackGenerator(style: .light)` on every
+///   snapped-day change, including arrow-key and tap selection.
 ///
 struct TimeWarpWheelScroller: View {
     let model: Model
 
     @State private var scrolledID: String?
+    /// The day-key whose cell is currently nearest the viewport center,
+    /// updated continuously by `.onScrollGeometryChange`. Drives the
+    /// `.sensoryFeedback` haptic so each cell crossed during a drag fires
+    /// a tick, matching the React design's "each day-tick crossed" rule.
+    @State private var centeredCellID: String?
     /// Auto-focuses the wheel on appear so iPad/Mac keyboard users can press
     /// ←/→ immediately without tabbing to it first.
     @FocusState private var isFocused: Bool
@@ -36,6 +69,9 @@ struct TimeWarpWheelScroller: View {
     init(model: Model) {
         self.model = model
         self._scrolledID = State(initialValue: model.selectedDayKey)
+        // Seed the haptic-trigger state with the initial selected cell so
+        // the first scroll-geometry pass doesn't produce a spurious tick.
+        self._centeredCellID = State(initialValue: model.selectedDayKey)
     }
 
     var body: some View {
@@ -75,6 +111,11 @@ struct TimeWarpWheelScroller: View {
             guard scrolledID != newKey else { return }
             scrolledID = newKey
         }
+        // Per the React design's "each day-tick crossed" rule: a light
+        // haptic fires whenever the centered cell changes, including
+        // continuously during a finger drag (not just on snap-settle).
+        // `centeredCellID` is driven by `.onScrollGeometryChange` above.
+        .sensoryFeedback(.impact(weight: .light), trigger: centeredCellID)
     }
 
     // MARK: - Subviews
@@ -98,7 +139,9 @@ struct TimeWarpWheelScroller: View {
                             // Tap a cell → fire selection directly; the
                             // scrollPosition binding will follow on the
                             // parent's re-render with the new selectedDayKey.
-                            triggerHaptic()
+                            // Haptic is driven by the centered-cell change
+                            // that the upcoming scroll animation will
+                            // produce, so we don't fire one manually here.
                             model.onDateSelected(cell.date)
                         }
                         .accessibilityElement(children: .ignore)
@@ -120,6 +163,17 @@ struct TimeWarpWheelScroller: View {
         .scrollTargetBehavior(CenteredCellScrollTargetBehavior(cellWidth: model.cellWidth))
         .scrollPosition(id: $scrolledID, anchor: .center)
         .scrollClipDisabled()
+        .onScrollGeometryChange(for: String?.self) { geometry in
+            // Compute the day-key of the cell currently sitting at viewport
+            // center in scroll-content coords. Returns nil if the scroll
+            // position lands outside any cell (e.g. during rubber-band).
+            let centerX = geometry.contentOffset.x + geometry.containerSize.width / 2
+            let nearestIndex = Int(((centerX - model.cellWidth / 2) / model.cellWidth).rounded())
+            guard model.cells.indices.contains(nearestIndex) else { return nil }
+            return model.cells[nearestIndex].id
+        } action: { _, newID in
+            centeredCellID = newID
+        }
     }
 
     private var centerPointer: some View {
@@ -163,31 +217,25 @@ struct TimeWarpWheelScroller: View {
     /// Walks `±1` cell from the currently selected one. Fired by the
     /// hardware-keyboard arrow keys; matches the input contract described
     /// in the React design source. Clamps at the wheel's date range
-    /// boundaries.
+    /// boundaries. Haptic is fired by the centered-cell change that the
+    /// upcoming scroll animation will produce.
     private func scrubByOne(delta: Int) {
         guard let currentIndex = model.cells.firstIndex(where: { $0.id == model.selectedDayKey })
         else { return }
         let targetIndex = currentIndex + delta
         guard model.cells.indices.contains(targetIndex) else { return }
-        let target = model.cells[targetIndex]
-        triggerHaptic()
-        model.onDateSelected(target.date)
+        model.onDateSelected(model.cells[targetIndex].date)
     }
 
     private func handleUserScroll(to newID: String?) {
         guard let newID, let date = model.dateForDayKey(newID) else { return }
         // Already in sync with the model — either the initial render, or a
         // programmatic push from the parent that we just mirrored to
-        // `scrolledID`. Either way, the user did not scroll, so no haptic
-        // and no callback.
+        // `scrolledID`. Either way, the user did not scroll, so no callback.
         guard newID != model.selectedDayKey else { return }
-        triggerHaptic()
+        // Haptic is driven by `.onScrollGeometryChange` / `.sensoryFeedback`
+        // — no manual fire here.
         model.onDateSelected(date)
-    }
-
-    private func triggerHaptic() {
-        let generator = UIImpactFeedbackGenerator(style: .light)
-        generator.impactOccurred()
     }
 }
 

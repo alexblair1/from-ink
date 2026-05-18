@@ -147,13 +147,7 @@ extension AppStrings {
             value: "No events scheduled today.",
             comment: "Empty calendar fallback text"
         )
-        static let scrubDates = NSLocalizedString(
-            "home.scrubDates",
-            value: "Scrub dates",
-            comment: "Time Warp wheel disclosure label, shown beside the masthead date."
-        )
-
-        /// Shown when the user has warped to a past or future day with no
+/// Shown when the user has warped to a past or future day with no
         /// recorded brief. The `%@` placeholder takes a locale-formatted
         /// long date — e.g. "No brief for Tuesday, May 7, 2026."
         static func noBriefForDate(_ formattedDate: String) -> String {

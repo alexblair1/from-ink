@@ -1,6 +1,12 @@
 import SwiftUI
 
-/// "DAILY BRIEF · SYNCED JUST NOW" left, "TUE · 05.12.26" right.
+/// "SYNCED JUST NOW" left, "TUE · 05.12.26" right.
+///
+/// Stripped the "DAILY BRIEF · " prefix — the masthead date below already
+/// makes the section's purpose unambiguous, and removing the prefix saves
+/// horizontal space that verbose localized sync labels need ("Synchronisé
+/// il y a 5 minutes", "5分前に同期", etc.).
+///
 /// Component view — no TCA imports.
 ///
 struct BriefMetaRow: View {
@@ -36,7 +42,7 @@ extension BriefMetaRow.Model {
         shortDate: String,
         ds: DesignSystem = .standard
     ) {
-        self.leadingText = "\(AppStrings.Home.dailyBrief) · \(syncLabel)"
+        self.leadingText = syncLabel
         self.trailingText = shortDate
         self.leadingColor = ds.colors.ink3
         self.trailingColor = ds.colors.ink3
