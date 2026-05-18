@@ -7,6 +7,11 @@ struct HomeDailyBrief: View {
     let model: Model
     @Binding var isExpanded: Bool
 
+    /// Honors the system "Reduce Motion" accessibility setting. When true,
+    /// the wheel drawer falls back to a simple opacity fade rather than the
+    /// height-clip drawer animation — required by Apple HIG.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Non-focal top strip
@@ -14,6 +19,7 @@ struct HomeDailyBrief: View {
                 .padding(.top, model.sectionSpacing)
                 .opacity(model.nonFocalOpacity)
                 .allowsHitTesting(model.nonFocalIsInteractive)
+                .accessibilityHidden(!model.nonFocalIsInteractive)
                 .overlay(scrimOverlay(action: model.onScrimTap))
 
             // Focal — masthead is the wheel's tap target; ← TODAY button
@@ -29,6 +35,10 @@ struct HomeDailyBrief: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(model.mastheadAccessibilityLabel)
+                .accessibilityHint(model.mastheadAccessibilityHint)
+                .accessibilityAddTraits(.isButton)
 
                 Spacer(minLength: 0)
 
@@ -45,17 +55,18 @@ struct HomeDailyBrief: View {
 
             // Focal — the wheel itself + optional Done button below.
             //
-            // `.transition(.push(from: .top))` is the critical piece — it
-            // clips the wheel's drawing to its own layout slot during the
-            // slide, so the wheel cannot paint into the masthead's row.
-            // The earlier attempts (`.clipped()` on the moving view,
-            // `.zIndex(-1)` on the VStack child) both failed because
-            // `.move(edge: .top)` does NOT clip to the slot: it translates
-            // the wheel's bounds outside the slot, and rendering follows
-            // the bounds. `.push(from:)`, per Apple docs, "is clipped to
-            // the available space" — exactly the drawer-emerges-from-
-            // behind-the-masthead semantic.
+            // `.transition(.drawer(naturalHeight:))` is the only animation
+            // primitive that actually grows the layout slot: it animates
+            // a frame-height clip from 0 to the wheel's natural height,
+            // anchored at the top. Content below the wheel slot pushes
+            // down smoothly with the slot's growth.
+            //
+            // SwiftUI's built-in `.move(edge: .top)` and `.push(from: .top)`
+            // both translate visually but keep the slot at full height
+            // throughout the animation, leaving an empty gap below the
+            // sliding wheel until it lands. See `DrawerTransition.swift`.
             if let wheelModel = model.timeWarpWheel {
+                let naturalHeight = wheelModel.height + model.doneRowHeight + model.innerSpacing
                 VStack(spacing: model.innerSpacing) {
                     TimeWarpWheelScroller(model: wheelModel)
 
@@ -79,7 +90,11 @@ struct HomeDailyBrief: View {
                     }
                 }
                 .padding(.top, model.innerSpacing)
-                .transition(.push(from: .top).combined(with: .opacity))
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .drawer(naturalHeight: naturalHeight)
+                )
             }
 
             // Non-focal — brief body
@@ -167,6 +182,16 @@ extension HomeDailyBrief {
         let onScrimTap: (() -> Void)?
         let doneLabel: String
         let doneForeground: Color
+        /// Height of the Done↑ row beneath the wheel, used to compute the
+        /// drawer transition's natural height. Resolved in the Model init.
+        let doneRowHeight: CGFloat
+        /// Locale-aware long-form date used as the masthead button's
+        /// VoiceOver label (e.g. "Monday, May 18, 2026").
+        let mastheadAccessibilityLabel: String
+        /// VoiceOver hint for the masthead button. State-dependent:
+        /// `"…open the date scrub wheel"` when closed,
+        /// `"…close the date scrub wheel"` when open.
+        let mastheadAccessibilityHint: String
         let lede: BriefLede.Model
         let countsBar: BriefCountsBar.Model
         let editorsNote: EditorsNoteSection.Model
@@ -196,6 +221,8 @@ extension HomeDailyBrief.Model {
         onDateTapped: @escaping () -> Void,
         timeWarpWheel: TimeWarpWheelScroller.Model?,
         mastheadPill: MastheadPill.Model? = nil,
+        mastheadAccessibilityLabel: String = "",
+        mastheadAccessibilityHint: String = "",
         backToTodayAction: (() -> Void)? = nil,
         onDoneTapped: (() -> Void)? = nil,
         onScrimTap: (() -> Void)? = nil,
@@ -213,12 +240,19 @@ extension HomeDailyBrief.Model {
         self.onDateTapped = onDateTapped
         self.timeWarpWheel = timeWarpWheel
         self.mastheadPill = mastheadPill
+        self.mastheadAccessibilityLabel = mastheadAccessibilityLabel
+        self.mastheadAccessibilityHint = mastheadAccessibilityHint
         self.backToTodayAction = backToTodayAction
         self.backToTodayLabel = AppStrings.Home.today
         self.onDoneTapped = onDoneTapped
         self.onScrimTap = onScrimTap
         self.doneLabel = AppStrings.Common.done
         self.doneForeground = ds.colors.ink
+        // Mono 10pt label + small SF Symbol + ~10pt vertical breathing room
+        // = ~30pt. The constant doesn't need to be exact — slight over-
+        // estimation just leaves a couple of pixels of empty space below
+        // the Done button when the drawer is fully open.
+        self.doneRowHeight = 30
         self.lede = lede
         self.countsBar = countsBar
         self.editorsNote = editorsNote

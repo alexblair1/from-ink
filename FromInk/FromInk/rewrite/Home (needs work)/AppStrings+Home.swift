@@ -167,6 +167,20 @@ extension AppStrings {
             )
         }
 
+        /// VoiceOver hint for the masthead button when the wheel is closed.
+        static let mastheadOpenHint = NSLocalizedString(
+            "home.masthead.open.hint",
+            value: "Double tap to open the date scrub wheel.",
+            comment: "VoiceOver hint for the masthead date when the Time Warp wheel is closed."
+        )
+
+        /// VoiceOver hint for the masthead button when the wheel is open.
+        static let mastheadCloseHint = NSLocalizedString(
+            "home.masthead.close.hint",
+            value: "Double tap to close the date scrub wheel.",
+            comment: "VoiceOver hint for the masthead date when the Time Warp wheel is open."
+        )
+
         /// "Synced %@" where %@ is a locale-formatted relative time like
         /// "just now" or "5 minutes ago". Translators may reorder.
         static func syncedRelative(_ relative: String) -> String {

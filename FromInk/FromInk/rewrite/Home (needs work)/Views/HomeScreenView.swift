@@ -34,6 +34,7 @@ struct HomeScreenView: View {
                     }
                     .opacity(model.nonFocalOpacity)
                     .allowsHitTesting(model.nonFocalIsInteractive)
+                    .accessibilityHidden(!model.nonFocalIsInteractive)
                     .overlay(scrimOverlay(action: model.onScrimTap))
 
                     Spacer().frame(height: model.bottomSpacing)
@@ -52,6 +53,7 @@ struct HomeScreenView: View {
             .background(model.backgroundColor)
             .opacity(model.nonFocalOpacity)
             .allowsHitTesting(model.nonFocalIsInteractive)
+            .accessibilityHidden(!model.nonFocalIsInteractive)
             .overlay(scrimOverlay(action: model.onScrimTap))
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height

@@ -152,6 +152,13 @@ struct HomeWiringView: View {
                 text: mastheadPillText(),
                 isExpanded: store.isWheelOpen
             ),
+            mastheadAccessibilityLabel: store.currentDate.formatted(
+                .dateTime.weekday(.wide).month(.wide).day().year()
+                    .locale(calendarContext.userLocale())
+            ),
+            mastheadAccessibilityHint: store.isWheelOpen
+                ? AppStrings.Home.mastheadCloseHint
+                : AppStrings.Home.mastheadOpenHint,
             backToTodayAction: store.isWarped ? {
                 store.send(.dateWarpedTo(calendarContext.now()))
             } : nil,
@@ -241,7 +248,8 @@ struct HomeWiringView: View {
             timeZone: calendarContext.userTimeZone(),
             onDateSelected: { date in
                 store.send(.dateWarpedTo(date))
-            }
+            },
+            onClose: { store.send(.wheelToggled) }
         )
     }
 
