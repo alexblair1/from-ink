@@ -13,6 +13,7 @@ struct HomeFeature: Reducer {
         var isBriefExpanded: Bool = false
         var isSettingsOpen: Bool = false
         var isNewNotebookSheetOpen: Bool = false
+        var isRefreshing: Bool = false
         var searchText: String = ""
 
         init(currentDate: Date? = nil) {
@@ -58,6 +59,8 @@ struct HomeFeature: Reducer {
 
             case .foregrounded:
                 let now = cal.now()
+                state.currentDate = now
+
                 let newDayKey = cal.dayKey(now)
                 let currentDayKey: String? = {
                     if case .loaded(let snapshot) = state.briefState {
@@ -65,19 +68,19 @@ struct HomeFeature: Reducer {
                     }
                     return nil
                 }()
-                state.currentDate = now
-                if currentDayKey != newDayKey {
-                    state.briefState = .loading
-                    return .run { send in
-                        do {
-                            let snapshot = try await dailyBriefClient.fetchOrGenerate()
-                            await send(.briefRefreshed(snapshot))
-                        } catch {
-                            log.error("Foreground refresh failed: \(error)")
-                        }
+
+                guard currentDayKey != newDayKey else { return .none }
+
+                state.isRefreshing = true
+                return .run { send in
+                    do {
+                        let snapshot = try await dailyBriefClient.fetchOrGenerate()
+                        await send(.briefRefreshed(snapshot))
+                    } catch {
+                        log.error("Foreground refresh failed: \(error)")
                     }
                 }
-                return .none
+                .cancellable(id: "briefRefresh", cancelInFlight: true)
 
             case .briefLoaded(.some(let snapshot)):
                 state.briefState = .loaded(snapshot)
@@ -88,6 +91,10 @@ struct HomeFeature: Reducer {
                 return .none
 
             case .calendarChanged:
+                // Skip if a foreground refresh is already in-flight.
+                guard !state.isRefreshing else { return .none }
+
+                state.isRefreshing = true
                 return .run { send in
                     do {
                         let snapshot = try await dailyBriefClient.fetchOrGenerate()
@@ -96,9 +103,11 @@ struct HomeFeature: Reducer {
                         log.error("Calendar refresh failed: \(error)")
                     }
                 }
+                .cancellable(id: "briefRefresh", cancelInFlight: true)
 
             case .briefRefreshed(let snapshot):
                 state.briefState = .loaded(snapshot)
+                state.isRefreshing = false
                 return .none
 
             case .toggleBriefExpanded:
