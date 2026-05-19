@@ -141,9 +141,10 @@ extension BriefTabSection.Model {
         self.emptyRemindersText = AppStrings.Home.emptyReminders
         self.emptyBirthdaysText = AppStrings.Home.emptyBirthdays
         self.horizontalPadding = ds.spacing.lg
-        // -3pt overlap matches the spec's `margin-top: -3px` on .panel —
-        // deep enough to hide the seam under the active tab.
-        self.panelOverlap = -3
+        // Derived from the same NeumorphicTabStyle token the tab strip
+        // uses for its seam offset — guaranteed to stay in sync. Tuning
+        // seamOffset in NeumorphicTokens automatically retunes both.
+        self.panelOverlap = ds.neumorphicTab.panelOverlap
         self.panelBackground = ds.colors.paper
     }
 }

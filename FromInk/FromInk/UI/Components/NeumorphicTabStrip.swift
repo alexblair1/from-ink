@@ -4,29 +4,19 @@ import SwiftUI
 /// state model — inactive tabs raised, active tab pressed.
 ///
 /// Knows nothing about Calendar/Reminders/Birthdays or any other domain.
-/// Pass an array of `Tab` values keyed by your own `TabID` type and
-/// configuration closures; the strip handles layout, shadows, and the
+/// Pass an array of `Tab` values keyed by your own `TabID` type and a
+/// tap callback; the strip handles layout, neumorphic shadows, and the
 /// seam-killer paper strip that masks the boundary between an active
 /// tab and the panel below.
 ///
-/// Scales to any number of tabs — the grid distributes available width
-/// equally. Pass `showsLabel: false` for icon+count-only compact
-/// presentations (e.g. iPhone).
+/// All geometry (padding, font sizes, seam dimensions) comes from
+/// `DesignSystem.neumorphicTab`. Tuning the look of every strip in the
+/// app happens in one place (`NeumorphicTokens.swift`); no magic numbers
+/// live here.
 ///
-/// Usage:
-///
-/// ```swift
-/// NeumorphicTabStrip(
-///     tabs: [
-///         .init(id: .calendar, iconName: "calendar", label: "Calendar",
-///               countText: "4", isActive: activeTab == .calendar,
-///               isCountZero: false),
-///         // ...
-///     ],
-///     showsLabel: true,
-///     onTabTapped: { tabID in store.send(.tabTapped(tabID)) }
-/// )
-/// ```
+/// Scales to any number of tabs — the HStack distributes available width
+/// equally via `frame(maxWidth: .infinity)`. Pass `showsLabel: false` for
+/// icon+count-only compact presentations (e.g. iPhone).
 ///
 struct NeumorphicTabStrip<TabID: Hashable>: View {
     let tabs: [Tab]
@@ -44,16 +34,17 @@ struct NeumorphicTabStrip<TabID: Hashable>: View {
     }
 
     private func tabButton(_ tab: Tab) -> some View {
-        Button(action: { onTabTapped(tab.id) }) {
-            HStack(spacing: 10) {
+        let style = ds.neumorphicTab
+        return Button(action: { onTabTapped(tab.id) }) {
+            HStack(spacing: style.contentGap) {
                 Image(systemName: tab.iconName)
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: style.iconSize, weight: .regular))
                     .foregroundStyle(ds.colors.ink)
 
                 if showsLabel {
                     Text(tab.label)
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .tracking(2.3)
+                        .font(.system(size: style.labelFontSize, weight: .medium, design: .monospaced))
+                        .tracking(style.labelTracking)
                         .textCase(.uppercase)
                         .foregroundStyle(ds.colors.ink2)
                         .lineLimit(1)
@@ -62,27 +53,22 @@ struct NeumorphicTabStrip<TabID: Hashable>: View {
                 Spacer(minLength: 0)
 
                 Text(tab.countText)
-                    .font(.system(size: 18, weight: .regular, design: .serif))
+                    .font(.system(size: style.countFontSize, weight: .regular, design: .serif))
                     .monospacedDigit()
                     .foregroundStyle(tab.isCountZero ? ds.colors.ink3 : ds.colors.ink)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, style.tabPaddingHorizontal)
+            .padding(.vertical, style.tabPaddingVertical)
             .frame(maxWidth: .infinity)
             .background(ds.colors.paper)
-            .modifier(NeumorphicStateModifier(isActive: tab.isActive))
-            // Seam killer — extend a paper strip down past the active
-            // tab's bottom edge so the active tab's surface bleeds into
-            // the panel below, hiding any subpixel boundary. Inset 4pt
-            // from each side so the surrounding L+R pressed shadows are
-            // not obscured.
+            .modifier(NeumorphicStateModifier(isActive: tab.isActive, elevation: ds.neumorphicElevation))
             .overlay(alignment: .bottom) {
                 if tab.isActive {
                     Rectangle()
                         .fill(ds.colors.paper)
-                        .frame(height: 5)
-                        .padding(.horizontal, 4)
-                        .offset(y: 3)
+                        .frame(height: style.seamHeight)
+                        .padding(.horizontal, style.seamHorizontalInset)
+                        .offset(y: style.seamOffset)
                         .allowsHitTesting(false)
                 }
             }
@@ -123,11 +109,13 @@ extension NeumorphicTabStrip {
 /// extensions so they compose cleanly inside `tabButton(_:)`.
 private struct NeumorphicStateModifier: ViewModifier {
     let isActive: Bool
+    let elevation: NeumorphicElevation
+
     func body(content: Content) -> some View {
         if isActive {
-            content.neumorphicPressed()
+            content.neumorphicPressed(elevation: elevation)
         } else {
-            content.neumorphicRaised()
+            content.neumorphicRaised(elevation: elevation)
         }
     }
 }

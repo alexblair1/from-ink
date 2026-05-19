@@ -9,30 +9,33 @@ import SwiftUI
 /// extremely subtle shadow work — the system reads as physical without
 /// ever looking glossy.
 ///
+/// All shadow alphas, gradient stops, and highlight colors are tokens
+/// on `DesignSystem.neumorphicElevation` — tuning the feel of the entire
+/// system happens in one place (`NeumorphicTokens.swift`), not by editing
+/// these modifiers.
+///
 /// Light + dark variants follow the spec from `Notebook Tabs - Dark Mode`:
 /// - **Light raise** = white highlight on top + faint ink edges all around.
 /// - **Dark raise** = inset cream highlight on top only (outset shadows
 ///   render as visible hairlines on dark paper).
-/// - **Light press** = inset ink shadow at 5-7% alpha on top/L/R; the
-///   bottom stays clean so the surface bleeds into the panel below.
-/// - **Dark press** = inset pure-black at 35-55% alpha — dark-on-dark
-///   needs ~8× the alpha to perceive the same depth.
-///
-/// Inset shadows are synthesized via gradient overlays because SwiftUI
-/// has no `inset box-shadow` primitive. The approximation reads close to
-/// the CSS spec at common cell sizes.
+/// - **Press (both themes)** = inset gradient on top + L + R; the bottom
+///   stays clean so the surface bleeds into the panel below.
 ///
 extension View {
     /// Resting state — paper sits slightly above the page.
-    func neumorphicRaised() -> some View {
-        modifier(NeumorphicRaisedModifier())
+    func neumorphicRaised(
+        elevation: NeumorphicElevation = DesignSystem.standard.neumorphicElevation
+    ) -> some View {
+        modifier(NeumorphicRaisedModifier(elevation: elevation))
     }
 
     /// Active / selected state — paper pressed into the page on the top
     /// and side edges. The bottom intentionally has no inset so the
     /// surface bleeds into whatever sits beneath it (the panel pattern).
-    func neumorphicPressed() -> some View {
-        modifier(NeumorphicPressedModifier())
+    func neumorphicPressed(
+        elevation: NeumorphicElevation = DesignSystem.standard.neumorphicElevation
+    ) -> some View {
+        modifier(NeumorphicPressedModifier(elevation: elevation))
     }
 }
 
@@ -40,30 +43,32 @@ extension View {
 
 struct NeumorphicRaisedModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    let elevation: NeumorphicElevation
 
     func body(content: Content) -> some View {
         switch colorScheme {
         case .dark:
             content.overlay(alignment: .top) {
-                // Warm cream highlight along the top edge — the paper
-                // catching light. The only treatment in dark mode; outset
-                // drop shadows render as visible hairlines on dark paper.
                 Rectangle()
-                    .fill(Color(white: 0.93).opacity(0.08))
-                    .frame(height: 1)
+                    .fill(elevation.darkRaiseHighlightColor)
+                    .frame(height: elevation.darkRaiseHighlightHeight)
                     .allowsHitTesting(false)
             }
 
         default:
-            // Light mode: composite of one white highlight on top + four
-            // very faint ink shadows on all sides. The accumulated effect
-            // is the "v3 Whisper" raise from the spec.
-            content
-                .shadow(color: .white.opacity(0.6),                 radius: 1, x: 0, y: -1)
-                .shadow(color: Color(white: 0.12).opacity(0.02),    radius: 2, x: 0, y: -1)
-                .shadow(color: Color(white: 0.12).opacity(0.03),    radius: 2, x: 0, y: 1)
-                .shadow(color: Color(white: 0.12).opacity(0.02),    radius: 2, x: -1, y: 0)
-                .shadow(color: Color(white: 0.12).opacity(0.02),    radius: 2, x: 1, y: 0)
+            // Light raise: stack the composite shadows from the token.
+            // Each shadow modifier wraps the prior view; folding the array
+            // applies them in order.
+            elevation.lightRaiseShadows.reduce(AnyView(content)) { partial, spec in
+                AnyView(
+                    partial.shadow(
+                        color: spec.color,
+                        radius: spec.radius,
+                        x: spec.x,
+                        y: spec.y
+                    )
+                )
+            }
         }
     }
 }
@@ -72,44 +77,39 @@ struct NeumorphicRaisedModifier: ViewModifier {
 
 struct NeumorphicPressedModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    let elevation: NeumorphicElevation
 
     func body(content: Content) -> some View {
-        // Dialed-down from the React spec on device feedback — the spec
-        // values (0.07 light / 0.55 dark) read too aggressive in the
-        // SwiftUI gradient synthesis. Halved values still convey the
-        // press without dominating the row beneath.
-        let opacity = colorScheme == .dark ? 0.28 : 0.04
-        let inkColor = Color(white: 0)
+        let topAlpha = colorScheme == .dark
+            ? elevation.darkPressTopAlpha
+            : elevation.lightPressTopAlpha
+        let sideAlpha = topAlpha * elevation.pressSideAlphaMultiplier
+        let ink = elevation.pressInkColor
 
         content.overlay {
             // Inset shadows on top + left + right. Bottom intentionally
             // omitted so the surface bleeds into whatever sits beneath.
-            //
-            // Gradient lengths hug the edges tightly — extending the
-            // fade further into the interior made the shadow read as a
-            // vignette rather than an inset. A real CSS inset shadow
-            // attenuates with a tight blur radius; we mirror that by
-            // ending the gradient close to the edge.
+            // Gradient lengths come from the token so tuning happens in
+            // one place.
             ZStack {
-                // Top — 7% of height
+                // Top
                 LinearGradient(
-                    colors: [inkColor.opacity(opacity), .clear],
+                    colors: [ink.opacity(topAlpha), .clear],
                     startPoint: .top,
-                    endPoint: UnitPoint(x: 0.5, y: 0.07)
+                    endPoint: UnitPoint(x: 0.5, y: elevation.pressTopFraction)
                 )
 
-                // Left — 2.5% of width (top was fine at 7%; the sides
-                // were still bleeding too far into the cell)
+                // Left
                 LinearGradient(
-                    colors: [inkColor.opacity(opacity * 0.6), .clear],
+                    colors: [ink.opacity(sideAlpha), .clear],
                     startPoint: .leading,
-                    endPoint: UnitPoint(x: 0.025, y: 0.5)
+                    endPoint: UnitPoint(x: elevation.pressSideFraction, y: 0.5)
                 )
 
-                // Right — 2.5% of width
+                // Right
                 LinearGradient(
-                    colors: [.clear, inkColor.opacity(opacity * 0.6)],
-                    startPoint: UnitPoint(x: 0.975, y: 0.5),
+                    colors: [.clear, ink.opacity(sideAlpha)],
+                    startPoint: UnitPoint(x: 1 - elevation.pressSideFraction, y: 0.5),
                     endPoint: .trailing
                 )
             }
