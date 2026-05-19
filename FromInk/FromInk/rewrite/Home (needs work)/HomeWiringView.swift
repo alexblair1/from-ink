@@ -44,10 +44,6 @@ struct HomeWiringView: View {
                 get: { store.searchText },
                 set: { store.send(.settingsDismissed); _ = $0 }
                 // TODO: wire searchText through an action when search is implemented
-            ),
-            isBriefExpanded: Binding(
-                get: { store.isBriefExpanded },
-                set: { _ in store.send(.toggleBriefExpanded) }
             )
         )
         .onAppear {
@@ -77,6 +73,7 @@ struct HomeWiringView: View {
         }
         .animation(ds.animation.standard, value: store.isNewNotebookSheetOpen)
         .animation(ds.animation.standard, value: store.isWheelOpen)
+        .animation(ds.animation.standard, value: store.activeBriefTab)
     }
 
     // MARK: - New Notebook Overlay
@@ -165,24 +162,87 @@ struct HomeWiringView: View {
             lede: BriefLede.Model(
                 text: firstSentence(of: snapshot.focusText)
             ),
-            countsBar: BriefCountsBar.Model(
-                eventCount: snapshot.eventCount,
-                reminderCount: snapshot.reminderCount,
-                isExpanded: store.isBriefExpanded,
-                onToggle: { store.send(.toggleBriefExpanded) }
-            ),
             editorsNote: EditorsNoteSection.Model(
                 paragraphs: editorsNoteParagraphs(snapshot: snapshot)
             ),
-            highlights: highlightRows(snapshot: snapshot),
-            footerActions: BriefFooterActions.Model(
-                onViewDetails: { },
-                onCollapse: { store.send(.toggleBriefExpanded) }
-            ),
+            tabSection: buildTabSection(snapshot: snapshot),
             nonFocalOpacity: store.isWheelOpen ? 0.10 : 1.0,
             nonFocalIsInteractive: !store.isWheelOpen
         )
     }
+
+    // MARK: - Tab section
+
+    private func buildTabSection(snapshot: DailyBriefSnapshot) -> BriefTabSection.Model {
+        let eventModels = eventRowModels(from: snapshot.highlights)
+        let reminderModels = reminderRowModels(from: snapshot.highlights)
+        let birthdayModels = snapshot.birthdays.map(birthdayRow)
+
+        return BriefTabSection.Model(
+            activeTab: store.activeBriefTab,
+            tabStrip: BriefTabStrip.Model(
+                activeTab: store.activeBriefTab,
+                eventCount: snapshot.eventCount,
+                reminderCount: snapshot.reminderCount,
+                birthdayCount: snapshot.birthdayCount,
+                showsLabel: horizontalSizeClass != .compact,
+                onTabTapped: { tab in store.send(.briefTabTapped(tab)) }
+            ),
+            events: eventModels,
+            reminders: reminderModels,
+            birthdays: birthdayModels
+        )
+    }
+
+    /// Highlights with mealtime-ish `time` strings or "Next up" / "Upcoming"
+    /// categories are treated as events. The richer event metadata
+    /// (location, duration, isNext, notebook link) will arrive when the
+    /// EventKit pipeline ships; for now, surface what's in the highlight.
+    private func eventRowModels(from highlights: [StoredHighlight]) -> [BriefEventRow.Model] {
+        highlights
+            .filter { $0.category == AppStrings.Home.nextUp || $0.category == AppStrings.Home.upcoming }
+            .enumerated()
+            .map { index, h in
+                BriefEventRow.Model(
+                    id: "event-\(index)",
+                    time: h.time,
+                    title: h.title,
+                    location: nil,
+                    duration: h.trailingBadge ?? "",
+                    isNext: h.category == AppStrings.Home.nextUp,
+                    nextPillLabel: AppStrings.Home.nextUp,
+                    notebookLink: nil
+                )
+            }
+    }
+
+    private func reminderRowModels(from highlights: [StoredHighlight]) -> [BriefReminderRow.Model] {
+        highlights
+            .filter { $0.category == AppStrings.Home.overdue || $0.category == AppStrings.Home.today }
+            .enumerated()
+            .map { index, h in
+                BriefReminderRow.Model(
+                    id: "reminder-\(index)",
+                    title: h.title,
+                    metaText: h.time,
+                    listName: h.trailingBadge,
+                    isFlagged: h.category == AppStrings.Home.overdue,
+                    isOverdue: h.category == AppStrings.Home.overdue
+                )
+            }
+    }
+
+    private func birthdayRow(_ b: StoredBirthday) -> BriefBirthdayRow.Model {
+        BriefBirthdayRow.Model(
+            id: b.id.uuidString,
+            initials: b.initials,
+            name: b.name,
+            relationship: b.relationship,
+            note: b.note,
+            ageLabel: b.ageLabel
+        )
+    }
+
 
     private var shelfModel: HomeNotebookShelf.Model {
         HomeNotebookShelf.Model(notebooks: notebookCards)
@@ -272,19 +332,6 @@ struct HomeWiringView: View {
         if !snapshot.suggestionText.isEmpty { paragraphs.append(snapshot.suggestionText) }
         if paragraphs.isEmpty { paragraphs = [AppStrings.Home.noEventsToday] }
         return paragraphs
-    }
-
-    private func highlightRows(snapshot: DailyBriefSnapshot) -> [HighlightRow.Model] {
-        snapshot.highlights.enumerated().map { index, highlight in
-            HighlightRow.Model(
-                id: "highlight-\(index)",
-                category: highlight.category,
-                icon: highlight.icon,
-                title: highlight.title,
-                time: highlight.time,
-                trailingBadge: highlight.trailingBadge
-            )
-        }
     }
 
     private func syncLabel(for date: Date) -> String {

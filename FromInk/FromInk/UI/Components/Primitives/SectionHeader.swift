@@ -20,7 +20,9 @@ struct SectionHeader<Trailing: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HairlineRule()
+            if model.showsTopRule {
+                HairlineRule()
+            }
 
             HStack(alignment: .firstTextBaseline, spacing: model.style.itemSpacing) {
                 MonoLabel(model.title)
@@ -69,11 +71,17 @@ extension SectionHeader {
         let count: Int?
         let action: (label: String, handler: () -> Void)?
         let style: SectionHeaderStyle
+        /// When false, suppresses the HairlineRule above the header.
+        /// Useful when the preceding section already supplies its own
+        /// bottom border (the brief tab body's cells, for example) so
+        /// stacking SectionHeader's rule would produce a double divider.
+        let showsTopRule: Bool
 
         init(
             title: String,
             count: Int? = nil,
             action: (String, () -> Void)? = nil,
+            showsTopRule: Bool = true,
             style: SectionHeaderStyle = .standard
         ) {
             self.title = title
@@ -84,6 +92,7 @@ extension SectionHeader {
                 self.action = nil
             }
             self.style = style
+            self.showsTopRule = showsTopRule
         }
     }
 }

@@ -1,6 +1,12 @@
 import SwiftUI
 
-/// "✦ EDITOR'S NOTE" label + two-paragraph serif body.
+/// Two-paragraph serif body of the editorial brief.
+///
+/// Originally rendered an "EDITOR'S NOTE" mono label + sparkles icon
+/// above the body. Both were dropped — the prominent placement and
+/// serif treatment make the editorial context obvious, and the marker
+/// was taking valuable vertical space.
+///
 /// Component view — no TCA imports.
 ///
 struct EditorsNoteSection: View {
@@ -8,14 +14,6 @@ struct EditorsNoteSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: model.innerSpacing) {
-            HStack(spacing: model.labelIconSpacing) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: model.labelIconSize, weight: .regular))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(model.labelColor)
-                MonoLabel(model.label, color: model.labelColor)
-            }
-
             ForEach(
                 Array(model.paragraphs.enumerated()),
                 id: \.offset
@@ -36,11 +34,7 @@ struct EditorsNoteSection: View {
 
 extension EditorsNoteSection {
     struct Model {
-        let label: String
         let paragraphs: [String]
-        let labelColor: Color
-        let labelIconSize: CGFloat
-        let labelIconSpacing: CGFloat
         let bodyFont: Font
         let bodyColor: Color
         let lineSpacing: CGFloat
@@ -58,11 +52,7 @@ extension EditorsNoteSection.Model {
         paragraphs: [String],
         ds: DesignSystem = .standard
     ) {
-        self.label = AppStrings.Home.editorsNote
         self.paragraphs = paragraphs
-        self.labelColor = ds.colors.ink2
-        self.labelIconSize = ds.layout.labelIconSize
-        self.labelIconSpacing = ds.spacing.xs
         self.bodyFont = ds.typography.briefLede
         self.bodyColor = ds.colors.ink
         self.lineSpacing = 6

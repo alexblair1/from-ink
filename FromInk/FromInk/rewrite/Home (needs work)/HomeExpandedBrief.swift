@@ -35,15 +35,8 @@ struct HomeExpandedBrief: View {
 
     private var editorialColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Section label
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .regular))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(ds.colors.ink2)
-                MonoLabel(AppStrings.Home.editorsNote, color: ds.colors.ink2)
-            }
-            .padding(.bottom, ds.spacing.sm)
+            // No section marker — both the icon and label were removed.
+            // The body's prominent placement carries the editorial context.
 
             // Paragraphs
             ForEach(Array(model.paragraphs.enumerated()), id: \.offset) { index, paragraph in

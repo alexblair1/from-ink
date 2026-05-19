@@ -37,8 +37,7 @@ struct HomeFeatureView: View {
     var body: some View {
         HomeScreenView(
             model: homeScreenModel,
-            searchText: $searchText,
-            isBriefExpanded: $isBriefExpanded
+            searchText: $searchText
         )
         .onAppear {
             briefSnapshot = initialBrief
@@ -120,27 +119,23 @@ struct HomeFeatureView: View {
             lede: BriefLede.Model(
                 text: firstSentence(of: snapshot.focusText)
             ),
-            countsBar: BriefCountsBar.Model(
-                eventCount: snapshot.eventCount,
-                reminderCount: snapshot.reminderCount,
-                isExpanded: isBriefExpanded,
-                onToggle: {
-                    withAnimation(ds.animation.standard) {
-                        isBriefExpanded.toggle()
-                    }
-                }
-            ),
             editorsNote: EditorsNoteSection.Model(
                 paragraphs: editorsNoteParagraphs(snapshot: snapshot)
             ),
-            highlights: highlightRows(snapshot: snapshot),
-            footerActions: BriefFooterActions.Model(
-                onViewDetails: { },
-                onCollapse: {
-                    withAnimation(ds.animation.standard) {
-                        isBriefExpanded = false
-                    }
-                }
+            // Legacy entry point — tab section renders as collapsed only.
+            // The canonical home view is HomeWiringView.
+            tabSection: BriefTabSection.Model(
+                activeTab: nil,
+                tabStrip: BriefTabStrip.Model(
+                    activeTab: nil,
+                    eventCount: snapshot.eventCount,
+                    reminderCount: snapshot.reminderCount,
+                    birthdayCount: snapshot.birthdayCount,
+                    onTabTapped: { _ in }
+                ),
+                events: [],
+                reminders: [],
+                birthdays: []
             )
         )
     }

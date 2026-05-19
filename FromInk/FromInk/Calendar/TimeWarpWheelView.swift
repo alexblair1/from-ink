@@ -33,7 +33,7 @@ struct TimeWarpWheelView: View {
         .frame(height: model.height)
         .mask(edgeFadeMask)
     }
-
+ 
     private var baselineRule: some View {
         Rectangle()
             .fill(model.baselineRuleColor)

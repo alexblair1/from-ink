@@ -11,7 +11,12 @@ struct HomeNotebookShelf: View {
             SectionHeader(
                 model: .init(
                     title: model.sectionTitle,
-                    count: model.notebookCount
+                    count: model.notebookCount,
+                    // The preceding brief tab body's last row already
+                    // contributes its own bottom rule; suppress the
+                    // SectionHeader's HairlineRule so the two don't
+                    // stack as a double divider.
+                    showsTopRule: false
                 ),
                 trailing: {
                     MonoLabel(model.sortLabel, color: model.sortLabelColor)

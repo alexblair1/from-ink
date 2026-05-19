@@ -10,7 +10,11 @@ struct HomeFeature: Reducer {
     struct State: Equatable {
         var briefState: BriefState = .loading
         var currentDate: Date
-        var isBriefExpanded: Bool = false
+        /// The brief header's active tab. `nil` = collapsed (tab strip
+        /// only); non-nil = expanded with that tab's body showing.
+        /// Replaces the legacy `isBriefExpanded` bool — "expanded" is now
+        /// "has an active tab."
+        var activeBriefTab: BriefTab? = nil
         var isSettingsOpen: Bool = false
         var isNewNotebookSheetOpen: Bool = false
         var isRefreshing: Bool = false
@@ -40,7 +44,10 @@ struct HomeFeature: Reducer {
         case briefLoaded(DailyBriefSnapshot?)
         case calendarChanged
         case briefRefreshed(DailyBriefSnapshot)
-        case toggleBriefExpanded
+        /// User tapped a brief tab. If it's already the active tab, the
+        /// tab collapses (activeBriefTab = nil). Otherwise, swaps to the
+        /// new tab.
+        case briefTabTapped(BriefTab)
         case settingsTapped
         case settingsDismissed
         case newNotebookTapped
@@ -127,8 +134,9 @@ struct HomeFeature: Reducer {
                 state.isRefreshing = false
                 return .none
 
-            case .toggleBriefExpanded:
-                state.isBriefExpanded.toggle()
+            case .briefTabTapped(let tab):
+                // Tap the active tab → collapse. Tap a different tab → swap.
+                state.activeBriefTab = (state.activeBriefTab == tab) ? nil : tab
                 return .none
 
             case .settingsTapped:

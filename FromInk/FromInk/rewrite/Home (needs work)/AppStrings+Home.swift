@@ -7,12 +7,7 @@ extension AppStrings {
             value: "From Ink",
             comment: "Home screen wordmark"
         )
-        static let editorsNote = NSLocalizedString(
-            "home.editorsNote",
-            value: "Editor's note",
-            comment: "AI editorial section label"
-        )
-        static let highlights = NSLocalizedString(
+static let highlights = NSLocalizedString(
             "home.highlights",
             value: "Highlights",
             comment: "Brief highlights section label"
@@ -142,6 +137,73 @@ extension AppStrings {
             value: "No events or reminders today. A clear day for deep work.",
             comment: "Empty brief fallback text"
         )
+        static let tabCalendar = NSLocalizedString(
+            "home.tab.calendar",
+            value: "Calendar",
+            comment: "Brief header tab — calendar events for the selected day."
+        )
+        static let tabReminders = NSLocalizedString(
+            "home.tab.reminders",
+            value: "Reminders",
+            comment: "Brief header tab — reminders due on the selected day."
+        )
+        static let tabBirthdays = NSLocalizedString(
+            "home.tab.birthdays",
+            value: "Birthdays",
+            comment: "Brief header tab — birthdays on the selected day."
+        )
+        static let emptyCalendar = NSLocalizedString(
+            "home.empty.calendar",
+            value: "No events scheduled.",
+            comment: "Empty-state message in the Calendar tab when no events are on the selected day."
+        )
+        static let emptyReminders = NSLocalizedString(
+            "home.empty.reminders",
+            value: "Nothing due today.",
+            comment: "Empty-state message in the Reminders tab when no reminders are on the selected day."
+        )
+        static let emptyBirthdays = NSLocalizedString(
+            "home.empty.birthdays",
+            value: "No birthdays today.",
+            comment: "Empty-state message in the Birthdays tab when no birthdays are on the selected day."
+        )
+
+        /// "4 events" / "1 event" — pluralized via Foundation's plural rules
+        /// when the `.stringsdict` ships. For now uses a single localized
+        /// format string and lets the translator handle pluralization.
+        static func eventCountSummary(_ count: Int) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "home.count.events",
+                    value: "%d events",
+                    comment: "Count summary for the Calendar tab body. %d is the number of events."
+                ),
+                count
+            )
+        }
+
+        static func reminderCountSummary(_ count: Int) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "home.count.reminders",
+                    value: "%d due",
+                    comment: "Count summary for the Reminders tab body. %d is the number due."
+                ),
+                count
+            )
+        }
+
+        static func birthdayCountSummary(_ count: Int) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "home.count.birthdays",
+                    value: "%d birthdays",
+                    comment: "Count summary for the Birthdays tab body. %d is the number of birthdays."
+                ),
+                count
+            )
+        }
+
         static let noEventsScheduled = NSLocalizedString(
             "home.noEventsScheduled",
             value: "No events scheduled today.",

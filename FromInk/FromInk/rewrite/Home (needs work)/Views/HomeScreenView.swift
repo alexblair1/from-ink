@@ -6,7 +6,6 @@ import SwiftUI
 struct HomeScreenView: View {
     let model: Model
     @Binding var searchText: String
-    @Binding var isBriefExpanded: Bool
 
     @State private var stickyHeaderHeight: CGFloat = 0
 
@@ -18,10 +17,7 @@ struct HomeScreenView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: stickyHeaderHeight)
 
-                    HomeDailyBrief(
-                        model: model.dailyBrief,
-                        isExpanded: $isBriefExpanded
-                    )
+                    HomeDailyBrief(model: model.dailyBrief)
 
                     Group {
                         if !model.notebooks.isEmpty {
@@ -32,6 +28,11 @@ struct HomeScreenView: View {
                             HomeEmptyState(model: emptyState)
                         }
                     }
+                    // 24pt gap between the brief section and the
+                    // notebooks shelf so the major editorial blocks
+                    // breathe consistently with the gaps inside the
+                    // brief itself.
+                    .padding(.top, model.majorSectionSpacing)
                     .opacity(model.nonFocalOpacity)
                     .allowsHitTesting(model.nonFocalIsInteractive)
                     .accessibilityHidden(!model.nonFocalIsInteractive)
@@ -87,6 +88,8 @@ extension HomeScreenView {
         let emptyState: HomeEmptyState.Model?
         let backgroundColor: Color
         let bottomSpacing: CGFloat
+        /// Vertical gap between major top-level sections (brief → notebooks).
+        let majorSectionSpacing: CGFloat
         /// Opacity for sections outside the wheel's focus (top bar, shelf,
         /// empty state). `1.0` normally; `~0.10` when the wheel is open.
         let nonFocalOpacity: Double
@@ -120,6 +123,7 @@ extension HomeScreenView.Model {
         self.emptyState = emptyState
         self.backgroundColor = ds.colors.paper
         self.bottomSpacing = ds.spacing.xxl
+        self.majorSectionSpacing = ds.spacing.lg
         self.nonFocalOpacity = nonFocalOpacity
         self.nonFocalIsInteractive = nonFocalIsInteractive
         self.onScrimTap = onScrimTap

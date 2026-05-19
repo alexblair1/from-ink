@@ -199,6 +199,62 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.foregrounded)
     }
 
+    // MARK: - Brief tab tapping
+
+    @MainActor
+    func test_briefTabTapped_fromNil_setsActiveTab() async {
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.briefTabTapped(.calendar)) {
+            $0.activeBriefTab = .calendar
+        }
+    }
+
+    @MainActor
+    func test_briefTabTapped_sameTab_collapses() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.activeBriefTab = .calendar
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        // Tapping the same tab collapses to nil.
+        await store.send(.briefTabTapped(.calendar)) {
+            $0.activeBriefTab = nil
+        }
+    }
+
+    @MainActor
+    func test_briefTabTapped_differentTab_swaps() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.activeBriefTab = .calendar
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        // Tapping a different tab swaps in place — no collapse first.
+        await store.send(.briefTabTapped(.reminders)) {
+            $0.activeBriefTab = .reminders
+        }
+
+        await store.send(.briefTabTapped(.birthdays)) {
+            $0.activeBriefTab = .birthdays
+        }
+    }
+
     // MARK: - Full warp lifecycle
 
     /// Integration test: walks the entire warp state machine from
