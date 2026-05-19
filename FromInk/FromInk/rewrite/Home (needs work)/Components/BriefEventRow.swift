@@ -172,24 +172,21 @@ extension BriefEventRow.Model {
         self.hidesBottomRule = hidesBottomRule
 
         self.nextPillLabel = nextPillLabel
-        self.columnGap = 18
-        // 64pt instead of the 56pt spec — fits English "12:00 AM" without
-        // forcing the scale floor to kick in, while staying close to the
-        // editorial proportions. Locales with shorter time formats
-        // ("9:30") still left-align inside the column.
+        // Spec values from the React `Notebook Tabs - Dark Mode`
+        // event row: 64pt time column, 14pt gap, 11pt vertical padding,
+        // 11pt mono time, 16pt serif title, 10.5pt mono duration.
+        self.columnGap = 14
         self.timeColumnWidth = 64
         self.titleSpacing = 4
-        self.timeFontSize = 12
-        self.titleFontSize = 18
+        self.timeFontSize = 11
+        self.titleFontSize = 16
         self.locationFontSize = 11
-        self.durationFontSize = 11
+        self.durationFontSize = 10.5
         self.pillFontSize = 9.5
         self.pillTracking = 1.4
         self.pillHorizontalPadding = 7
         self.pillVerticalPadding = 4
-        // 14pt to match the React spec's `padding: 14px 0` for event rows.
-        // The design system's .sm (8pt) was too tight.
-        self.verticalPadding = 14
+        self.verticalPadding = 11
 
         self.timeColor = ds.colors.ink2
         self.titleColor = ds.colors.ink

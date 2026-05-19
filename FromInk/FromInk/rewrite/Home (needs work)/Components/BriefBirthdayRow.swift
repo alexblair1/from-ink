@@ -130,14 +130,13 @@ extension BriefBirthdayRow.Model {
         self.innerSpacing = 4
         self.avatarSize = 38
         self.initialsFontSize = 14
-        self.nameFontSize = 18
+        self.nameFontSize = 16
         self.relationshipFontSize = 11
         self.noteFontSize = 13
         self.ageFontSize = 10
         self.ageTracking = 1.5
         self.ageTopPadding = 6
-        // 14pt to match the React spec — same value as BriefEventRow.
-        self.verticalPadding = 14
+        self.verticalPadding = 11
 
         self.avatarBorderColor = ds.colors.ink
         self.nameColor = ds.colors.ink

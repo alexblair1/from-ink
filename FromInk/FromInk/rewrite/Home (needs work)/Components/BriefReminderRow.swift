@@ -133,17 +133,16 @@ extension BriefReminderRow.Model {
         self.hidesBottomRule = hidesBottomRule
 
         // Geometry mirrors BriefEventRow so the two row types align
-        // visually when stacked. The time/meta column is the same
-        // 64pt fixed-width column on the leading side.
-        self.columnGap = 18
+        // visually when stacked. Matches the React spec.
+        self.columnGap = 14
         self.timeColumnWidth = 64
         self.titleInnerSpacing = 10
-        self.titleFontSize = 18
-        self.metaFontSize = 12
+        self.titleFontSize = 16
+        self.metaFontSize = 11
         self.listFontSize = 10
         self.listTracking = 1.5
         self.checkSize = 14
-        self.verticalPadding = 14
+        self.verticalPadding = 11
 
         self.titleColor = ds.colors.ink
         self.metaColor = ds.colors.ink2

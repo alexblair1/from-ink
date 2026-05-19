@@ -17,12 +17,18 @@ struct BriefTabSection: View {
 
             if model.activeTab != nil {
                 expandedBody
+                    // -3pt overlap: panel slides up under the active
+                    // tab's bottom edge so the tab's "pressed" shadows
+                    // bleed seamlessly into the panel surface. Pairs
+                    // with the seam-killer paper strip drawn at the
+                    // bottom of the active tab inside the tab strip.
+                    .padding(.top, model.panelOverlap)
+                    .background(model.panelBackground)
                     .transition(.opacity)
             }
         }
         // Honor the same horizontal inset that the masthead, lede, and
-        // brief meta row use — the tab strip otherwise extended edge to
-        // edge while every other element stopped at ds.spacing.lg.
+        // brief meta row use.
         .padding(.horizontal, model.horizontalPadding)
     }
 
@@ -110,6 +116,8 @@ extension BriefTabSection {
         let emptyRemindersText: String
         let emptyBirthdaysText: String
         let horizontalPadding: CGFloat
+        let panelOverlap: CGFloat
+        let panelBackground: Color
     }
 }
 
@@ -133,5 +141,9 @@ extension BriefTabSection.Model {
         self.emptyRemindersText = AppStrings.Home.emptyReminders
         self.emptyBirthdaysText = AppStrings.Home.emptyBirthdays
         self.horizontalPadding = ds.spacing.lg
+        // -3pt overlap matches the spec's `margin-top: -3px` on .panel —
+        // deep enough to hide the seam under the active tab.
+        self.panelOverlap = -3
+        self.panelBackground = ds.colors.paper
     }
 }
