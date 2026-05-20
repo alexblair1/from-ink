@@ -96,7 +96,7 @@ extension DailyBriefClient {
                 )
             },
             fetch: { dayKey in
-                await _fetch(forDayKey: dayKey, modelContext: modelContext)
+                await _fetch(forDayKey: dayKey, modelContext: modelContext, cal: calendarContext)
             },
             calendarChanges: {
                 AsyncStream { continuation in
@@ -137,7 +137,7 @@ extension DailyBriefClient {
                     )
                 }
                 // Cached past-day record if it exists.
-                if let existing = await _fetch(forDayKey: dayKey, modelContext: modelContext) {
+                if let existing = await _fetch(forDayKey: dayKey, modelContext: modelContext, cal: calendarContext) {
                     return existing
                 }
                 // No record + not today — V1 has no per-date FM path.
@@ -231,6 +231,7 @@ private func _fetchOrGenerate(
             if existing.eventCountAtGeneration == eventCount
                 && existing.reminderCountAtGeneration == reminderCount {
                 log.info("fetchOrGenerate: counts match — returning cached")
+                DailyBriefRetention.touchIfStale(existing, now: now, context: context)
                 return DailyBriefSnapshot(record: existing)
             }
 
@@ -306,12 +307,14 @@ private func _refresh(
 @MainActor
 private func _fetch(
     forDayKey dayKey: String,
-    modelContext: SyncedModelContextDependency
+    modelContext: SyncedModelContextDependency,
+    cal: CalendarContext
 ) -> DailyBriefSnapshot? {
     let context = modelContext.context()
     guard let record = try? loadRecord(forDayKey: dayKey, context: context) else {
         return nil
     }
+    DailyBriefRetention.touchIfStale(record, now: cal.now(), context: context)
     return DailyBriefSnapshot(record: record)
 }
 
@@ -325,6 +328,10 @@ private func loadRecord(forDayKey dayKey: String, context: ModelContext) throws 
     let results = try context.fetch(descriptor)
     return results.first
 }
+
+// Retention helpers (`touchIfStale`, `evictIfNeeded`) live in
+// `DailyBriefRetention.swift` so they can be tested directly against an
+// in-memory `ModelContainer`.
 
 @MainActor
 private func generateNew(
@@ -356,6 +363,11 @@ private func generateNew(
     do {
         try context.save()
         log.info("generateNew: persisted to SwiftData")
+        // Eviction runs immediately after a successful insert. This is
+        // the only growth path for the record set, so this single
+        // trigger point keeps the LRU bounded without scheduling a
+        // separate cleanup job.
+        DailyBriefRetention.evictIfNeeded(context: context)
     } catch {
         log.error("generateNew: save failed — \(error)")
     }
@@ -379,11 +391,14 @@ private func regenerate(
         cal: cal
     )
 
+    let now = cal.now()
     existing.focusText = focusText
     existing.suggestionText = suggestionText
     existing.eventCountAtGeneration = eventCount
     existing.reminderCountAtGeneration = reminderCount
-    existing.generatedAt = cal.now()
+    existing.generatedAt = now
+    // Regen counts as access — the user just triggered it.
+    existing.lastAccessedAt = now
 
     do {
         try context.save()

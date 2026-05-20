@@ -941,7 +941,98 @@ Decisions that were considered carefully and are now locked.
 
 ---
 
-## 11. Open Questions
+## 11. Retention
+
+### 11.1 The regenerable / authored split
+
+Every persisted model in From Ink belongs to one of two retention classes. The class dictates how aggressively the system can reclaim space.
+
+| Class | Examples | Reclamation policy |
+|---|---|---|
+| **Authored** — user produced this content; we cannot recreate it | `Notebook`, `NotePage` (drawing data, OCR text the user wrote), `Folder`, `Tag`, `NoteHeader`, `NoteLink`, `Highlight`, `NoteHistoryEntry`, attached media | **Never silently delete.** Eviction requires explicit user action ("Empty Trash"). CloudKit sync is the only thing that moves these around. |
+| **Regenerable** — derived from external sources we can re-query | `DailyBriefRecord` (text comes from EventKit + Foundation Models; both inputs reproducible), future FM summaries / extracted tasks / page indexes | **Safe to silently evict** when storage pressure or staleness warrants. Cost of eviction is one regeneration (~few seconds of FM time) on next access. |
+
+This is the load-bearing distinction. Storage strategy follows from class membership: authored data is conservative, regenerable data is opportunistic.
+
+### 11.2 `DailyBriefRecord` retention policy (V1)
+
+`DailyBriefRecord` is the regenerable model that's in production. Its policy proves the pattern for future regenerable models (FM summaries, extracted tasks).
+
+**Schema affordances**
+
+```swift
+@Model final class DailyBriefRecord {
+    var lastAccessedAt: Date = Date()   // touch-on-read with debounce
+
+    static let evictionThreshold: Int = 5_000   // start evicting above this
+    static let evictionTarget:    Int = 4_500   // drop to this when we do
+    static let touchInterval: TimeInterval = 60 * 60   // debounce read writes
+}
+```
+
+**Touch-on-read (debounced).** Every time `DailyBriefClient` returns a record from cache (`_fetchOrGenerate` cache-hit path, `_fetch`, `regenerate`), it bumps `lastAccessedAt` — but only if the previous touch is older than `touchInterval` (1 hour). Without the debounce, every appeared / foregrounded / wheel scroll would dirty the store and trigger CloudKit churn. Hour-granularity is sufficient signal for LRU ordering.
+
+**LRU eviction.** Triggered exclusively after a successful `generateNew` insert. Logic:
+
+1. `context.fetchCount(FetchDescriptor<DailyBriefRecord>())`.
+2. If count ≤ `evictionThreshold` → no-op.
+3. Otherwise fetch the oldest `(count - target)` records, ordered by `lastAccessedAt` ascending. Delete them, save.
+
+The threshold-to-target gap is a **hysteresis band** — without it, every subsequent insert at the threshold would evict exactly one record. The gap means eviction runs occasionally and removes ~500 records at a time, which is cheaper than 500 individual evictions.
+
+**Trigger surface.** Eviction runs only after `generateNew` saves a new record. This is the only growth path for the record set, so one trigger point suffices. Reads, regen-in-place, and `refresh` do not trigger eviction (they don't grow the set).
+
+### 11.3 Sizing the threshold
+
+`DailyBriefRecord` is ~2 KB on disk including SwiftData / CloudKit row overhead. The threshold-to-storage map:
+
+| Threshold | Storage at full | Years of daily use |
+|---|---|---|
+| 500 | ~1 MB | 1.4 |
+| **5,000 (chosen)** | **~10 MB** | **~13.7** |
+| 10,000 | ~20 MB | ~27.4 |
+| 50,000 | ~100 MB | ~137 |
+
+Real-world generation rates are user-action-bounded:
+
+| User profile | Records/year |
+|---|---|
+| Opens daily, never warps | 365 |
+| Daily + occasional warp | ~420 |
+| Heavy warper (5 days/week explored) | ~620 |
+| Wheel power user (every day, every visit) | ~700–800 |
+
+A user would need >6 years of obsessive warping to hit 5,000 records. The threshold is comfortable headroom for any realistic usage — it functions as a safety valve, not a routine cleanup.
+
+### 11.4 Why the threshold isn't user-configurable
+
+For V1 the policy is fixed. A user-facing "keep briefs for N days/months/forever" setting is speculative scope: the data is small enough that no real user is asking for it, and adding it expands surface area in Settings. If we ever see real complaints, this can be added without schema change — just expose the constants through `UserPreferences`.
+
+### 11.5 What this pattern looks like for other regenerable models
+
+When future regenerable models land (FM-summarized week recaps, extracted task lists, page-level OCR caches), they should each:
+
+1. Declare retention class explicitly — class membership goes in the EDD entry for the model.
+2. Carry their own `lastAccessedAt`.
+3. Define their own `evictionThreshold` + `evictionTarget` + `touchInterval` static constants.
+4. Trigger eviction at their write path, not a periodic job.
+5. Document the policy in this section.
+
+Authored models never need any of this — they have no eviction, by definition.
+
+### 11.6 What's deliberately *not* in V1
+
+- Compression on persist (records are ~2 KB; gzipping prose has poor ROI).
+- Tiered sync (hot vs warm vs cold SwiftData containers).
+- Aggregation / summarization of old briefs into weekly/monthly digests.
+- User-facing retention settings.
+- Background-task-based eviction.
+
+Each is documented as a known future option but not implemented. The combination of (a) small records, (b) LRU at a generous threshold, and (c) cloud-native regenerability means these aren't load-bearing for V1.
+
+---
+
+## 12. Open Questions
 
 | # | Question | Impact |
 |---|---|---|

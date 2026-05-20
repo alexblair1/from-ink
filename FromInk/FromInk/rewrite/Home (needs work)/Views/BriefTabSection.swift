@@ -17,13 +17,7 @@ struct BriefTabSection: View {
 
             if model.activeTab != nil {
                 expandedBody
-                    // -3pt overlap: panel slides up under the active
-                    // tab's bottom edge so the tab's "pressed" shadows
-                    // bleed seamlessly into the panel surface. Pairs
-                    // with the seam-killer paper strip drawn at the
-                    // bottom of the active tab inside the tab strip.
-                    .padding(.top, model.panelOverlap)
-                    .background(model.panelBackground)
+                    .padding(.top, model.panelTopSpacing)
                     .transition(.opacity)
             }
         }
@@ -116,8 +110,10 @@ extension BriefTabSection {
         let emptyRemindersText: String
         let emptyBirthdaysText: String
         let horizontalPadding: CGFloat
-        let panelOverlap: CGFloat
-        let panelBackground: Color
+        /// Spacing between the bordered tab strip and the panel below.
+        /// Small breathing room — no overlap, no shared border, no
+        /// shadow tricks. The strip is its own contained shape.
+        let panelTopSpacing: CGFloat
     }
 }
 
@@ -141,10 +137,9 @@ extension BriefTabSection.Model {
         self.emptyRemindersText = AppStrings.Home.emptyReminders
         self.emptyBirthdaysText = AppStrings.Home.emptyBirthdays
         self.horizontalPadding = ds.spacing.lg
-        // Derived from the same NeumorphicTabStyle token the tab strip
-        // uses for its seam offset — guaranteed to stay in sync. Tuning
-        // seamOffset in NeumorphicTokens automatically retunes both.
-        self.panelOverlap = ds.neumorphicTab.panelOverlap
-        self.panelBackground = ds.colors.paper
+        // Small gap below the strip so the panel reads as a separate
+        // editorial block, not a continuation of the cell. Matches the
+        // breathing room used elsewhere in the brief.
+        self.panelTopSpacing = ds.spacing.base
     }
 }

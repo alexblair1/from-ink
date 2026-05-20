@@ -49,6 +49,9 @@ struct HomeFeature: Reducer {
         case briefLoaded(DailyBriefSnapshot?)
         case calendarChanged
         case briefRefreshed(DailyBriefSnapshot)
+        /// Fires when an in-flight FM-backed refresh throws. Resets
+        /// `isRefreshing` so the state can't get stuck.
+        case briefRefreshFailed
         /// User tapped a brief tab. If it's already the active tab, the
         /// tab collapses (activeBriefTab = nil). Otherwise, swaps to the
         /// new tab.
@@ -103,7 +106,7 @@ struct HomeFeature: Reducer {
 
             case .foregrounded:
                 // Warped users keep their warp across background→foreground.
-                // Auto-refresh logic only applies when viewing "today".
+                // Refresh logic only applies when viewing "today".
                 guard !state.isWarped else { return .none }
 
                 let now = cal.now()
@@ -117,10 +120,24 @@ struct HomeFeature: Reducer {
                     return nil
                 }()
 
-                guard currentDayKey != newDayKey else { return .none }
+                // Always refresh dayContent on foreground — cheap EventKit
+                // query, no FM. This is the belt against missed
+                // `EKEventStoreChanged` notifications while the app was
+                // backgrounded (e.g., user deleted an event in Calendar.app
+                // and switched back). Apple's pattern is observe-AND-
+                // refresh-on-foreground; we do both.
+                let foregroundDate = state.currentDate
+                let dayContentEffect = loadDayContent(for: foregroundDate)
+
+                // Only fire the FM-heavy brief regen when the day actually
+                // rolled over. Mid-day calendar changes are picked up via
+                // `.calendarChanged` (notification) plus the dayContent
+                // refresh above.
+                guard currentDayKey != newDayKey else {
+                    return dayContentEffect
+                }
 
                 state.isRefreshing = true
-                let foregroundDate = state.currentDate
                 return .merge(
                     .run { send in
                         do {
@@ -128,10 +145,11 @@ struct HomeFeature: Reducer {
                             await send(.briefRefreshed(snapshot))
                         } catch {
                             log.error("Foreground refresh failed: \(error)")
+                            await send(.briefRefreshFailed)
                         }
                     }
                     .cancellable(id: "briefRefresh", cancelInFlight: true),
-                    loadDayContent(for: foregroundDate)
+                    dayContentEffect
                 )
 
             case .briefLoaded(.some(let snapshot)):
@@ -145,9 +163,10 @@ struct HomeFeature: Reducer {
             case .calendarChanged:
                 // Skip while warped — would clobber the warped brief with today's.
                 guard !state.isWarped else { return .none }
-                // Skip if a foreground refresh is already in-flight.
-                guard !state.isRefreshing else { return .none }
-
+                // `.cancellable(cancelInFlight:)` handles overlapping
+                // refreshes correctly — no `isRefreshing` short-circuit
+                // (which used to leave the flag stuck on FM failure and
+                // lock out subsequent refreshes).
                 state.isRefreshing = true
                 let calendarChangedDate = state.currentDate
                 return .merge(
@@ -157,6 +176,7 @@ struct HomeFeature: Reducer {
                             await send(.briefRefreshed(snapshot))
                         } catch {
                             log.error("Calendar refresh failed: \(error)")
+                            await send(.briefRefreshFailed)
                         }
                     }
                     .cancellable(id: "briefRefresh", cancelInFlight: true),
@@ -165,6 +185,10 @@ struct HomeFeature: Reducer {
 
             case .briefRefreshed(let snapshot):
                 state.briefState = .loaded(snapshot)
+                state.isRefreshing = false
+                return .none
+
+            case .briefRefreshFailed:
                 state.isRefreshing = false
                 return .none
 

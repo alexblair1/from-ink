@@ -18,12 +18,6 @@ struct DesignSystem: Sendable {
     let layout: LayoutTokens
     let animation: AnimationTokens
     let cornerRadius: CornerRadiusScale
-    /// Shadow + highlight values for the neumorphic "stamped paper"
-    /// surface treatment used by tabs and any future stamped-paper UI.
-    let neumorphicElevation: NeumorphicElevation
-    /// Geometry of neumorphic tab strips (padding, content sizes,
-    /// seam-killer dimensions, and the derived panel overlap).
-    let neumorphicTab: NeumorphicTabStyle
 
     static let standard = DesignSystem(
         colors: .standard,
@@ -31,8 +25,6 @@ struct DesignSystem: Sendable {
         spacing: .standard,
         layout: .standard,
         animation: .standard,
-        cornerRadius: .standard,
-        neumorphicElevation: .standard,
-        neumorphicTab: .standard
+        cornerRadius: .standard
     )
 }
