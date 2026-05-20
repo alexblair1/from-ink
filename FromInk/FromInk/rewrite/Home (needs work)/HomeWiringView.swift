@@ -74,6 +74,7 @@ struct HomeWiringView: View {
         .animation(ds.animation.standard, value: store.isNewNotebookSheetOpen)
         .animation(ds.animation.standard, value: store.isWheelOpen)
         .animation(ds.animation.standard, value: store.activeBriefTab)
+        .animation(ds.animation.standard, value: store.dayContent)
     }
 
     // MARK: - New Notebook Overlay
@@ -112,7 +113,7 @@ struct HomeWiringView: View {
             emptyState: rootNotebooks.isEmpty
                 ? HomeEmptyState.Model(onCreateNotebook: { store.send(.newNotebookTapped) })
                 : nil,
-            nonFocalOpacity: store.isWheelOpen ? 0.10 : 1.0,
+            nonFocalOpacity: store.isWheelOpen ? 0 : 1.0,
             nonFocalIsInteractive: !store.isWheelOpen,
             onScrimTap: store.isWheelOpen ? { store.send(.wheelToggled) } : nil
         )
@@ -140,8 +141,12 @@ struct HomeWiringView: View {
                 shortDate: shortDateLabel
             ),
             dateBlock: MastheadDateBlock.Model(
-                weekday: store.currentDate.formatted(.dateTime.weekday(.wide)),
-                monthDay: store.currentDate.formatted(.dateTime.month(.wide).day()),
+                weekday: store.currentDate.formatted(
+                    .dateTime.weekday(.wide).locale(calendarContext.userLocale())
+                ),
+                monthDay: store.currentDate.formatted(
+                    .dateTime.month(.wide).day().locale(calendarContext.userLocale())
+                ),
                 compact: horizontalSizeClass == .compact
             ),
             onDateTapped: { store.send(.wheelToggled) },
@@ -165,32 +170,63 @@ struct HomeWiringView: View {
             editorsNote: EditorsNoteSection.Model(
                 paragraphs: editorsNoteParagraphs(snapshot: snapshot)
             ),
-            tabSection: buildTabSection(snapshot: snapshot),
-            nonFocalOpacity: store.isWheelOpen ? 0.10 : 1.0,
-            nonFocalIsInteractive: !store.isWheelOpen
+            tabSection: buildTabSection(),
+            nonFocalOpacity: store.isWheelOpen ? 0 : 1.0,
+            nonFocalIsInteractive: !store.isWheelOpen,
+            isWheelMode: store.isWheelOpen
         )
     }
 
     // MARK: - Tab section
 
-    private func buildTabSection(snapshot: DailyBriefSnapshot) -> BriefTabSection.Model {
-        let eventModels = eventRowModels(from: snapshot.highlights)
-        let reminderModels = reminderRowModels(from: snapshot.highlights)
-        let birthdayModels = snapshot.birthdays.map(birthdayRow)
+    /// Builds the tab strip + body from live EventKit (`dayContent`).
+    /// Shows zeros for the ~1 frame after launch before `loadDayContent`
+    /// resolves — no cached snapshot contribution since persisted counts
+    /// are internal to `DailyBriefClient` (staleness checksum), not view data.
+    private func buildTabSection() -> BriefTabSection.Model {
+        let highlights: [StoredHighlight]
+        let birthdays: [StoredBirthday]
+        let eventCount: Int
+        let reminderCount: Int
+        let birthdayCount: Int
+
+        if let content = store.dayContent {
+            highlights = content.events + content.reminders
+            birthdays = content.birthdays
+            eventCount = content.eventCount
+            reminderCount = content.reminderCount
+            birthdayCount = content.birthdayCount
+        } else {
+            // First-frame fallback: dayContent hasn't resolved yet (the
+            // ~1 frame after launch before `loadDayContent` completes).
+            // Show zeros rather than fabricating counts — the live values
+            // arrive within milliseconds.
+            highlights = []
+            birthdays = []
+            eventCount = 0
+            reminderCount = 0
+            birthdayCount = 0
+        }
+
+        // Wheel mode forces the calendar tab on (reducer sets
+        // activeBriefTab = .calendar on open). When the wheel is closed
+        // and no tab is active, the panel is collapsed — `nil` keeps the
+        // legacy behavior.
+        let activeTab = store.activeBriefTab
 
         return BriefTabSection.Model(
-            activeTab: store.activeBriefTab,
+            activeTab: activeTab,
             tabStrip: BriefTabStrip.Model(
-                activeTab: store.activeBriefTab,
-                eventCount: snapshot.eventCount,
-                reminderCount: snapshot.reminderCount,
-                birthdayCount: snapshot.birthdayCount,
+                activeTab: activeTab,
+                eventCount: eventCount,
+                reminderCount: reminderCount,
+                birthdayCount: birthdayCount,
                 showsLabel: horizontalSizeClass != .compact,
                 onTabTapped: { tab in store.send(.briefTabTapped(tab)) }
             ),
-            events: eventModels,
-            reminders: reminderModels,
-            birthdays: birthdayModels
+            events: eventRowModels(from: highlights),
+            reminders: reminderRowModels(from: highlights),
+            birthdays: birthdays.map(birthdayRow)
         )
     }
 
@@ -199,8 +235,11 @@ struct HomeWiringView: View {
     /// (location, duration, isNext, notebook link) will arrive when the
     /// EventKit pipeline ships; for now, surface what's in the highlight.
     private func eventRowModels(from highlights: [StoredHighlight]) -> [BriefEventRow.Model] {
+        // All-day events are already pinned ahead of timed events by
+        // `buildHighlights`. Preserve that ordering here — the upstream
+        // sort is the source of truth, not the index-based isNext check.
         highlights
-            .filter { $0.category == AppStrings.Home.nextUp || $0.category == AppStrings.Home.upcoming }
+            .filter { $0.category == .allDay || $0.category == .nextUp || $0.category == .upcoming }
             .enumerated()
             .map { index, h in
                 BriefEventRow.Model(
@@ -208,17 +247,20 @@ struct HomeWiringView: View {
                     time: h.time,
                     title: h.title,
                     location: nil,
-                    duration: h.trailingBadge ?? "",
-                    isNext: h.category == AppStrings.Home.nextUp,
-                    nextPillLabel: AppStrings.Home.nextUp,
+                    duration: h.trailingBadge,
+                    isNext: h.category == .nextUp,
+                    nextPillLabel: HighlightCategory.nextUp.displayString,
                     notebookLink: nil
                 )
             }
     }
 
     private func reminderRowModels(from highlights: [StoredHighlight]) -> [BriefReminderRow.Model] {
+        // Same pinning rule: `.anytime` reminders come first via
+        // `buildHighlights`. `.anytime` reminders never read as overdue
+        // or flagged — those signals require a clock time.
         highlights
-            .filter { $0.category == AppStrings.Home.overdue || $0.category == AppStrings.Home.today }
+            .filter { $0.category == .anytime || $0.category == .overdue || $0.category == .today }
             .enumerated()
             .map { index, h in
                 BriefReminderRow.Model(
@@ -226,8 +268,8 @@ struct HomeWiringView: View {
                     title: h.title,
                     metaText: h.time,
                     listName: h.trailingBadge,
-                    isFlagged: h.category == AppStrings.Home.overdue,
-                    isOverdue: h.category == AppStrings.Home.overdue
+                    isFlagged: h.category == .overdue,
+                    isOverdue: h.category == .overdue
                 )
             }
     }
@@ -297,10 +339,7 @@ struct HomeWiringView: View {
             dayKey: "",
             focusText: emptyBriefMessage,
             suggestionText: "",
-            eventCount: 0,
-            reminderCount: 0,
-            generatedAt: calendarContext.now(),
-            highlights: []
+            generatedAt: calendarContext.now()
         )
     }
 
@@ -319,10 +358,18 @@ struct HomeWiringView: View {
         return AppStrings.Home.noBriefForDate(formatted)
     }
 
+    /// Compact "WED · 05/13/26"-style label rendered in the meta row.
+    /// Always derived from the user's calendar context locale — uppercased
+    /// via `uppercased(with:)` so language-specific casing rules apply
+    /// (e.g., Turkish dotless-i, German ß handling).
     private var shortDateLabel: String {
         let d = store.currentDate
-        let weekday = d.formatted(.dateTime.weekday(.abbreviated)).uppercased()
-        let date = d.formatted(.dateTime.month(.twoDigits).day(.twoDigits).year(.twoDigits))
+        let locale = calendarContext.userLocale()
+        let weekday = d.formatted(.dateTime.weekday(.abbreviated).locale(locale))
+            .uppercased(with: locale)
+        let date = d.formatted(
+            .dateTime.month(.twoDigits).day(.twoDigits).year(.twoDigits).locale(locale)
+        )
         return "\(weekday) · \(date)"
     }
 

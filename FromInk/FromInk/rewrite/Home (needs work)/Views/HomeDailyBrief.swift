@@ -10,6 +10,16 @@ import SwiftUI
 ///
 /// Feature view — no TCA imports.
 ///
+/// **Layout discipline:**
+/// - The meta row (above the masthead) is ALWAYS rendered — opacity 0 in
+///   wheel mode. Reason: hiding it would let the masthead slide upward,
+///   which reads as the date label jumping. The row's reserved height is
+///   small enough to be invisible when faded.
+/// - The editor's note (below the wheel) is conditionally rendered. It's
+///   tall (multi-paragraph), so keeping it in the tree at opacity 0 would
+///   leave a large empty gap above the tab strip in wheel mode. Removing
+///   it lets the tabs claim its space naturally.
+///
 struct HomeDailyBrief: View {
     let model: Model
 
@@ -20,13 +30,12 @@ struct HomeDailyBrief: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Non-focal top strip
             BriefMetaRow(model: model.metaRow)
                 .padding(.top, model.sectionSpacing)
-                .opacity(model.nonFocalOpacity)
-                .allowsHitTesting(model.nonFocalIsInteractive)
-                .accessibilityHidden(!model.nonFocalIsInteractive)
-                .overlay(scrimOverlay(action: model.onScrimTap))
+                .opacity(model.metaRowOpacity)
+                .allowsHitTesting(model.metaRowIsInteractive)
+                .accessibilityHidden(!model.metaRowIsInteractive)
+                .overlay(scrimOverlay(action: model.metaRowScrimAction))
 
             // Focal — masthead is the wheel's tap target; ← TODAY button
             // appears to the right only when warped.
@@ -93,22 +102,19 @@ struct HomeDailyBrief: View {
                 )
             }
 
-            // Non-focal — editorial note + tab section.
-            //
-            // No HairlineRule between the editor's note and the tab strip —
-            // the strip's per-tab top rules provide the boundary (with a
-            // negative-space break above the active tab so it reads as
-            // "raised into" the body above).
-            Group {
+            if model.showsEditorsNote {
                 EditorsNoteSection(model: model.editorsNote)
                     .padding(.bottom, model.ruleSpacing)
-
-                BriefTabSection(model: model.tabSection)
+                    .opacity(model.editorsNoteOpacity)
+                    .allowsHitTesting(model.editorsNoteIsInteractive)
+                    .accessibilityHidden(!model.editorsNoteIsInteractive)
+                    .overlay(scrimOverlay(action: model.editorsNoteScrimAction))
             }
-            .opacity(model.nonFocalOpacity)
-            .allowsHitTesting(model.nonFocalIsInteractive)
-            .accessibilityHidden(!model.nonFocalIsInteractive)
-            .overlay(scrimOverlay(action: model.onScrimTap))
+
+            BriefTabSection(model: model.tabSection)
+                .opacity(model.tabSectionOpacity)
+                .allowsHitTesting(model.tabSectionIsInteractive)
+                .accessibilityHidden(!model.tabSectionIsInteractive)
         }
     }
 
@@ -145,9 +151,6 @@ extension HomeDailyBrief {
         /// Action fired by the Done↑ affordance below the wheel. `nil` when
         /// the wheel is closed (the button is hidden).
         let onDoneTapped: (() -> Void)?
-        /// Action fired when the user taps a faded non-focal section to
-        /// dismiss the wheel. `nil` when no scrim should be active.
-        let onScrimTap: (() -> Void)?
         let doneLabel: String
         let doneForeground: Color
         /// Height of the Done↑ row beneath the wheel, used to compute the
@@ -168,10 +171,34 @@ extension HomeDailyBrief {
         let sectionSpacing: CGFloat
         let innerSpacing: CGFloat
         let ruleSpacing: CGFloat
-        /// Opacity for non-focal subsections. Faded while the wheel is open.
-        let nonFocalOpacity: Double
-        /// Whether non-focal subsections accept hit-testing.
-        let nonFocalIsInteractive: Bool
+
+        // MARK: Per-section visibility / interactivity
+        //
+        // Each section carries its own resolved flags so the view body has
+        // no conditional rendering. Wheel mode is encoded entirely by the
+        // adapter when it builds the Model — the view stays declarative.
+
+        let metaRowOpacity: Double
+        let metaRowIsInteractive: Bool
+        /// Non-nil scrim action makes the meta row a wheel-dismiss tap target.
+        /// Nil when the wheel is closed (no scrim needed).
+        let metaRowScrimAction: (() -> Void)?
+
+        /// Whether the editor's note renders at all. Removed from the tree
+        /// in wheel mode so it doesn't reserve its tall height as an empty
+        /// gap above the tab strip.
+        let showsEditorsNote: Bool
+        let editorsNoteOpacity: Double
+        let editorsNoteIsInteractive: Bool
+        /// Non-nil scrim action makes the editor's note a wheel-dismiss tap
+        /// target. Nil when the wheel is closed.
+        let editorsNoteScrimAction: (() -> Void)?
+
+        /// Tab section is focal in wheel mode (full opacity, interactive)
+        /// and follows non-focal fading when the wheel is closed. Never
+        /// gets a scrim — its own tap handlers stay live.
+        let tabSectionOpacity: Double
+        let tabSectionIsInteractive: Bool
     }
 }
 
@@ -194,6 +221,7 @@ extension HomeDailyBrief.Model {
         tabSection: BriefTabSection.Model,
         nonFocalOpacity: Double = 1.0,
         nonFocalIsInteractive: Bool = true,
+        isWheelMode: Bool = false,
         ds: DesignSystem = .standard
     ) {
         self.metaRow = metaRow
@@ -206,7 +234,6 @@ extension HomeDailyBrief.Model {
         self.backToTodayAction = backToTodayAction
         self.backToTodayLabel = AppStrings.Home.today
         self.onDoneTapped = onDoneTapped
-        self.onScrimTap = onScrimTap
         self.doneLabel = AppStrings.Common.done
         self.doneForeground = ds.colors.ink
         self.doneRowHeight = 30
@@ -221,7 +248,26 @@ extension HomeDailyBrief.Model {
         // perceives as larger because of the masthead's descenders, so
         // editorial → tab needs more physical space to match visually.
         self.ruleSpacing = ds.spacing.lg
-        self.nonFocalOpacity = nonFocalOpacity
-        self.nonFocalIsInteractive = nonFocalIsInteractive
+
+        // Per-section flag resolution.
+        //
+        // Wheel mode: meta row + editor's note fade out (opacity 0) but
+        // stay in the layout so neighboring sections don't slide. Tabs
+        // promote to focal: full opacity, fully interactive, no scrim.
+        //
+        // Closed: every section follows the umbrella nonFocal* values so
+        // the existing scrim-and-fade overlay treatment continues to work
+        // for non-wheel modals that need the same affordance.
+        self.metaRowOpacity = isWheelMode ? 0 : nonFocalOpacity
+        self.metaRowIsInteractive = isWheelMode ? false : nonFocalIsInteractive
+        self.metaRowScrimAction = onScrimTap
+
+        self.showsEditorsNote = !isWheelMode
+        self.editorsNoteOpacity = nonFocalOpacity
+        self.editorsNoteIsInteractive = nonFocalIsInteractive
+        self.editorsNoteScrimAction = onScrimTap
+
+        self.tabSectionOpacity = isWheelMode ? 1.0 : nonFocalOpacity
+        self.tabSectionIsInteractive = isWheelMode ? true : nonFocalIsInteractive
     }
 }

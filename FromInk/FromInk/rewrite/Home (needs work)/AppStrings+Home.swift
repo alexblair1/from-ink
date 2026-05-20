@@ -122,6 +122,11 @@ static let highlights = NSLocalizedString(
             value: "All day",
             comment: "All-day event badge"
         )
+        static let anytime = NSLocalizedString(
+            "home.anytime",
+            value: "Anytime",
+            comment: "Badge / category for reminders with no specific time"
+        )
         static let now = NSLocalizedString(
             "home.now",
             value: "Now",

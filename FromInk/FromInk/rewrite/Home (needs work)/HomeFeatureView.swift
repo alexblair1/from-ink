@@ -128,9 +128,9 @@ struct HomeFeatureView: View {
                 activeTab: nil,
                 tabStrip: BriefTabStrip.Model(
                     activeTab: nil,
-                    eventCount: snapshot.eventCount,
-                    reminderCount: snapshot.reminderCount,
-                    birthdayCount: snapshot.birthdayCount,
+                    eventCount: 0,
+                    reminderCount: 0,
+                    birthdayCount: 0,
                     onTabTapped: { _ in }
                 ),
                 events: [],
@@ -188,21 +188,6 @@ struct HomeFeatureView: View {
         return paragraphs
     }
 
-    private func highlightRows(
-        snapshot: DailyBriefSnapshot
-    ) -> [HighlightRow.Model] {
-        snapshot.highlights.enumerated().map { index, highlight in
-            HighlightRow.Model(
-                id: "highlight-\(index)",
-                category: highlight.category,
-                icon: highlight.icon,
-                title: highlight.title,
-                time: highlight.time,
-                trailingBadge: highlight.trailingBadge
-            )
-        }
-    }
-
     private func syncLabel(for date: Date) -> String {
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 {
@@ -235,10 +220,7 @@ struct HomeFeatureView: View {
             dayKey: "",
             focusText: "No events or reminders today. A clear day for deep work.",
             suggestionText: "",
-            eventCount: 0,
-            reminderCount: 0,
-            generatedAt: Date(),
-            highlights: []
+            generatedAt: Date()
         )
     }
 

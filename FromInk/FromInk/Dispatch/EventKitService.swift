@@ -9,11 +9,19 @@ struct CalendarEventSnapshot: Sendable, Equatable {
     let startDate: Date
     let endDate: Date
     let calendarTitle: String
+    /// True if the event is marked all-day (`EKEvent.isAllDay`). All-day
+    /// events get separate UX treatment — pinned to the top of the day's
+    /// list and ineligible for the "next up" slot.
+    let isAllDay: Bool
 }
 
 struct ReminderSnapshot: Sendable, Equatable {
     let title: String
     let dueDate: Date?
+    /// True if the reminder has no specific time of day — either no due
+    /// date at all (`dueDateComponents == nil`) or a due date with no
+    /// `hour` component. Matches Apple's "Today, anytime" semantics.
+    let isAllDay: Bool
 }
 
 // MARK: - Dependency
@@ -21,79 +29,155 @@ struct ReminderSnapshot: Sendable, Equatable {
 struct EventKitService: Sendable {
     var fetchTodayEvents: @Sendable () async throws -> [CalendarEventSnapshot]
     var fetchDueReminders: @Sendable () async throws -> [ReminderSnapshot]
+
+    /// Events whose start time falls within the user-local day containing
+    /// `date`. Used by the Time Warp wheel to populate the Calendar tab
+    /// for any scrubbed-to day, not just today.
+    var fetchEvents: @Sendable (Date) async throws -> [CalendarEventSnapshot]
+
+    /// Incomplete reminders with a due date inside the user-local day
+    /// containing `date`. Distinct from `fetchDueReminders`, which is
+    /// brief-generation semantics (all overdue + due-today regardless of
+    /// the day being viewed).
+    var fetchReminders: @Sendable (Date) async throws -> [ReminderSnapshot]
 }
 
 extension EventKitService: DependencyKey {
     static var liveValue: Self {
         let store = EKEventStore()
 
+        @Sendable func eventSnapshots(from start: Date, to end: Date) -> [CalendarEventSnapshot] {
+            let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+            return store.events(matching: pred)
+                .sorted { $0.startDate < $1.startDate }
+                .map {
+                    CalendarEventSnapshot(
+                        title: $0.title ?? "",
+                        startDate: $0.startDate,
+                        endDate: $0.endDate,
+                        calendarTitle: $0.calendar?.title ?? "",
+                        isAllDay: $0.isAllDay
+                    )
+                }
+        }
+
+        @Sendable func reminderSnapshots(
+            withDueDateStarting start: Date?,
+            ending end: Date
+        ) async throws -> [ReminderSnapshot] {
+            try await withCheckedThrowingContinuation { continuation in
+                let pred = store.predicateForIncompleteReminders(
+                    withDueDateStarting: start,
+                    ending: end,
+                    calendars: nil
+                )
+                store.fetchReminders(matching: pred) { reminders in
+                    let snapshots = (reminders ?? [])
+                        .sorted {
+                            ($0.dueDateComponents?.date ?? .distantFuture) <
+                            ($1.dueDateComponents?.date ?? .distantFuture)
+                        }
+                        .map { reminder -> ReminderSnapshot in
+                            // "All day" = no due date at all, OR a due
+                            // date with no time component. Matches what
+                            // Apple's Reminders.app lumps into the
+                            // "Today (anytime)" group.
+                            let components = reminder.dueDateComponents
+                            let isAllDay = components == nil || components?.hour == nil
+                            return ReminderSnapshot(
+                                title: reminder.title ?? "",
+                                dueDate: components?.date,
+                                isAllDay: isAllDay
+                            )
+                        }
+                    continuation.resume(returning: snapshots)
+                }
+            }
+        }
+
+        // Resolves the user-local [startOfDay, startOfNextDay) range for
+        // any input date. Uses `Calendar.autoupdatingCurrent` to follow
+        // locale + timezone changes without app restart — the dates EDD's
+        // intent is "always interpret day boundaries in the user's
+        // current calendar." A future cleanup will inject CalendarContext
+        // into this client; for now we match the existing pattern at the
+        // top of this file.
+        @Sendable func dayRange(for date: Date) -> (start: Date, end: Date) {
+            let cal = Calendar.autoupdatingCurrent
+            let start = cal.startOfDay(for: date)
+            let end = cal.date(byAdding: .day, value: 1, to: start) ?? start
+            return (start, end)
+        }
+
         return .init(
             fetchTodayEvents: {
                 guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
                     return []
                 }
-                let startOfDay = Calendar.current.startOfDay(for: Date())
-                let endOfDay = Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)!
-                let pred = store.predicateForEvents(withStart: startOfDay, end: endOfDay, calendars: nil)
-                return store.events(matching: pred)
-                    .sorted { $0.startDate < $1.startDate }
-                    .map {
-                        CalendarEventSnapshot(
-                            title: $0.title ?? "",
-                            startDate: $0.startDate,
-                            endDate: $0.endDate,
-                            calendarTitle: $0.calendar?.title ?? ""
-                        )
-                    }
+                let (start, end) = dayRange(for: Date())
+                return eventSnapshots(from: start, to: end)
             },
             fetchDueReminders: {
                 guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
                     return []
                 }
-                let endOfDay = Calendar.current.date(
-                    byAdding: .day, value: 1,
-                    to: Calendar.current.startOfDay(for: Date())
-                )!
-                return try await withCheckedThrowingContinuation { continuation in
-                    let pred = store.predicateForIncompleteReminders(
-                        withDueDateStarting: nil,
-                        ending: endOfDay,
-                        calendars: nil
-                    )
-                    store.fetchReminders(matching: pred) { reminders in
-                        let snapshots = (reminders ?? [])
-                            .sorted {
-                                ($0.dueDateComponents?.date ?? .distantFuture) <
-                                ($1.dueDateComponents?.date ?? .distantFuture)
-                            }
-                            .map {
-                                ReminderSnapshot(
-                                    title: $0.title ?? "",
-                                    dueDate: $0.dueDateComponents?.date
-                                )
-                            }
-                        continuation.resume(returning: snapshots)
-                    }
+                let (_, end) = dayRange(for: Date())
+                return try await reminderSnapshots(withDueDateStarting: nil, ending: end)
+            },
+            fetchEvents: { date in
+                guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                    return []
                 }
+                let (start, end) = dayRange(for: date)
+                return eventSnapshots(from: start, to: end)
+            },
+            fetchReminders: { date in
+                guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
+                    return []
+                }
+                // Two semantics depending on whether `date` is today:
+                //
+                // - Today: use the broad predicate (nil start, end-of-day).
+                //   This matches what Apple's Reminders.app "Today" smart
+                //   list shows — incomplete reminders due any time up to
+                //   end-of-day PLUS reminders with no due date at all.
+                //   Excluding undated reminders here would silently hide
+                //   anything the user added to "Today" without a time.
+                //
+                // - Other day: use the strict day range (start-of-day,
+                //   end-of-day). Only reminders explicitly scheduled for
+                //   that day appear. Overdue + undated reminders are not
+                //   conceptually "for" a past or future day, so they're
+                //   excluded.
+                let (start, end) = dayRange(for: date)
+                let today = Calendar.autoupdatingCurrent.isDateInToday(date)
+                return try await reminderSnapshots(
+                    withDueDateStarting: today ? nil : start,
+                    ending: end
+                )
             }
         )
     }
 
     static var testValue: Self {
-        .init(
-            fetchTodayEvents: {
-                [
-                    CalendarEventSnapshot(
-                        title: "Product Review",
-                        startDate: Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
-                        endDate: Calendar.current.date(bySettingHour: 11, minute: 0, second: 0, of: Date())!,
-                        calendarTitle: "Work"
-                    )
-                ]
-            },
-            fetchDueReminders: {
-                [ReminderSnapshot(title: "Follow up with Sarah", dueDate: Date())]
-            }
+        let canned = CalendarEventSnapshot(
+            title: "Product Review",
+            startDate: Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
+            endDate: Calendar.current.date(bySettingHour: 11, minute: 0, second: 0, of: Date())!,
+            calendarTitle: "Work",
+            isAllDay: false
+        )
+        let cannedReminder = ReminderSnapshot(
+            title: "Follow up with Sarah",
+            dueDate: Date(),
+            isAllDay: false
+        )
+
+        return .init(
+            fetchTodayEvents: { [canned] },
+            fetchDueReminders: { [cannedReminder] },
+            fetchEvents: { _ in [canned] },
+            fetchReminders: { _ in [cannedReminder] }
         )
     }
 }

@@ -20,25 +20,14 @@ final class DailyBriefClientTests: XCTestCase {
                     dayKey: expectedDayKey,
                     focusText: "A busy day ahead.",
                     suggestionText: "Block time for the PRD.",
-                    eventCount: 3,
-                    reminderCount: 2,
-                    generatedAt: self.fixedNow,
-                    highlights: [
-                        StoredHighlight(
-                            category: "Next up",
-                            icon: "calendar",
-                            title: "Standup",
-                            time: "9:00 AM",
-                            trailingBadge: "In 1 h",
-                            sourceNotebookID: nil,
-                            sourcePageIndex: nil
-                        )
-                    ]
+                    generatedAt: self.fixedNow
                 )
             },
             refresh: { fatalError("Should not be called") },
             fetch: { _ in nil },
-            calendarChanges: { AsyncStream { $0.finish() } }
+            calendarChanges: { AsyncStream { $0.finish() } },
+            fetchDayContent: { _ in DayContent(dayKey: "") },
+            generateForDay: { _ in throw CancellationError() }
         )
 
         let snapshot = try await client.fetchOrGenerate()
@@ -46,11 +35,6 @@ final class DailyBriefClientTests: XCTestCase {
         XCTAssertEqual(snapshot.dayKey, expectedDayKey)
         XCTAssertEqual(snapshot.focusText, "A busy day ahead.")
         XCTAssertEqual(snapshot.suggestionText, "Block time for the PRD.")
-        XCTAssertEqual(snapshot.eventCount, 3)
-        XCTAssertEqual(snapshot.reminderCount, 2)
-        XCTAssertEqual(snapshot.highlights.count, 1)
-        XCTAssertEqual(snapshot.highlights[0].title, "Standup")
-        XCTAssertEqual(snapshot.highlights[0].trailingBadge, "In 1 h")
     }
 
     func test_fetchOrGenerate_emptyCalendar_returnsFallback() async throws {
@@ -60,23 +44,20 @@ final class DailyBriefClientTests: XCTestCase {
                     dayKey: "2026-05-13",
                     focusText: "No events or reminders today. A clear day for deep work.",
                     suggestionText: "",
-                    eventCount: 0,
-                    reminderCount: 0,
-                    generatedAt: self.fixedNow,
-                    highlights: []
+                    generatedAt: self.fixedNow
                 )
             },
             refresh: { fatalError("Should not be called") },
             fetch: { _ in nil },
-            calendarChanges: { AsyncStream { $0.finish() } }
+            calendarChanges: { AsyncStream { $0.finish() } },
+            fetchDayContent: { _ in DayContent(dayKey: "") },
+            generateForDay: { _ in throw CancellationError() }
         )
 
         let snapshot = try await client.fetchOrGenerate()
 
-        XCTAssertEqual(snapshot.eventCount, 0)
-        XCTAssertEqual(snapshot.reminderCount, 0)
-        XCTAssertTrue(snapshot.highlights.isEmpty)
         XCTAssertFalse(snapshot.focusText.isEmpty)
+        XCTAssertTrue(snapshot.suggestionText.isEmpty)
     }
 
     // MARK: - refresh
@@ -92,14 +73,13 @@ final class DailyBriefClientTests: XCTestCase {
                     dayKey: "2026-05-13",
                     focusText: "Refreshed.",
                     suggestionText: "",
-                    eventCount: 1,
-                    reminderCount: 0,
-                    generatedAt: self.fixedNow,
-                    highlights: []
+                    generatedAt: self.fixedNow
                 )
             },
             fetch: { _ in nil },
-            calendarChanges: { AsyncStream { $0.finish() } }
+            calendarChanges: { AsyncStream { $0.finish() } },
+            fetchDayContent: { _ in DayContent(dayKey: "") },
+            generateForDay: { _ in throw CancellationError() }
         )
 
         let first = try await client.refresh()
@@ -125,15 +105,14 @@ final class DailyBriefClientTests: XCTestCase {
                     dayKey: "2026-05-13",
                     focusText: "",
                     suggestionText: "",
-                    eventCount: 0,
-                    reminderCount: 0,
-                    generatedAt: self.fixedNow,
-                    highlights: []
+                    generatedAt: self.fixedNow
                 )
             },
             refresh: { fatalError("Should not be called") },
             fetch: { _ in nil },
-            calendarChanges: { stream }
+            calendarChanges: { stream },
+            fetchDayContent: { _ in DayContent(dayKey: "") },
+            generateForDay: { _ in throw CancellationError() }
         )
 
         var emitCount = 0
@@ -148,7 +127,7 @@ final class DailyBriefClientTests: XCTestCase {
 
     func test_storedHighlight_roundTripsJSON() throws {
         let highlight = StoredHighlight(
-            category: "Next up",
+            category: .nextUp,
             icon: "calendar",
             title: "Standup",
             time: "9:00 AM",
@@ -166,7 +145,7 @@ final class DailyBriefClientTests: XCTestCase {
 
     func test_storedHighlight_nilNotebookFields() throws {
         let highlight = StoredHighlight(
-            category: "Upcoming",
+            category: .upcoming,
             icon: "clock",
             title: "Workshop",
             time: "8:00 PM",
@@ -190,44 +169,32 @@ final class DailyBriefClientTests: XCTestCase {
             dayKey: "2026-05-13",
             focusText: "Focus",
             suggestionText: "Suggest",
-            eventCount: 2,
-            reminderCount: 1,
-            generatedAt: fixedNow,
-            highlights: []
+            generatedAt: fixedNow
         )
 
         let b = DailyBriefSnapshot(
             dayKey: "2026-05-13",
             focusText: "Focus",
             suggestionText: "Suggest",
-            eventCount: 2,
-            reminderCount: 1,
-            generatedAt: fixedNow,
-            highlights: []
+            generatedAt: fixedNow
         )
 
         XCTAssertEqual(a, b)
     }
 
-    func test_snapshot_notEqual_differentCounts() {
+    func test_snapshot_notEqual_differentFocus() {
         let a = DailyBriefSnapshot(
             dayKey: "2026-05-13",
-            focusText: "Focus",
+            focusText: "Focus A",
             suggestionText: "",
-            eventCount: 2,
-            reminderCount: 1,
-            generatedAt: fixedNow,
-            highlights: []
+            generatedAt: fixedNow
         )
 
         let b = DailyBriefSnapshot(
             dayKey: "2026-05-13",
-            focusText: "Focus",
+            focusText: "Focus B",
             suggestionText: "",
-            eventCount: 3,
-            reminderCount: 1,
-            generatedAt: fixedNow,
-            highlights: []
+            generatedAt: fixedNow
         )
 
         XCTAssertNotEqual(a, b)

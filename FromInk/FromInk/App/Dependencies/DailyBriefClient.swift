@@ -11,6 +11,27 @@ struct DailyBriefClient: Sendable {
     var refresh: @Sendable () async throws -> DailyBriefSnapshot
     var fetch: @Sendable (String) async -> DailyBriefSnapshot?
     var calendarChanges: @Sendable () -> AsyncStream<Void>
+
+    /// Fetches the lightweight day content (events + reminders + birthdays)
+    /// for an arbitrary date — fast, read-only, no Foundation Models.
+    /// Used by the Time Warp wheel to populate the tab body as the user
+    /// scrubs, without firing brief generation.
+    ///
+    /// V1 honest scope: returns today's content (via the same pipeline
+    /// `fetchOrGenerate` uses for the live counts) when called for today,
+    /// and `DayContent.empty(...)` for other dates. EventKit-by-date
+    /// queries are a follow-up.
+    var fetchDayContent: @Sendable (Date) async -> DayContent
+
+    /// Generates a brief for a specific date — used by `wheelDismissed`
+    /// when the wheel settles on a date with no existing record. Slow
+    /// (multi-second FM call); only invoked once per never-seen-before
+    /// day.
+    ///
+    /// V1 honest scope: delegates to `fetchOrGenerate` (today only).
+    /// Per-date FM generation is a follow-up that requires per-date
+    /// EventKit fetching + prompt date injection.
+    var generateForDay: @Sendable (Date) async throws -> DailyBriefSnapshot
 }
 
 // MARK: - DependencyKey
@@ -22,14 +43,18 @@ extension DailyBriefClient: DependencyKey {
         fetchOrGenerate: { throw CancellationError() },
         refresh: { throw CancellationError() },
         fetch: { _ in nil },
-        calendarChanges: { AsyncStream { $0.finish() } }
+        calendarChanges: { AsyncStream { $0.finish() } },
+        fetchDayContent: { date in DayContent.empty(dayKey: "") },
+        generateForDay: { _ in throw CancellationError() }
     )
 
     static let testValue = DailyBriefClient(
         fetchOrGenerate: { throw CancellationError() },
         refresh: { throw CancellationError() },
         fetch: { _ in nil },
-        calendarChanges: { AsyncStream { $0.finish() } }
+        calendarChanges: { AsyncStream { $0.finish() } },
+        fetchDayContent: { date in DayContent.empty(dayKey: "") },
+        generateForDay: { _ in throw CancellationError() }
     )
 }
 
@@ -88,9 +113,99 @@ extension DailyBriefClient {
                         center.removeObserver(observer)
                     }
                 }
+            },
+            fetchDayContent: { date in
+                await _fetchDayContent(
+                    for: date,
+                    eventKit: eventKit,
+                    cal: calendarContext
+                )
+            },
+            generateForDay: { date in
+                // V1: per-date FM generation isn't built yet. For today,
+                // delegate to fetchOrGenerate. For other dates, return
+                // any cached record or throw — the reducer treats throw
+                // as "no brief available."
+                let dayKey = calendarContext.dayKey(date)
+                let todayKey = calendarContext.dayKey(calendarContext.now())
+                if dayKey == todayKey {
+                    return try await _fetchOrGenerate(
+                        modelContext: modelContext,
+                        eventKit: eventKit,
+                        foundationModels: foundationModels,
+                        cal: calendarContext
+                    )
+                }
+                // Cached past-day record if it exists.
+                if let existing = await _fetch(forDayKey: dayKey, modelContext: modelContext) {
+                    return existing
+                }
+                // No record + not today — V1 has no per-date FM path.
+                // Throwing here is honest: the reducer will leave the
+                // brief in its prior state rather than fabricate one.
+                throw NSError(
+                    domain: "DailyBriefClient",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Per-date brief generation not yet implemented."]
+                )
             }
         )
     }
+}
+
+// MARK: - DayContent fetcher
+
+/// Fast, FM-free per-date fetch of events + reminders. Used by the Time
+/// Warp wheel to populate the Calendar / Reminders tabs as the user
+/// scrubs. No SwiftData reads, no Foundation Models — just EventKit.
+///
+private func _fetchDayContent(
+    for date: Date,
+    eventKit: EventKitService,
+    cal: CalendarContext
+) async -> DayContent {
+    let dayKey = cal.dayKey(date)
+
+    // Always live EventKit, any day. Reasons:
+    //   - Freshness — cached highlights are frozen at brief-generation
+    //     time, so anything added later doesn't appear if we read from
+    //     the record.
+    //   - Schema resilience — the cached `highlightsData` JSON depends
+    //     on the `StoredHighlight` shape; future schema changes break
+    //     stored records silently. Live EventKit is schema-independent.
+    //   - Uniformity — the wheel can scrub to any day and the tab body
+    //     populates the same way for past, today, and future. The
+    //     cached `DailyBriefRecord` keeps its narrower job: persisting
+    //     the FM-generated editorial text (focus / suggestion), not
+    //     the events list.
+    let events = (try? await eventKit.fetchEvents(date)) ?? []
+    let reminders = (try? await eventKit.fetchReminders(date)) ?? []
+    let highlights = buildHighlights(
+        events: events,
+        reminders: reminders,
+        viewingDate: date,
+        now: cal.now(),
+        cal: cal
+    )
+    let eventRows = highlights.filter {
+        $0.category == .allDay || $0.category == .nextUp || $0.category == .upcoming
+    }
+    let reminderRows = highlights.filter {
+        $0.category == .anytime || $0.category == .overdue || $0.category == .today
+    }
+    // Counts mirror the rendered list — `buildHighlights` is the source
+    // of truth for "what the user sees." Using the raw EventKit counts
+    // here drifts from the list whenever an event is excluded for any
+    // reason (e.g., declined, canceled in future slices).
+    return DayContent(
+        dayKey: dayKey,
+        events: eventRows,
+        reminders: reminderRows,
+        eventCount: eventRows.count,
+        reminderCount: reminderRows.count,
+        birthdayCount: 0
+    )
 }
 
 // MARK: - Live implementation
@@ -222,7 +337,7 @@ private func generateNew(
     foundationModels: FoundationModelsService,
     cal: CalendarContext
 ) async throws -> DailyBriefSnapshot {
-    let (focusText, suggestionText, highlights) = try await runGeneration(
+    let (focusText, suggestionText) = try await runGeneration(
         eventKit: eventKit,
         foundationModels: foundationModels,
         cal: cal
@@ -234,8 +349,7 @@ private func generateNew(
         suggestionText: suggestionText,
         eventCountAtGeneration: eventCount,
         reminderCountAtGeneration: reminderCount,
-        generatedAt: now,
-        highlights: highlights
+        generatedAt: now
     )
 
     context.insert(record)
@@ -259,7 +373,7 @@ private func regenerate(
     foundationModels: FoundationModelsService,
     cal: CalendarContext
 ) async throws -> DailyBriefSnapshot {
-    let (focusText, suggestionText, highlights) = try await runGeneration(
+    let (focusText, suggestionText) = try await runGeneration(
         eventKit: eventKit,
         foundationModels: foundationModels,
         cal: cal
@@ -270,7 +384,6 @@ private func regenerate(
     existing.eventCountAtGeneration = eventCount
     existing.reminderCountAtGeneration = reminderCount
     existing.generatedAt = cal.now()
-    existing.setHighlights(highlights)
 
     do {
         try context.save()
@@ -290,16 +403,12 @@ private func runGeneration(
     cal: CalendarContext
 ) async throws -> (
     focusText: String,
-    suggestionText: String,
-    highlights: [StoredHighlight]
+    suggestionText: String
 ) {
     log.info("runGeneration: fetching EventKit")
     let events = try await eventKit.fetchTodayEvents()
     let reminders = try await eventKit.fetchDueReminders()
     log.info("runGeneration: EventKit — \(events.count) events, \(reminders.count) reminders")
-
-    let now = cal.now()
-    let highlights = buildHighlights(events: events, reminders: reminders, now: now, cal: cal)
 
     var focusText = ""
     var suggestionText = ""
@@ -320,7 +429,7 @@ private func runGeneration(
         focusText = rawFocusFallback(events: events, reminders: reminders)
     }
 
-    return (focusText, suggestionText, highlights)
+    return (focusText, suggestionText)
 }
 
 private func fetchLiveCounts(eventKit: EventKitService) async -> (Int, Int) {
@@ -336,17 +445,66 @@ private func fetchLiveCounts(eventKit: EventKitService) async -> (Int, Int) {
 
 // MARK: - Highlight builder
 
+/// Builds the rendered highlight rows for `viewingDate`. The list is the
+/// source of truth for what the user sees in the Calendar / Reminders
+/// tabs — counts come from this list's size, not from a parallel raw
+/// EventKit count.
+///
+/// Ordering:
+///   1. All-day events (pinned, sorted as EventKit returned them).
+///   2. All timed events for the day, sorted chronologically. No filter
+///      on past-vs-future — a passed event is still part of the day.
+///   3. Anytime / undated reminders.
+///   4. All timed reminders, sorted chronologically.
+///
+/// `.nextUp` semantics:
+///   - Only applies when `viewingDate` is today (the pill is anchored to
+///     "right now," which doesn't exist on other days).
+///   - The first timed event whose `endDate >= now` wins it; events
+///     already ended are `.upcoming`. If no event is still ongoing or
+///     future, no event gets `.nextUp`.
+///
+/// `.overdue` semantics (reminders):
+///   - Only applies when `viewingDate` is today. On past/future days,
+///     "overdue" is meaningless — those reminders are just `.today`.
+///
 private func buildHighlights(
     events: [CalendarEventSnapshot],
     reminders: [ReminderSnapshot],
+    viewingDate: Date,
     now: Date,
     cal: CalendarContext
 ) -> [StoredHighlight] {
     var highlights: [StoredHighlight] = []
+    let isToday = cal.isToday(viewingDate)
 
-    let upcoming = events.filter { $0.startDate >= now || $0.endDate >= now }
-    for (index, event) in upcoming.prefix(3).enumerated() {
-        let category = index == 0 ? AppStrings.Home.nextUp : AppStrings.Home.upcoming
+    // Events
+    let allDayEvents = events.filter { $0.isAllDay }
+    let timedEvents = events
+        .filter { !$0.isAllDay }
+        .sorted { $0.startDate < $1.startDate }
+
+    // `.nextUp` is the first timed event with `endDate >= now` — only
+    // when viewing today. nil index = no event wins the pill.
+    let nextUpIndex: Int? = isToday
+        ? timedEvents.firstIndex(where: { $0.endDate >= now })
+        : nil
+
+    for event in allDayEvents {
+        highlights.append(
+            StoredHighlight(
+                category: .allDay,
+                icon: "calendar",
+                title: event.title,
+                time: AppStrings.Home.allDay,
+                trailingBadge: "",
+                sourceNotebookID: nil,
+                sourcePageIndex: nil
+            )
+        )
+    }
+    for (index, event) in timedEvents.enumerated() {
+        let category: HighlightCategory = (index == nextUpIndex) ? .nextUp : .upcoming
         highlights.append(
             StoredHighlight(
                 category: category,
@@ -360,10 +518,30 @@ private func buildHighlights(
         )
     }
 
-    for reminder in reminders.prefix(3) {
-        let category = reminder.dueDate.map {
-            $0 < now ? AppStrings.Home.overdue : AppStrings.Home.today
-        } ?? AppStrings.Home.today
+    // Reminders
+    let anytimeReminders = reminders.filter { $0.isAllDay }
+    let timedReminders = reminders
+        .filter { !$0.isAllDay }
+        .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+
+    for reminder in anytimeReminders {
+        highlights.append(
+            StoredHighlight(
+                category: .anytime,
+                icon: "clock",
+                title: reminder.title,
+                time: AppStrings.Home.anytime,
+                trailingBadge: "",
+                sourceNotebookID: nil,
+                sourcePageIndex: nil
+            )
+        )
+    }
+    for reminder in timedReminders {
+        let category: HighlightCategory = {
+            guard isToday, let due = reminder.dueDate else { return .today }
+            return due < now ? .overdue : .today
+        }()
         highlights.append(
             StoredHighlight(
                 category: category,

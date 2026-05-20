@@ -2,12 +2,25 @@ import ComposableArchitecture
 import XCTest
 @testable import FromInk
 
-/// TestStore coverage for `HomeFeature.wheelToggled` and `HomeFeature.dateWarpedTo`.
+/// TestStore coverage for HomeFeature — Time Warp wheel, lazy brief
+/// generation, and `isWarped` gating.
 ///
-/// These tests substitute `calendarContext` via `.fixed(...)` per the dates EDD
-/// §12.1 pattern, and stub `dailyBriefClient` with a `LockIsolated` capture so
-/// the test can both inject the snapshot to return AND assert which dayKey
-/// the reducer asked for.
+/// Substitutes `calendarContext` via `.fixed(...)` per the dates EDD
+/// §12.1 pattern, and stubs `dailyBriefClient` with `LockIsolated`
+/// captures so tests can both inject return values and assert which
+/// dates the reducer requested.
+///
+/// Architectural shape exercised here (post wheel-open mode rework):
+/// - `wheelToggled` (open):  isWheelOpen = true, activeBriefTab = .calendar,
+///                           kicks off `fetchDayContent` (fast, no FM).
+/// - `dateWarpedTo`:         updates currentDate + isWarped, kicks off
+///                           `fetchDayContent` ONLY. No brief generation
+///                           during scrubbing.
+/// - `wheelToggled` (close): isWheelOpen = false, sends `.wheelDismissed`.
+/// - `wheelDismissed`:       triggers `generateForDay` ONLY if no brief
+///                           already exists for the settled day AND no
+///                           generation has been attempted for it this
+///                           session.
 ///
 final class HomeFeatureTests: XCTestCase {
 
@@ -17,24 +30,100 @@ final class HomeFeatureTests: XCTestCase {
     /// 2026-05-10 12:00 UTC — Sunday in NY (three days earlier).
     private var sunday: Date { wednesday.addingTimeInterval(-3 * 86_400) }
 
-    // MARK: - wheelToggled
+    // MARK: - Helpers
+
+    /// Builds a `DailyBriefClient` stub that records calls to
+    /// `fetchDayContent` and `generateForDay` and lets the test inject
+    /// per-date return values. Other endpoints fatalError unless
+    /// overridden — so warp tests that accidentally trigger today-refresh
+    /// paths fail loudly.
+    private func makeStubClient(
+        dayContent: @escaping @Sendable (Date) -> DayContent = { _ in DayContent(dayKey: "") },
+        generateForDay: @escaping @Sendable (Date) async throws -> DailyBriefSnapshot
+            = { _ in throw CancellationError() }
+    ) -> DailyBriefClient {
+        DailyBriefClient(
+            fetchOrGenerate: { fatalError("Wheel flow must not call fetchOrGenerate") },
+            refresh: { fatalError("Wheel flow must not call refresh") },
+            fetch: { _ in fatalError("Wheel flow must not call fetch") },
+            calendarChanges: { AsyncStream { $0.finish() } },
+            fetchDayContent: { date in dayContent(date) },
+            generateForDay: { date in try await generateForDay(date) }
+        )
+    }
+
+    // MARK: - wheelToggled (open leg)
 
     @MainActor
-    func test_wheelToggled_flipsState() async {
+    func test_wheelToggled_open_activatesCalendarTab_andFetchesDayContent() async {
+        let capturedDate = LockIsolated<Date?>(nil)
+        let injectedContent = DayContent(
+            dayKey: "2026-05-13",
+            eventCount: 4,
+            reminderCount: 2,
+            birthdayCount: 0
+        )
+
         let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = .testValue
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { date in
+                    capturedDate.setValue(date)
+                    return injectedContent
+                }
+            )
         }
 
         await store.send(.wheelToggled) {
             $0.isWheelOpen = true
+            $0.activeBriefTab = .calendar
+        }
+
+        await store.receive(.dayContentLoaded(injectedContent)) {
+            $0.dayContent = injectedContent
+        }
+
+        XCTAssertEqual(
+            capturedDate.value, wednesday,
+            "Opening the wheel must fetch day content for the current date"
+        )
+    }
+
+    // MARK: - wheelToggled (close leg) routes through wheelDismissed
+
+    @MainActor
+    func test_wheelToggled_close_sendsWheelDismissed() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.isWheelOpen = true
+        seeded.activeBriefTab = .calendar
+        // Already have today's brief — wheelDismissed should not regenerate.
+        let todaySnapshot = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Today.",
+            suggestionText: "",
+            generatedAt: wednesday
+        )
+        seeded.briefState = .loaded(todaySnapshot)
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                generateForDay: { _ in
+                    XCTFail("Must not generate when brief already exists for settled day")
+                    throw CancellationError()
+                }
+            )
         }
 
         await store.send(.wheelToggled) {
             $0.isWheelOpen = false
         }
+
+        await store.receive(.wheelDismissed)
     }
 
     // MARK: - dateWarpedTo
@@ -45,41 +134,37 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = .testValue
+            $0.dailyBriefClient = makeStubClient()
         }
 
-        // Same user-local day (different second-of-day): no state change,
-        // no effect fired. TestStore enforces both invariants implicitly when
-        // we omit a state-change closure.
         let sameDayDifferentSecond = wednesday.addingTimeInterval(3_600)
         await store.send(.dateWarpedTo(sameDayDifferentSecond))
     }
 
     @MainActor
-    func test_dateWarpedTo_newDay_loadsBriefForNewDayKey() async {
-        let capturedDayKey = LockIsolated<String?>(nil)
-        let injectedSnapshot = DailyBriefSnapshot(
+    func test_dateWarpedTo_newDay_fetchesDayContentOnly_noBriefGeneration() async {
+        let capturedDate = LockIsolated<Date?>(nil)
+        let capturedGenerateDates = LockIsolated<[Date]>([])
+        let injectedContent = DayContent(
             dayKey: "2026-05-10",
-            focusText: "A bright Saturday morning.",
-            suggestionText: "",
-            eventCount: 0,
+            eventCount: 1,
             reminderCount: 0,
-            generatedAt: wednesday,
-            highlights: []
+            birthdayCount: 0
         )
 
         let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError("Warp must not call fetchOrGenerate") },
-                refresh: { fatalError("Warp must not call refresh") },
-                fetch: { dayKey in
-                    capturedDayKey.setValue(dayKey)
-                    return injectedSnapshot
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { date in
+                    capturedDate.setValue(date)
+                    return injectedContent
                 },
-                calendarChanges: { AsyncStream { $0.finish() } }
+                generateForDay: { date in
+                    capturedGenerateDates.withValue { $0.append(date) }
+                    throw CancellationError()
+                }
             )
         }
 
@@ -89,73 +174,111 @@ final class HomeFeatureTests: XCTestCase {
             $0.isWarped = true
         }
 
-        await store.receive(.briefLoaded(injectedSnapshot)) {
-            $0.briefState = .loaded(injectedSnapshot)
+        await store.receive(.dayContentLoaded(injectedContent)) {
+            $0.dayContent = injectedContent
         }
 
         XCTAssertEqual(
-            capturedDayKey.value, "2026-05-10",
-            "Warp must request the brief for the new day's dayKey"
+            capturedDate.value, destinationSunday,
+            "Warp must request day content for the new date"
+        )
+        XCTAssertTrue(
+            capturedGenerateDates.value.isEmpty,
+            "Scrubbing must NOT trigger brief generation"
         )
     }
 
     @MainActor
-    func test_dateWarpedTo_briefNotFound_setsEmptyState() async {
-        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
-            HomeFeature()
-        } withDependencies: {
-            $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError() },
-                refresh: { fatalError() },
-                fetch: { _ in nil },     // future day with no record
-                calendarChanges: { AsyncStream { $0.finish() } }
-            )
-        }
-
-        let futureDate = wednesday.addingTimeInterval(7 * 86_400)
-        await store.send(.dateWarpedTo(futureDate)) {
-            $0.currentDate = futureDate
-            $0.isWarped = true
-        }
-
-        await store.receive(.briefLoaded(nil)) {
-            $0.briefState = .empty
-        }
-    }
-
-    // MARK: - isWarped gating
-
-    @MainActor
     func test_dateWarpedTo_backToToday_clearsIsWarped() async {
-        let warpedStart = HomeFeature.State(currentDate: sunday)
-        var seeded = warpedStart
+        var seeded = HomeFeature.State(currentDate: sunday)
         seeded.isWarped = true
 
         let store = TestStore(initialState: seeded) {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError() },
-                refresh: { fatalError() },
-                fetch: { _ in nil },
-                calendarChanges: { AsyncStream { $0.finish() } }
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { _ in DayContent(dayKey: "2026-05-13") }
             )
         }
 
-        // Warping to "today" (Wednesday) must flip isWarped off so subsequent
-        // .calendarChanged / .foregrounded actions re-arm.
+        let emptyTodayContent = DayContent(dayKey: "2026-05-13")
         let backToToday = wednesday
         await store.send(.dateWarpedTo(backToToday)) {
             $0.currentDate = backToToday
             $0.isWarped = false
         }
 
-        await store.receive(.briefLoaded(nil)) {
-            $0.briefState = .empty
+        await store.receive(.dayContentLoaded(emptyTodayContent)) {
+            $0.dayContent = emptyTodayContent
         }
     }
+
+    // MARK: - wheelDismissed
+
+    @MainActor
+    func test_wheelDismissed_noBriefForSettledDay_triggersGeneration() async {
+        let capturedDate = LockIsolated<Date?>(nil)
+        let generatedSnapshot = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Freshly generated.",
+            suggestionText: "",
+            generatedAt: wednesday
+        )
+
+        // briefState is .empty — no brief exists for today yet.
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                generateForDay: { date in
+                    capturedDate.setValue(date)
+                    return generatedSnapshot
+                }
+            )
+        }
+
+        await store.send(.wheelDismissed)
+
+        await store.receive(.briefGenerated(generatedSnapshot)) {
+            $0.briefState = .loaded(generatedSnapshot)
+        }
+
+        XCTAssertEqual(
+            capturedDate.value, wednesday,
+            "Dismiss must request generation for the settled date"
+        )
+    }
+
+    @MainActor
+    func test_wheelDismissed_briefAlreadyExistsForSettledDay_skipsGeneration() async {
+        let existingSnapshot = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Already here.",
+            suggestionText: "",
+            generatedAt: wednesday
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.briefState = .loaded(existingSnapshot)
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                generateForDay: { _ in
+                    XCTFail("Must not generate when brief already exists for settled day")
+                    throw CancellationError()
+                }
+            )
+        }
+
+        // No state changes, no effects.
+        await store.send(.wheelDismissed)
+    }
+
+    // MARK: - isWarped gating (unchanged by this slice)
 
     @MainActor
     func test_calendarChanged_whileWarped_isNoOp() async {
@@ -166,15 +289,14 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError("Must not refresh while warped") },
-                refresh: { fatalError("Must not refresh while warped") },
-                fetch: { _ in nil },
-                calendarChanges: { AsyncStream { $0.finish() } }
+            $0.dailyBriefClient = makeStubClient(
+                generateForDay: { _ in
+                    XCTFail("Must not refresh while warped")
+                    throw CancellationError()
+                }
             )
         }
 
-        // No state change, no effect fired.
         await store.send(.calendarChanged)
     }
 
@@ -187,15 +309,14 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError("Must not refresh while warped") },
-                refresh: { fatalError("Must not refresh while warped") },
-                fetch: { _ in nil },
-                calendarChanges: { AsyncStream { $0.finish() } }
+            $0.dailyBriefClient = makeStubClient(
+                generateForDay: { _ in
+                    XCTFail("Must not refresh while warped")
+                    throw CancellationError()
+                }
             )
         }
 
-        // currentDate must stay at sunday, not auto-reset to today.
         await store.send(.foregrounded)
     }
 
@@ -227,7 +348,6 @@ final class HomeFeatureTests: XCTestCase {
             $0.dailyBriefClient = .testValue
         }
 
-        // Tapping the same tab collapses to nil.
         await store.send(.briefTabTapped(.calendar)) {
             $0.activeBriefTab = nil
         }
@@ -245,7 +365,6 @@ final class HomeFeatureTests: XCTestCase {
             $0.dailyBriefClient = .testValue
         }
 
-        // Tapping a different tab swaps in place — no collapse first.
         await store.send(.briefTabTapped(.reminders)) {
             $0.activeBriefTab = .reminders
         }
@@ -255,81 +374,80 @@ final class HomeFeatureTests: XCTestCase {
         }
     }
 
-    // MARK: - Full warp lifecycle
+    // MARK: - Full wheel lifecycle
 
-    /// Integration test: walks the entire warp state machine from
-    /// closed/today → wheel open → warp past → warp back to today →
-    /// wheel closed. Proves the individual reducer transitions compose
-    /// correctly and that `isWarped` flips correctly at each boundary.
+    /// Integration test: walks the full wheel-mode flow.
+    ///
+    /// 1. Wheel closed, today's brief loaded.
+    /// 2. Open wheel → calendar tab auto-activates, fetchDayContent fires.
+    /// 3. Scrub to past Sunday → fetchDayContent fires, NO generation.
+    /// 4. Scrub back to today → fetchDayContent fires, isWarped flips off.
+    /// 5. Close wheel → wheelDismissed fires; today already has a brief,
+    ///    so no generation.
     ///
     @MainActor
-    func test_fullWarpLifecycle() async {
-        let pastSnapshot = DailyBriefSnapshot(
-            dayKey: "2026-05-10",
-            focusText: "Past day brief",
-            suggestionText: "",
-            eventCount: 0,
-            reminderCount: 0,
-            generatedAt: wednesday,
-            highlights: []
-        )
+    func test_fullWheelLifecycle() async {
         let todaySnapshot = DailyBriefSnapshot(
             dayKey: "2026-05-13",
-            focusText: "Today's brief",
+            focusText: "Today.",
             suggestionText: "",
-            eventCount: 0,
-            reminderCount: 0,
-            generatedAt: wednesday,
-            highlights: []
+            generatedAt: wednesday
         )
+        let todayContent = DayContent(dayKey: "2026-05-13", eventCount: 0)
+        let sundayContent = DayContent(dayKey: "2026-05-10", eventCount: 2)
 
-        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+        let pastSunday = sunday
+        let todayDate = wednesday
+        var seeded = HomeFeature.State(currentDate: todayDate)
+        seeded.briefState = .loaded(todaySnapshot)
+
+        let store = TestStore(initialState: seeded) {
             HomeFeature()
         } withDependencies: {
-            $0.calendarContext = .fixed(now: wednesday)
-            $0.dailyBriefClient = DailyBriefClient(
-                fetchOrGenerate: { fatalError("Lifecycle only exercises .fetch") },
-                refresh: { fatalError("Lifecycle only exercises .fetch") },
-                fetch: { dayKey in
-                    switch dayKey {
-                    case "2026-05-10": return pastSnapshot
-                    case "2026-05-13": return todaySnapshot
-                    default: return nil
-                    }
+            $0.calendarContext = .fixed(now: todayDate)
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { date in
+                    if date == pastSunday { return sundayContent }
+                    return todayContent
                 },
-                calendarChanges: { AsyncStream { $0.finish() } }
+                generateForDay: { _ in
+                    XCTFail("Lifecycle: today already has a brief, must not regenerate")
+                    throw CancellationError()
+                }
             )
         }
 
         // 1. Open the wheel.
         await store.send(.wheelToggled) {
             $0.isWheelOpen = true
+            $0.activeBriefTab = .calendar
+        }
+        await store.receive(.dayContentLoaded(todayContent)) {
+            $0.dayContent = todayContent
         }
 
-        // 2. Warp to Sunday. isWarped flips on; brief loads.
-        let pastSunday = sunday
+        // 2. Scrub to Sunday — dayContent updates, no generation.
         await store.send(.dateWarpedTo(pastSunday)) {
             $0.currentDate = pastSunday
             $0.isWarped = true
         }
-        await store.receive(.briefLoaded(pastSnapshot)) {
-            $0.briefState = .loaded(pastSnapshot)
+        await store.receive(.dayContentLoaded(sundayContent)) {
+            $0.dayContent = sundayContent
         }
 
-        // 3. Warp back to today. isWarped clears; today's brief loads.
-        let todayAgain = wednesday
-        await store.send(.dateWarpedTo(todayAgain)) {
-            $0.currentDate = todayAgain
+        // 3. Scrub back to today.
+        await store.send(.dateWarpedTo(todayDate)) {
+            $0.currentDate = todayDate
             $0.isWarped = false
         }
-        await store.receive(.briefLoaded(todaySnapshot)) {
-            $0.briefState = .loaded(todaySnapshot)
+        await store.receive(.dayContentLoaded(todayContent)) {
+            $0.dayContent = todayContent
         }
 
-        // 4. Close the wheel. State returns to the initial wheel-closed
-        // baseline; brief stays on today.
+        // 4. Close wheel — wheelDismissed fires; today already has a brief.
         await store.send(.wheelToggled) {
             $0.isWheelOpen = false
         }
+        await store.receive(.wheelDismissed)
     }
 }

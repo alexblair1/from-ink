@@ -5,7 +5,7 @@ import Foundation
 /// Survives even if the source calendar event is later deleted.
 ///
 struct StoredHighlight: Codable, Equatable, Sendable {
-    let category: String
+    let category: HighlightCategory
     let icon: String
     let title: String
     let time: String
