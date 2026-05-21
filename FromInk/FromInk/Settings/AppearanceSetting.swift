@@ -1,7 +1,11 @@
 import SwiftUI
 
 /// User preference for app appearance.
-/// Stored as a raw `String` in `@AppStorage("appearanceSetting")`.
+/// Persisted by `UserPreferences.saveAppearance` / `.loadAppearance`
+/// under the `"appearanceSetting"` UserDefaults key. `FromInkApp`
+/// reads the same key via `@AppStorage` to apply the colorScheme at
+/// the app root — both reads stay in sync because they share the
+/// UserDefaults backing.
 enum AppearanceSetting: String, CaseIterable {
     case system
     case light

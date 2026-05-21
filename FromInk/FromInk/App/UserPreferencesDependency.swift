@@ -13,6 +13,20 @@ struct UserPreferences: Sendable {
     var saveActiveToolID: @Sendable (ToolID) async -> Void
     var loadTemplate: @Sendable () async -> CanvasTemplate
     var saveTemplate: @Sendable (CanvasTemplate) async -> Void
+
+    /// Light / Dark / System override. Read at app root by
+    /// `FromInkApp.appearance`; written by `SettingsFeature`.
+    /// Backed by the `"appearanceSetting"` UserDefaults key so the
+    /// app-root `@AppStorage` reader sees the same value the reducer
+    /// writes — no second source of truth.
+    var loadAppearance: @Sendable () async -> AppearanceSetting
+    var saveAppearance: @Sendable (AppearanceSetting) async -> Void
+
+    /// Left / Right hand preference. Maps to `ToolbarSide` at the
+    /// canvas via `Handedness.toolbarSide`. Backed by the
+    /// `"handedness"` UserDefaults key.
+    var loadHandedness: @Sendable () async -> Handedness
+    var saveHandedness: @Sendable (Handedness) async -> Void
 }
 
 // MARK: - DependencyKey
@@ -27,7 +41,23 @@ extension UserPreferences: DependencyKey {
         loadActiveToolID: { ToolID(rawValue: "pen") },
         saveActiveToolID: { _ in },
         loadTemplate: { .none },
-        saveTemplate: { _ in }
+        saveTemplate: { _ in },
+        loadAppearance: {
+            UserDefaults.standard.string(forKey: "appearanceSetting")
+                .flatMap(AppearanceSetting.init(rawValue:))
+                ?? .system
+        },
+        saveAppearance: { setting in
+            UserDefaults.standard.set(setting.rawValue, forKey: "appearanceSetting")
+        },
+        loadHandedness: {
+            UserDefaults.standard.string(forKey: "handedness")
+                .flatMap(Handedness.init(rawValue:))
+                ?? .right
+        },
+        saveHandedness: { handedness in
+            UserDefaults.standard.set(handedness.rawValue, forKey: "handedness")
+        }
     )
 
     static let testValue = UserPreferences(
@@ -38,7 +68,11 @@ extension UserPreferences: DependencyKey {
         loadActiveToolID: { ToolID(rawValue: "pen") },
         saveActiveToolID: { _ in },
         loadTemplate: { .none },
-        saveTemplate: { _ in }
+        saveTemplate: { _ in },
+        loadAppearance: { .system },
+        saveAppearance: { _ in },
+        loadHandedness: { .right },
+        saveHandedness: { _ in }
     )
 }
 

@@ -49,13 +49,10 @@ struct HomeFeatureView: View {
         .fullScreenCover(item: $activeNotebook) { notebook in
             NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
         }
-        .overlay {
-            if showSettings {
-                SettingsScreen(onDismiss: { showSettings = false })
-                    .transition(.opacity)
-            }
-        }
-        .animation(ds.animation.standard, value: showSettings)
+        // Settings overlay removed. The canonical home view
+        // (`HomeWiringView`) presents settings via TCA-scoped
+        // `SettingsWiringView`; this legacy view (only referenced by
+        // the unused `ContentView`) no longer surfaces it.
         .overlay {
             if showNewNotebookSheet {
                 NewNotebookOverlay(

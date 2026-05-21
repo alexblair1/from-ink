@@ -7,7 +7,10 @@ import SwiftData
 /// Zero layout — delegates entirely to HomeScreenView.
 ///
 struct HomeWiringView: View {
-    let store: StoreOf<HomeFeature>
+    /// `@Bindable` exposes `$store.scope(...)` projection used by
+    /// `.sheet(item:)` for the Settings presentation. Other state
+    /// reads happen via the regular `store.foo` accessors.
+    @Bindable var store: StoreOf<HomeFeature>
 
     @Query(sort: \Notebook.lastOpenedAt, order: .reverse) private var notebooks: [Notebook]
     @Query(sort: \Folder.sortOrder) private var folders: [Folder]
@@ -42,8 +45,7 @@ struct HomeWiringView: View {
             model: homeScreenModel,
             searchText: Binding(
                 get: { store.searchText },
-                set: { store.send(.settingsDismissed); _ = $0 }
-                // TODO: wire searchText through an action when search is implemented
+                set: { _ in /* TODO: wire searchText through an action when search is implemented */ }
             )
         )
         .onAppear {
@@ -58,13 +60,19 @@ struct HomeWiringView: View {
         .fullScreenCover(item: $activeNotebook) { notebook in
             NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
         }
-        .overlay {
-            if store.isSettingsOpen {
-                SettingsScreen(onDismiss: { store.send(.settingsDismissed) })
-                    .transition(.opacity)
-            }
+        // Settings sheet driven by `@Presents`. `.sheet(item:)`
+        // binds against the scoped optional store — non-nil presents,
+        // nil dismisses, and SwiftUI's swipe-down gesture writes nil
+        // back into the binding (which TCA routes through
+        // `.settings(.dismiss)` automatically). Zero conditional
+        // logic in the view.
+        .sheet(item: $store.scope(state: \.settings, action: \.settings)) { settingsStore in
+            SettingsWiringView(store: settingsStore)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+                .presentationCornerRadius(0)
+                .presentationBackground(ds.colors.paper)
         }
-        .animation(ds.animation.standard, value: store.isSettingsOpen)
         .overlay {
             if store.isNewNotebookSheetOpen {
                 newNotebookOverlay

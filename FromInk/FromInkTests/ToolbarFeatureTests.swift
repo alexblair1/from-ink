@@ -262,7 +262,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadActiveToolID: { ToolID(rawValue: "pen") },
                     saveActiveToolID: { _ in },
                     loadTemplate: { .none },
-                    saveTemplate: { _ in }
+                    saveTemplate: { _ in },
+                    loadAppearance: { .system },
+                    saveAppearance: { _ in },
+                    loadHandedness: { .right },
+                    saveHandedness: { _ in }
                 )
             }
         )
@@ -297,7 +301,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadActiveToolID: { ToolID(rawValue: "pen") },
                     saveActiveToolID: { _ in },
                     loadTemplate: { .none },
-                    saveTemplate: { _ in }
+                    saveTemplate: { _ in },
+                    loadAppearance: { .system },
+                    saveAppearance: { _ in },
+                    loadHandedness: { .right },
+                    saveHandedness: { _ in }
                 )
             }
         )
@@ -331,7 +339,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadActiveToolID: { ToolID(rawValue: "fountain") },
                     saveActiveToolID: { _ in },
                     loadTemplate: { .none },
-                    saveTemplate: { _ in }
+                    saveTemplate: { _ in },
+                    loadAppearance: { .system },
+                    saveAppearance: { _ in },
+                    loadHandedness: { .right },
+                    saveHandedness: { _ in }
                 )
             }
         )

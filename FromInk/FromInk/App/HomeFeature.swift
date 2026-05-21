@@ -15,7 +15,6 @@ struct HomeFeature: Reducer {
         /// Replaces the legacy `isBriefExpanded` bool — "expanded" is now
         /// "has an active tab."
         var activeBriefTab: BriefTab? = nil
-        var isSettingsOpen: Bool = false
         var isNewNotebookSheetOpen: Bool = false
         var isRefreshing: Bool = false
         var isWheelOpen: Bool = false
@@ -29,6 +28,13 @@ struct HomeFeature: Reducer {
         /// Populated as the wheel scrubs so the tabs update without firing
         /// brief generation. `nil` until the first `dateWarpedTo` resolves.
         var dayContent: DayContent? = nil
+
+        /// Settings overlay state. `nil` = sheet closed; non-nil =
+        /// sheet presented. The optional IS the visibility flag —
+        /// no parallel boolean. Driven by `@Presents` so SwiftUI's
+        /// `.sheet(item:)` integration handles dismiss gestures
+        /// automatically via `PresentationAction.dismiss`.
+        @Presents var settings: SettingsFeature.State?
 
         init(currentDate: Date? = nil) {
             @Dependency(\.calendarContext) var cal
@@ -57,7 +63,6 @@ struct HomeFeature: Reducer {
         /// new tab.
         case briefTabTapped(BriefTab)
         case settingsTapped
-        case settingsDismissed
         case newNotebookTapped
         case newNotebookDismissed
         case notebookCreated(title: String)
@@ -87,6 +92,13 @@ struct HomeFeature: Reducer {
         /// Result of `generateForDay(date)`. Populates `briefState` with
         /// the freshly generated brief.
         case briefGenerated(DailyBriefSnapshot)
+        /// Settings child presentation. `PresentationAction` wraps the
+        /// child reducer's actions plus the framework's auto-dismiss
+        /// signal. The parent intercepts `.presented(.dismissTapped)`
+        /// to clear `state.settings`; `.dismiss` (from SwiftUI's
+        /// swipe-down gesture on the sheet) is auto-handled by
+        /// `.ifLet(\.$settings, action: \.settings)`.
+        case settings(PresentationAction<SettingsFeature.Action>)
     }
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
@@ -198,11 +210,25 @@ struct HomeFeature: Reducer {
                 return .none
 
             case .settingsTapped:
-                state.isSettingsOpen = true
+                // Presenting the sheet = optional becomes non-nil.
+                // `@Presents` + `.ifLet` wires the child reducer
+                // and handles framework auto-dismiss for free.
+                state.settings = SettingsFeature.State()
                 return .none
 
-            case .settingsDismissed:
-                state.isSettingsOpen = false
+            // Child's delegate dismiss (user tapped X). Clear the
+            // optional → SwiftUI dismisses the sheet.
+            case .settings(.presented(.dismissTapped)):
+                state.settings = nil
+                return .none
+
+            // SwiftUI fired auto-dismiss (swipe-down gesture).
+            // `.ifLet` already cleared the optional; nothing to do.
+            case .settings(.dismiss):
+                return .none
+
+            // Every other child action passes through untouched.
+            case .settings:
                 return .none
 
             case .newNotebookTapped:
@@ -289,6 +315,13 @@ struct HomeFeature: Reducer {
                 state.briefState = .loaded(snapshot)
                 return .none
             }
+        }
+        // Compose the optional SettingsFeature reducer. Runs only
+        // when `state.settings` is non-nil (i.e., sheet is presented).
+        // `\.$settings` projects the `@Presents` wrapper so the
+        // framework can manage presentation lifecycle.
+        .ifLet(\.$settings, action: \.settings) {
+            SettingsFeature()
         }
     }
 

@@ -374,6 +374,39 @@ final class HomeFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Settings integration
+
+    /// Pins the load-bearing contract that
+    /// `.settings(.presented(.dismissTapped))` — a delegate action
+    /// from the child reducer — clears the parent's `@Presents`
+    /// optional, which SwiftUI's `.sheet(item:)` translates into the
+    /// dismiss animation. `SettingsFeature` itself returns `.none`
+    /// for `.dismissTapped` (verified in SettingsFeatureTests); the
+    /// behavior only manifests when the parent intercepts.
+    ///
+    /// Without this test, a refactor that accidentally drops the
+    /// intercept arm in HomeFeature would fail silently — the child
+    /// reducer still correctly no-ops, and only manual testing would
+    /// catch that the settings X stops dismissing the sheet.
+    ///
+    @MainActor
+    func test_settingsDismissed_viaChildDismissTap() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.settings = SettingsFeature.State()
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient()
+            $0.userPreferences = .testValue
+        }
+
+        await store.send(.settings(.presented(.dismissTapped))) {
+            $0.settings = nil
+        }
+    }
+
     // MARK: - Full wheel lifecycle
 
     /// Integration test: walks the full wheel-mode flow.
