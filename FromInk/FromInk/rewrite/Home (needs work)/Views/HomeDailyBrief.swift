@@ -262,7 +262,14 @@ extension HomeDailyBrief.Model {
         self.metaRowIsInteractive = isWheelMode ? false : nonFocalIsInteractive
         self.metaRowScrimAction = onScrimTap
 
-        self.showsEditorsNote = !isWheelMode
+        // Hide the editor's note when either:
+        //  • wheel mode is active (the wheel is the focal surface)
+        //  • there are no paragraphs (Foundation Models couldn't
+        //    produce a brief — see `localization_edd.md §5`).
+        // The tabs below continue rendering events / reminders /
+        // birthdays regardless; the editor's note is editorial
+        // commentary, not the data itself.
+        self.showsEditorsNote = !isWheelMode && !editorsNote.paragraphs.isEmpty
         self.editorsNoteOpacity = nonFocalOpacity
         self.editorsNoteIsInteractive = nonFocalIsInteractive
         self.editorsNoteScrimAction = onScrimTap

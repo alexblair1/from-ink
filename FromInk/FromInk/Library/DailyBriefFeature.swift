@@ -9,6 +9,15 @@ import ComposableArchitecture
 
 struct FoundationModelsService: Sendable {
     var isAvailable: @Sendable () -> Bool
+
+    /// Whether Apple's on-device model can produce output in the given
+    /// user locale. Per Apple's docs (`supporting-languages-and-locales`),
+    /// the framework does NOT auto-detect or fall back across locales —
+    /// callers must check support before requesting non-English output.
+    /// `SystemLanguageModel.supportedLanguages.supportsLocale(_:)` does
+    /// fuzzy matching (Catalan → Spanish, etc.), which is what we want.
+    var supportsLocale: @Sendable (Locale) -> Bool
+
     var generateBrief: @Sendable (String) async throws -> DailyBrief
 }
 
@@ -16,6 +25,11 @@ extension FoundationModelsService: DependencyKey {
     static var liveValue: Self {
         .init(
             isAvailable: { SystemLanguageModel.default.isAvailable },
+            supportsLocale: { locale in
+                SystemLanguageModel.default.supportedLanguages.contains { language in
+                    language.languageCode == locale.language.languageCode
+                }
+            },
             generateBrief: { prompt in
                 let session = LanguageModelSession()
                 let response = try await session.respond(to: prompt, generating: DailyBrief.self)
@@ -27,6 +41,9 @@ extension FoundationModelsService: DependencyKey {
     static var testValue: Self {
         .init(
             isAvailable: { true },
+            // Tests assume the model supports any locale — the actual
+            // gating logic is exercised via the live implementation.
+            supportsLocale: { _ in true },
             generateBrief: { _ in
                 DailyBrief(
                     greeting: "Good morning.",

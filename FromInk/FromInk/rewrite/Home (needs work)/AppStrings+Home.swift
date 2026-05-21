@@ -254,5 +254,10 @@ static let highlights = NSLocalizedString(
                 relative
             )
         }
+
+        // Daily-brief fallback prose has been removed (Daily Brief
+        // hides its editor's note section when FM cannot generate
+        // one). See `localization_edd.md §5` for the rationale and
+        // the "hide-rather-than-fake" principle.
     }
 }

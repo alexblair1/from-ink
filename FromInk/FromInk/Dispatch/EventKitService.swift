@@ -47,6 +47,18 @@ extension EventKitService: DependencyKey {
         let store = EKEventStore()
 
         @Sendable func eventSnapshots(from start: Date, to end: Date) -> [CalendarEventSnapshot] {
+            // Discard EKEventStore's in-memory cache before each query.
+            //
+            // EKEventStoreChanged tells our process "the database changed,"
+            // but our long-lived EKEventStore instance still holds cached
+            // EKEvent objects from before the change. Calling `events(matching:)`
+            // without first calling `reset()` returns those stale objects —
+            // visible to the user as "the brief regenerated but missed the
+            // event I just added." Apple's documented fix is `reset()`,
+            // which releases the in-memory cache so the next query reads
+            // fresh from the database. Cost is microseconds; the date
+            // predicate query is already a fresh disk read.
+            store.reset()
             let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
             return store.events(matching: pred)
                 .sorted { $0.startDate < $1.startDate }
@@ -65,7 +77,12 @@ extension EventKitService: DependencyKey {
             withDueDateStarting start: Date?,
             ending end: Date
         ) async throws -> [ReminderSnapshot] {
-            try await withCheckedThrowingContinuation { continuation in
+            // See eventSnapshots: discard the in-memory cache so each
+            // query reflects the current database state. Reminders share
+            // the same EKEventStore instance, so they're equally subject
+            // to staleness without an explicit reset.
+            store.reset()
+            return try await withCheckedThrowingContinuation { continuation in
                 let pred = store.predicateForIncompleteReminders(
                     withDueDateStarting: start,
                     ending: end,

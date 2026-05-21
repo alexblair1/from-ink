@@ -19,6 +19,7 @@ The following EDDs are the authoritative specifications for their respective dom
 | **Integration Matrix** | `Documentation/integration_matrix_edd.md` | V1 native Apple integrations, V2 OAuth PKCE integrations, URL scheme integrations, dropped integrations, the PKCE rule |
 | **Bootstrap** | `Documentation/bootstrap_edd.md` | AppDependencyContainer composition root, BootstrapFeature state machine, stage DAG, failure model, launch UI, app entry point |
 | **Dates** | `Documentation/dates_edd.md` | CalendarContext dependency, day-key semantics, SwiftData + CloudKit date rules, DST-safe arithmetic, FM date parsing, no bare `Date()` |
+| **Localization** | `Documentation/localization_edd.md` | Target language list (TBD), Apple Foundation Models language coverage, fallback discipline rule, feature gating policy (degrade/disable/hide), numbering systems, RTL layout direction, per-language test obligations |
 
 **Key cross-references:**
 - View layer taxonomy (Component / Feature / Wiring) and the Style pattern apply to ALL view code — including toolbar views, settings, and home screen.

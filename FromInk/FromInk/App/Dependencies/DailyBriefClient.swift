@@ -428,23 +428,96 @@ private func runGeneration(
     var focusText = ""
     var suggestionText = ""
 
+    // FM is usable for this user when (a) the framework is available
+    // on this device and (b) it can produce output in the user's
+    // locale. Per Apple's docs the framework does NOT auto-fallback
+    // across locales — asking for unsupported output yields English
+    // or garbled text. Gating on both is the documented pattern.
+    //
+    // When either gate fails (or FM retries exhaust), focusText and
+    // suggestionText stay empty. The view hides the editor's note
+    // section entirely on empty content. The tabs continue to show
+    // events / reminders / birthdays directly — the brief is
+    // editorial commentary on data the user already sees, so its
+    // absence is graceful, not a degradation.
+    //
+    // Hand-written fallback prose was deliberately removed (see
+    // `localization_edd.md §5`): synthesizing the brief in code
+    // would require maintaining N-language translations of mechanical
+    // sentences that restate the same data the tabs already show.
+    // Hide-rather-than-fake is the cleaner contract.
     let fmAvailable = foundationModels.isAvailable()
+    let localeSupported = foundationModels.supportsLocale(cal.userLocale())
 
-    if fmAvailable {
-        let prompt = buildPrompt(events: events, reminders: reminders, cal: cal)
-        do {
-            let brief = try await foundationModels.generateBrief(prompt)
-            focusText = brief.focus
-            suggestionText = brief.suggestion
-        } catch {
-            log.error("runGeneration: FM failed — \(error)")
-            focusText = rawFocusFallback(events: events, reminders: reminders)
+    guard fmAvailable && localeSupported else {
+        if !localeSupported {
+            log.info("runGeneration: locale \(cal.userLocale().identifier) not supported by FM — brief hidden")
+        } else {
+            log.info("runGeneration: FM unavailable on this device — brief hidden")
         }
+        return (focusText, suggestionText)
+    }
+
+    let prompt = buildPrompt(events: events, reminders: reminders, cal: cal)
+    if let brief = await runFMWithRetry(prompt: prompt, foundationModels: foundationModels) {
+        focusText = brief.focus
+        suggestionText = brief.suggestion
     } else {
-        focusText = rawFocusFallback(events: events, reminders: reminders)
+        log.info("runGeneration: FM retries exhausted — brief hidden")
     }
 
     return (focusText, suggestionText)
+}
+
+/// Runs FM generation with bounded retry on transient failures.
+///
+/// On-device Foundation Models occasionally surface ANE inference
+/// errors (`Code=8 ... Program Inference error`) that are recoverable
+/// within a few hundred milliseconds — typically the ANE was busy
+/// finishing another model's work. One retry rescues the vast
+/// majority; we cap at two attempts so we don't stretch the perceived
+/// brief-generation latency beyond a few seconds.
+///
+/// Returns nil when both attempts fail. Caller falls back to the
+/// non-FM prose generator.
+private func runFMWithRetry(
+    prompt: String,
+    foundationModels: FoundationModelsService,
+    maxAttempts: Int = 2
+) async -> (focus: String, suggestion: String)? {
+    for attempt in 1...maxAttempts {
+        do {
+            let brief = try await foundationModels.generateBrief(prompt)
+            return (brief.focus, brief.suggestion)
+        } catch {
+            log.warning("FM attempt \(attempt)/\(maxAttempts) failed — \(error)")
+            // Backoff before retry; skip on the final attempt.
+            if attempt < maxAttempts {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+    return nil
+}
+
+/// Resolves the English name of a locale's language (e.g., "French",
+/// "Japanese", "Simplified Chinese"). Used in the FM prompt's
+/// language directive — English names are the most reliable form for
+/// the model's cross-lingual instruction-following.
+///
+/// Includes script when present (Chinese Simplified vs Traditional)
+/// since they're distinct enough to matter for fluent output. Falls
+/// back to the raw language code if no localized name is available
+/// — the model will usually still cope.
+private func englishLanguageName(for locale: Locale) -> String {
+    let language = locale.language
+    var tag = language.languageCode?.identifier ?? "en"
+    if let script = language.script?.identifier {
+        tag += "-\(script)"
+    }
+    return Locale(identifier: "en_US").localizedString(forLanguageCode: tag)
+        ?? language.languageCode?.identifier
+        ?? "English"
 }
 
 private func fetchLiveCounts(eventKit: EventKitService) async -> (Int, Int) {
@@ -608,9 +681,37 @@ private func buildPrompt(
         .dateTime.weekday(.wide).month(.wide).day().year()
             .locale(cal.userLocale())
     )
-    var parts: [String] = [
-        "Generate a concise daily brief. Today is \(todayFormatted)."
-    ]
+    var parts: [String] = []
+
+    // Language directive — placed first (primacy effect) so the model
+    // locks onto the target output language before reading the
+    // English instruction body. Skipped for English locales since
+    // telling an English-locale model to "respond in English" when
+    // the prompt is already in English just adds noise.
+    //
+    // The language name is rendered in English (e.g., "French",
+    // "Japanese") because that's the most reliable form for the
+    // model's instruction-following — verified empirically against
+    // Apple's on-device Foundation Models with a Japanese
+    // hardcoded directive. See git history for the experiment.
+    let langCode = cal.userLocale().language.languageCode?.identifier ?? "en"
+    if langCode != "en" {
+        let englishLanguageName = englishLanguageName(for: cal.userLocale())
+        parts.append("Respond ONLY in \(englishLanguageName). Even though these instructions are in English, your entire output must be in \(englishLanguageName).")
+    }
+
+    parts.append("Generate a concise daily brief. Today is \(todayFormatted).")
+    // Surgical voice fix — keeps the prompt short so the FM
+    // doesn't over-constrain itself, but pins the failure mode
+    // we saw ("I'll head to PT" instead of "you'll head to PT").
+    parts.append("Write in second person ('you have', 'you'll', 'your'). Never first person.")
+    // Surgical app-rec fix — From Ink already handles tasks /
+    // calendar / reminders, so recommending another app
+    // contradicts the product. Stated once, terse.
+    parts.append("Do not recommend other apps, task managers, or productivity tools.")
+    // Surgical title-interpretation fix — past FM took 'stand-up'
+    // (a meeting) and wrote 'stand-up performances'.
+    parts.append("Event and reminder titles are literal calendar names — do not reinterpret them.")
     if events.isEmpty {
         parts.append("Calendar: No events today.")
     } else {
@@ -627,36 +728,23 @@ private func buildPrompt(
         "Write 'focus' as a 2-3 sentence paragraph in plain English. "
         + "Name events by title and time, mention any overdue reminders "
         + "by name, and close with what matters most. No bullet points "
-        + "or headers. Suggestion: one short actionable tip, or empty "
-        + "string if nothing useful."
+        + "or headers. Suggestion: one short actionable tip drawn from "
+        + "the events or reminders above, or an empty string if nothing "
+        + "specific applies."
     )
     return parts.joined(separator: "\n\n")
 }
 
-private func rawFocusFallback(
-    events: [CalendarEventSnapshot],
-    reminders: [ReminderSnapshot]
-) -> String {
-    guard !events.isEmpty || !reminders.isEmpty else {
-        return AppStrings.Home.noEventsToday
-    }
-    var parts: [String] = []
-    switch events.count {
-    case 0:
-        parts.append(AppStrings.Home.noEventsScheduled)
-    case 1:
-        let time = events[0].startDate.formatted(.dateTime.hour().minute())
-        parts.append("You have \(events[0].title) at \(time) today.")
-    default:
-        let listed = events.prefix(3).map {
-            "\($0.title) at \($0.startDate.formatted(.dateTime.hour().minute()))"
-        }
-        let tail = events.count > 3 ? " and \(events.count - 3) more" : ""
-        parts.append("Today: \(listed.joined(separator: ", "))\(tail).")
-    }
-    if !reminders.isEmpty {
-        let s = reminders.count == 1 ? "" : "s"
-        parts.append("\(reminders.count) reminder\(s) due.")
-    }
-    return parts.joined(separator: " ")
-}
+// `rawFocusFallback` was deliberately removed (commit history).
+//
+// The function used to synthesize a deterministic prose brief from
+// events + reminders when Foundation Models was unavailable. It
+// required N-language localized chrome strings to be authored and
+// translated; the resulting prose mechanically restated information
+// the user already sees in the Calendar / Reminders / Birthdays
+// tabs.
+//
+// The new contract: when FM cannot generate a brief, the editor's
+// note section hides entirely (HomeDailyBrief checks for empty
+// focusText). The tabs continue to render — they are the truth.
+// See `localization_edd.md §5`.

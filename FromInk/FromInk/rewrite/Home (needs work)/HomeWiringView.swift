@@ -373,11 +373,15 @@ struct HomeWiringView: View {
         return "\(weekday) · \(date)"
     }
 
+    /// Returns the editor's note paragraphs OR an empty array if FM
+    /// produced nothing. Empty array signals the view layer to hide
+    /// the section entirely — the tabs below still show events and
+    /// reminders, which is the user-facing truth. See
+    /// `localization_edd.md §5` (hide-rather-than-fake).
     private func editorsNoteParagraphs(snapshot: DailyBriefSnapshot) -> [String] {
         var paragraphs: [String] = []
         if !snapshot.focusText.isEmpty { paragraphs.append(snapshot.focusText) }
         if !snapshot.suggestionText.isEmpty { paragraphs.append(snapshot.suggestionText) }
-        if paragraphs.isEmpty { paragraphs = [AppStrings.Home.noEventsToday] }
         return paragraphs
     }
 
