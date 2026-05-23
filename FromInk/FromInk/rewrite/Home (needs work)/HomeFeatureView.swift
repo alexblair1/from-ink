@@ -213,11 +213,13 @@ struct HomeFeatureView: View {
     }
 
     private var emptyBriefSnapshot: DailyBriefSnapshot {
+        // Synthetic in-memory placeholder — never persisted.
         DailyBriefSnapshot(
             dayKey: "",
             focusText: "No events or reminders today. A clear day for deep work.",
             suggestionText: "",
-            generatedAt: Date()
+            generatedAt: Date(),
+            wasPersisted: false
         )
     }
 

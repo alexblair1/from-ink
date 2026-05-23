@@ -40,13 +40,17 @@ final class HomeFeatureTests: XCTestCase {
     private func makeStubClient(
         dayContent: @escaping @Sendable (Date) -> DayContent = { _ in DayContent(dayKey: "") },
         generateForDay: @escaping @Sendable (Date) async throws -> DailyBriefSnapshot
-            = { _ in throw CancellationError() }
+            = { _ in throw CancellationError() },
+        fetch: (@Sendable (String) async -> DailyBriefSnapshot?)? = nil,
+        fetchOrGenerate: (@Sendable () async throws -> DailyBriefSnapshot)? = nil,
+        refresh: (@Sendable () async throws -> DailyBriefSnapshot)? = nil,
+        calendarChanges: (@Sendable () -> AsyncStream<Void>)? = nil
     ) -> DailyBriefClient {
         DailyBriefClient(
-            fetchOrGenerate: { fatalError("Wheel flow must not call fetchOrGenerate") },
-            refresh: { fatalError("Wheel flow must not call refresh") },
-            fetch: { _ in fatalError("Wheel flow must not call fetch") },
-            calendarChanges: { AsyncStream { $0.finish() } },
+            fetchOrGenerate: fetchOrGenerate ?? { fatalError("Test did not stub fetchOrGenerate") },
+            refresh: refresh ?? { fatalError("Test did not stub refresh") },
+            fetch: fetch ?? { _ in fatalError("Test did not stub fetch") },
+            calendarChanges: calendarChanges ?? { AsyncStream { $0.finish() } },
             fetchDayContent: { date in dayContent(date) },
             generateForDay: { date in try await generateForDay(date) }
         )
@@ -103,7 +107,8 @@ final class HomeFeatureTests: XCTestCase {
             dayKey: "2026-05-13",
             focusText: "Today.",
             suggestionText: "",
-            generatedAt: wednesday
+            generatedAt: wednesday,
+            wasPersisted: true
         )
         seeded.briefState = .loaded(todaySnapshot)
 
@@ -223,7 +228,8 @@ final class HomeFeatureTests: XCTestCase {
             dayKey: "2026-05-13",
             focusText: "Freshly generated.",
             suggestionText: "",
-            generatedAt: wednesday
+            generatedAt: wednesday,
+            wasPersisted: true
         )
 
         // briefState is .empty — no brief exists for today yet.
@@ -257,7 +263,8 @@ final class HomeFeatureTests: XCTestCase {
             dayKey: "2026-05-13",
             focusText: "Already here.",
             suggestionText: "",
-            generatedAt: wednesday
+            generatedAt: wednesday,
+            wasPersisted: true
         )
         var seeded = HomeFeature.State(currentDate: wednesday)
         seeded.briefState = .loaded(existingSnapshot)
@@ -300,9 +307,16 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.calendarChanged)
     }
 
+    /// Same-day re-foreground while warped: the user opens the app,
+    /// warps to yesterday, then quickly app-switches and comes back
+    /// within the same day. The warp should NOT clear — they meant to
+    /// look at yesterday and a quick context switch shouldn't snatch
+    /// the view away.
     @MainActor
-    func test_foregrounded_whileWarped_isNoOp() async {
-        var seeded = HomeFeature.State(currentDate: sunday)
+    func test_foregrounded_whileWarpedSameDay_preservesWarp() async {
+        // Warped to "now() - 6 hours" — still the same wall-clock day.
+        let warpedToEarlierToday = wednesday.addingTimeInterval(-6 * 3_600)
+        var seeded = HomeFeature.State(currentDate: warpedToEarlierToday)
         seeded.isWarped = true
 
         let store = TestStore(initialState: seeded) {
@@ -311,13 +325,56 @@ final class HomeFeatureTests: XCTestCase {
             $0.calendarContext = .fixed(now: wednesday)
             $0.dailyBriefClient = makeStubClient(
                 generateForDay: { _ in
-                    XCTFail("Must not refresh while warped")
+                    XCTFail("Must not refresh while warped within same day")
                     throw CancellationError()
                 }
             )
         }
 
         await store.send(.foregrounded)
+    }
+
+    /// Overnight re-foreground while warped: user warps to yesterday,
+    /// backgrounds the app, foregrounds the next morning. The warp
+    /// targets a stale day — clear it and snap back to today.
+    /// Verifies the synchronous state mutation in the reducer; the
+    /// downstream effect dispatch (briefRefreshed / dayContentLoaded)
+    /// is covered by other tests.
+    @MainActor
+    func test_foregrounded_whileWarpedAcrossDayChange_clearsWarp() async {
+        var seeded = HomeFeature.State(currentDate: sunday)
+        seeded.isWarped = true
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { _ in DayContent(dayKey: "2026-05-13") },
+                fetchOrGenerate: {
+                    DailyBriefSnapshot(
+                        dayKey: "2026-05-13",
+                        focusText: "Fresh today.",
+                        suggestionText: "",
+                        generatedAt: self.wednesday,
+                        wasPersisted: true
+                    )
+                }
+            )
+        }
+
+        store.exhaustivity = .off
+
+        await store.send(.foregrounded)
+
+        // Settle effects (briefRefresh + dayContentFetch). With
+        // non-exhaustive testing we don't assert on the action
+        // sequence — `finish()` waits for in-flight effects to
+        // complete then we inspect post-state.
+        await store.finish()
+
+        XCTAssertFalse(store.state.isWarped, "Warp must clear on overnight foreground")
+        XCTAssertEqual(store.state.currentDate, self.wednesday, "currentDate must snap to today")
     }
 
     // MARK: - Brief tab tapping
@@ -407,6 +464,200 @@ final class HomeFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - .appeared brief regeneration recovery (B1)
+
+    /// First launch / cache empty: fetch returns nil. The reducer must
+    /// escalate to fetchOrGenerate so the user gets a brief instead
+    /// of staying on `.loading` forever.
+    @MainActor
+    func test_appeared_cacheMiss_escalatesToFetchOrGenerate() async {
+        let snapshot = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Generated fresh.",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                fetch: { _ in nil },
+                fetchOrGenerate: { snapshot }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.appeared)
+        await store.receive(\.briefRefreshed)
+        if case .loaded(let s) = store.state.briefState {
+            XCTAssertEqual(s.focusText, "Generated fresh.")
+        } else {
+            XCTFail("Expected loaded state")
+        }
+    }
+
+    /// Cache hit but the cached snapshot has empty focus + suggestion
+    /// (transient FM failure poisoned it). The reducer must NOT trust
+    /// the empty snapshot — escalate to fetchOrGenerate so the client's
+    /// hardened predicate decides whether to actually regenerate.
+    @MainActor
+    func test_appeared_cacheEmptyContent_escalatesToFetchOrGenerate() async {
+        let emptyCached = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let regenerated = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Regenerated.",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                fetch: { _ in emptyCached },
+                fetchOrGenerate: { regenerated }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.appeared)
+        await store.receive(\.briefRefreshed)
+        if case .loaded(let s) = store.state.briefState {
+            XCTAssertEqual(s.focusText, "Regenerated.")
+        } else {
+            XCTFail("Expected loaded state")
+        }
+    }
+
+    /// Cache hit with real content: the reducer must NOT escalate to
+    /// fetchOrGenerate — the cached snapshot is good. fetchOrGenerate
+    /// would fire FM unnecessarily on every cold app open.
+    @MainActor
+    func test_appeared_cacheHitWithContent_doesNotEscalate() async {
+        let cached = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Already good.",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                fetch: { _ in cached },
+                fetchOrGenerate: {
+                    XCTFail("Cache hit with content must NOT escalate")
+                    throw CancellationError()
+                }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.appeared)
+        await store.receive(\.briefLoaded)
+        if case .loaded(let s) = store.state.briefState {
+            XCTAssertEqual(s.focusText, "Already good.")
+        } else {
+            XCTFail("Expected loaded state")
+        }
+    }
+
+    // MARK: - Manual brief refresh trigger (B2)
+
+    /// User long-presses the editor's note → `.briefRefreshRequested`
+    /// → `dailyBriefClient.refresh()` is called (bypasses cache) and
+    /// the resulting snapshot lands in state via `.briefRefreshed`.
+    @MainActor
+    func test_briefRefreshRequested_callsRefresh() async {
+        let refreshed = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "Force-regenerated.",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let refreshCalls = LockIsolated(0)
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = makeStubClient(
+                refresh: {
+                    refreshCalls.withValue { $0 += 1 }
+                    return refreshed
+                }
+            )
+        }
+
+        store.exhaustivity = .off
+
+        await store.send(.briefRefreshRequested)
+        await store.receive(\.briefRefreshed)
+        if case .loaded(let s) = store.state.briefState {
+            XCTAssertEqual(s.focusText, "Force-regenerated.")
+        } else {
+            XCTFail("Expected loaded state")
+        }
+        XCTAssertEqual(refreshCalls.value, 1)
+    }
+
+    // MARK: - calendarChanged debounce (B4)
+
+    /// Three rapid `.calendarChanged` events within the debounce window
+    /// must collapse into one `fetchOrGenerate` call. Verifies the
+    /// debounce works against a `TestClock` advance.
+    @MainActor
+    func test_calendarChanged_debounce_collapsesRapidBurst() async {
+        let clock = TestClock()
+        let generated = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "After debounce.",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+        let generateCalls = LockIsolated(0)
+
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = clock
+            $0.dailyBriefClient = makeStubClient(
+                fetchOrGenerate: {
+                    generateCalls.withValue { $0 += 1 }
+                    return generated
+                }
+            )
+        }
+        store.exhaustivity = .off
+
+        // Three rapid changes; .cancellable(cancelInFlight:) collapses them.
+        await store.send(.calendarChanged)
+        await store.send(.calendarChanged)
+        await store.send(.calendarChanged)
+
+        // Advance past the 1-second debounce window.
+        await clock.advance(by: .seconds(1.1))
+
+        await store.receive(\.briefRefreshed)
+        XCTAssertEqual(
+            generateCalls.value, 1,
+            "Three rapid calendarChanged events must coalesce into one fetchOrGenerate"
+        )
+    }
+
     // MARK: - Full wheel lifecycle
 
     /// Integration test: walks the full wheel-mode flow.
@@ -424,7 +675,8 @@ final class HomeFeatureTests: XCTestCase {
             dayKey: "2026-05-13",
             focusText: "Today.",
             suggestionText: "",
-            generatedAt: wednesday
+            generatedAt: wednesday,
+            wasPersisted: true
         )
         let todayContent = DayContent(dayKey: "2026-05-13", eventCount: 0)
         let sundayContent = DayContent(dayKey: "2026-05-10", eventCount: 2)

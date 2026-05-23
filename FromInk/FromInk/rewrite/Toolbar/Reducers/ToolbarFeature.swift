@@ -5,7 +5,6 @@ import Foundation
 // @Reducer resolves `ReducerOf<Self>` during macro expansion. With
 // SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor this creates a circular
 // reference the compiler cannot resolve. Explicit conformance breaks the loop.
-// See DailyBriefFeature.swift for the same pattern.
 
 struct ToolbarFeature: Reducer {
 

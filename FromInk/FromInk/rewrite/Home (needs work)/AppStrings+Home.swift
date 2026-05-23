@@ -259,5 +259,14 @@ static let highlights = NSLocalizedString(
         // hides its editor's note section when FM cannot generate
         // one). See `localization_edd.md §5` for the rationale and
         // the "hide-rather-than-fake" principle.
+
+        /// Label for the manual brief-refresh action — surfaced as a
+        /// VoiceOver custom action and as the haptic-triggered
+        /// long-press affordance on the editor's note region.
+        static let refreshBrief = NSLocalizedString(
+            "home.brief.refresh",
+            value: "Refresh brief",
+            comment: "VoiceOver custom action name + long-press hint for forcing a daily-brief regeneration."
+        )
     }
 }

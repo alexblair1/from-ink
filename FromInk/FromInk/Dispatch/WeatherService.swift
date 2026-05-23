@@ -3,7 +3,7 @@ import CoreLocation
 import Dependencies
 import WeatherKit
 
-// MARK: - Snapshot
+// MARK: - Snapshots
 
 struct WeatherSnapshot: Equatable, Codable, Sendable {
     let temperature: Double          // always stored in °F for simplicity
@@ -15,6 +15,16 @@ struct WeatherSnapshot: Equatable, Codable, Sendable {
         let m = Measurement(value: value, unit: unit)
         return m.formatted(.measurement(width: .abbreviated, numberFormatStyle: .number.precision(.fractionLength(0))))
     }
+}
+
+/// WeatherKit attribution payload. Required by Apple — every UI
+/// surface that renders weather data must display the legal page URL
+/// and the WeatherKit logo (light/dark variants). Lives next to the
+/// service so producers + consumers share a single type.
+struct WeatherAttributionSnapshot: Equatable, Sendable {
+    let legalPageURL: URL
+    let lightLogoURL: URL
+    let darkLogoURL: URL
 }
 
 // MARK: - Cache

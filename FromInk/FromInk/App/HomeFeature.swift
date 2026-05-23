@@ -16,7 +16,6 @@ struct HomeFeature: Reducer {
         /// "has an active tab."
         var activeBriefTab: BriefTab? = nil
         var isNewNotebookSheetOpen: Bool = false
-        var isRefreshing: Bool = false
         var isWheelOpen: Bool = false
         /// True iff the user has warped to a non-today day. While warped,
         /// `.foregrounded` and `.calendarChanged` are no-ops — they target
@@ -55,9 +54,17 @@ struct HomeFeature: Reducer {
         case briefLoaded(DailyBriefSnapshot?)
         case calendarChanged
         case briefRefreshed(DailyBriefSnapshot)
-        /// Fires when an in-flight FM-backed refresh throws. Resets
-        /// `isRefreshing` so the state can't get stuck.
+        /// Fires when an in-flight FM-backed refresh throws. The
+        /// reducer logs and resumes — there is no transient state to
+        /// roll back. Cancellation ordering is handled by `.cancellable(
+        /// cancelInFlight:)` on the `briefRefresh` ID.
         case briefRefreshFailed
+        /// User explicitly asked for a fresh brief (e.g., long-press on
+        /// the brief card or a VoiceOver custom action). Force-bypasses
+        /// the cache via `dailyBriefClient.refresh()` — the recovery
+        /// path when a cache poisoning bug leaves the brief stuck on
+        /// an empty record and the day hasn't rolled over.
+        case briefRefreshRequested
         /// User tapped a brief tab. If it's already the active tab, the
         /// tab collapses (activeBriefTab = nil). Otherwise, swaps to the
         /// new tab.
@@ -103,6 +110,12 @@ struct HomeFeature: Reducer {
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
     @Dependency(\.calendarContext) var cal
+    /// Clock used to debounce bursts of `EKEventStoreChanged`
+    /// notifications. A user bulk-editing Calendar.app fires many
+    /// notifications in <1s — without debounce we'd kick off N FM
+    /// regenerations. Injected so tests can advance time with
+    /// `TestClock.advance(by:)`.
+    @Dependency(\.continuousClock) var clock
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -117,14 +130,24 @@ struct HomeFeature: Reducer {
                 )
 
             case .foregrounded:
-                // Warped users keep their warp across background→foreground.
-                // Refresh logic only applies when viewing "today".
-                guard !state.isWarped else { return .none }
-
                 let now = cal.now()
+                let nowDayKey = cal.dayKey(now)
+
+                // Warp doesn't survive overnight backgrounding. If the
+                // user was warped to a past/future date and the real
+                // calendar day has rolled while the app was suspended,
+                // snap back to today and continue the normal refresh
+                // path. Same-day re-foregrounds still preserve the warp
+                // so a quick app switch doesn't snatch the warped view.
+                if state.isWarped {
+                    let warpedDayKey = cal.dayKey(state.currentDate)
+                    guard warpedDayKey != nowDayKey else { return .none }
+                    state.isWarped = false
+                }
+
                 state.currentDate = now
 
-                let newDayKey = cal.dayKey(now)
+                let newDayKey = nowDayKey
                 let currentDayKey: String? = {
                     if case .loaded(let snapshot) = state.briefState {
                         return snapshot.dayKey
@@ -149,7 +172,6 @@ struct HomeFeature: Reducer {
                     return dayContentEffect
                 }
 
-                state.isRefreshing = true
                 return .merge(
                     .run { send in
                         do {
@@ -175,14 +197,22 @@ struct HomeFeature: Reducer {
             case .calendarChanged:
                 // Skip while warped — would clobber the warped brief with today's.
                 guard !state.isWarped else { return .none }
-                // `.cancellable(cancelInFlight:)` handles overlapping
-                // refreshes correctly — no `isRefreshing` short-circuit
-                // (which used to leave the flag stuck on FM failure and
-                // lock out subsequent refreshes).
-                state.isRefreshing = true
+                // Debounce: a Calendar.app bulk-edit fires many
+                // `EKEventStoreChanged` events in <1s. `.cancellable(
+                // cancelInFlight: true)` collapses the burst into one
+                // FM call. The debounce window is short enough that
+                // users don't notice the delay but long enough that
+                // 3-5 rapid edits coalesce.
                 let calendarChangedDate = state.currentDate
+                let debounce = clock
                 return .merge(
                     .run { send in
+                        // `try await` (not `try?`) so a cancellation
+                        // during the debounce window aborts the
+                        // closure entirely instead of falling through
+                        // to fetchOrGenerate. The .cancellable below
+                        // catches the propagated error.
+                        try await debounce.sleep(for: .seconds(1))
                         do {
                             let snapshot = try await dailyBriefClient.fetchOrGenerate()
                             await send(.briefRefreshed(snapshot))
@@ -197,12 +227,24 @@ struct HomeFeature: Reducer {
 
             case .briefRefreshed(let snapshot):
                 state.briefState = .loaded(snapshot)
-                state.isRefreshing = false
                 return .none
 
             case .briefRefreshFailed:
-                state.isRefreshing = false
                 return .none
+
+            case .briefRefreshRequested:
+                // Force regen. The single-flight coordinator in the
+                // client coalesces this with any in-flight `fetchOrGenerate`.
+                return .run { send in
+                    do {
+                        let snapshot = try await dailyBriefClient.refresh()
+                        await send(.briefRefreshed(snapshot))
+                    } catch {
+                        log.error("Manual refresh failed: \(error)")
+                        await send(.briefRefreshFailed)
+                    }
+                }
+                .cancellable(id: "briefRefresh", cancelInFlight: true)
 
             case .briefTabTapped(let tab):
                 // Tap the active tab → collapse. Tap a different tab → swap.
@@ -327,11 +369,44 @@ struct HomeFeature: Reducer {
 
     // MARK: - Effects
 
+    /// Two-tier brief load.
+    ///
+    /// 1. Fast read from SwiftData via `dailyBriefClient.fetch(dayKey)`.
+    ///    If a non-empty snapshot exists, we're done — dispatch
+    ///    `.briefLoaded(snapshot)` and exit.
+    ///
+    /// 2. If the cache is missing OR holds an empty-content record
+    ///    (focus + suggestion both empty — symptom of a transient FM
+    ///    failure that poisoned the cache), follow up with
+    ///    `dailyBriefClient.fetchOrGenerate()`. The client's hardened
+    ///    predicate decides whether to actually regenerate or return
+    ///    the empty cached record (e.g., FM still unavailable).
+    ///
+    /// This is the recovery path that lets the home screen self-heal
+    /// after a botched bootstrap brief seed. Without it, an empty-
+    /// cache record sits in SwiftData forever until calendar changes
+    /// or the wheel dismisses on a different day.
     private func loadBrief(forDayKey dayKey: String) -> Effect<Action> {
         .run { send in
-            let snapshot = await dailyBriefClient.fetch(dayKey)
-            await send(.briefLoaded(snapshot))
+            if let snapshot = await dailyBriefClient.fetch(dayKey),
+               !(snapshot.focusText.isEmpty && snapshot.suggestionText.isEmpty) {
+                await send(.briefLoaded(snapshot))
+                return
+            }
+            // Cache miss or empty content — escalate to fetchOrGenerate.
+            // Dispatched as `.briefRefreshed` (not `.briefLoaded`) so
+            // the existing transition path is reused. Failures fall
+            // through to `.briefLoaded(nil)` so the view shows the
+            // empty state rather than a stuck `.loading`.
+            do {
+                let snapshot = try await dailyBriefClient.fetchOrGenerate()
+                await send(.briefRefreshed(snapshot))
+            } catch {
+                log.error("loadBrief: fetchOrGenerate failed — \(error)")
+                await send(.briefLoaded(nil))
+            }
         }
+        .cancellable(id: "briefLoad", cancelInFlight: true)
     }
 
     /// Pulls fresh per-date events + reminders into `state.dayContent`.
@@ -346,12 +421,18 @@ struct HomeFeature: Reducer {
         .cancellable(id: "dayContentFetch", cancelInFlight: true)
     }
 
+    /// Subscribes to `EKEventStoreChanged` notifications, forwarding
+    /// each to `.calendarChanged`. `.cancelInFlight: true` ensures
+    /// re-firing `.appeared` (e.g., when a sheet dismisses and the
+    /// home view re-attaches) tears down the prior subscription
+    /// before starting a new one — without it, every re-appear would
+    /// stack another listener.
     private func observeCalendarChanges() -> Effect<Action> {
         .run { send in
             for await _ in dailyBriefClient.calendarChanges() {
                 await send(.calendarChanged)
             }
         }
-        .cancellable(id: "homeCalendarObservation")
+        .cancellable(id: "homeCalendarObservation", cancelInFlight: true)
     }
 }

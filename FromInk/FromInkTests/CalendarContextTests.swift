@@ -70,6 +70,55 @@ final class CalendarContextTests: XCTestCase {
         XCTAssertEqual(elapsed, 23 * 3600, accuracy: 1)
     }
 
+    /// Spring-forward (2026-03-08 02:00 EST → 03:00 EDT, America/New_York):
+    /// dayKey must report "2026-03-08" for any moment on March 8 — including
+    /// the instant right before the skip (01:30 EST), the instant right
+    /// after the skip (03:30 EDT), and a moment crossing midnight from the
+    /// 7th into the 8th. Cache lookups depend on this invariant.
+    func test_dayKey_springForward_stableAcrossSkip() {
+        let cal = CalendarContext.fixed(
+            now: Date(timeIntervalSince1970: 1_772_951_400),
+            timeZone: TimeZone(identifier: "America/New_York")!
+        )
+
+        // 2026-03-08 01:30 EST (UTC 06:30) — just before the skip.
+        let beforeSkip = Date(timeIntervalSince1970: 1_772_951_400)
+        // 2026-03-08 03:30 EDT (UTC 07:30) — just after the skip.
+        let afterSkip = Date(timeIntervalSince1970: 1_772_955_000)
+        // 2026-03-07 23:59 EST (UTC 04:59) — still the 7th locally.
+        let lateOnSeventh = Date(timeIntervalSince1970: 1_772_945_940)
+        // 2026-03-08 00:00:30 EST (UTC 05:00:30) — first seconds of the 8th.
+        let earlyOnEighth = Date(timeIntervalSince1970: 1_772_946_030)
+
+        XCTAssertEqual(cal.dayKey(beforeSkip),    "2026-03-08")
+        XCTAssertEqual(cal.dayKey(afterSkip),     "2026-03-08")
+        XCTAssertEqual(cal.dayKey(lateOnSeventh), "2026-03-07")
+        XCTAssertEqual(cal.dayKey(earlyOnEighth), "2026-03-08")
+    }
+
+    /// Fall-back (2026-11-01 02:00 EDT → 01:00 EST, America/New_York):
+    /// the 01:00–02:00 wall-clock hour repeats. Two distinct moments
+    /// (one EDT, one EST) both wall-clock-read as "Nov 1, 01:30".
+    /// dayKey must return "2026-11-01" for both — the date is unambiguous
+    /// even when the wall-clock hour is.
+    func test_dayKey_fallBack_stableAcrossRepeat() {
+        let cal = CalendarContext.fixed(
+            now: Date(timeIntervalSince1970: 1_793_511_000),
+            timeZone: TimeZone(identifier: "America/New_York")!
+        )
+
+        // 2026-11-01 01:30 EDT (UTC 05:30) — first occurrence.
+        let firstOccurrence = Date(timeIntervalSince1970: 1_793_511_000)
+        // 2026-11-01 01:30 EST (UTC 06:30) — second occurrence.
+        let secondOccurrence = Date(timeIntervalSince1970: 1_793_514_600)
+        // 2026-10-31 23:30 EDT (UTC 03:30 Nov 1) — still Oct 31 locally.
+        let lateOnOct31 = Date(timeIntervalSince1970: 1_793_503_800)
+
+        XCTAssertEqual(cal.dayKey(firstOccurrence),  "2026-11-01")
+        XCTAssertEqual(cal.dayKey(secondOccurrence), "2026-11-01")
+        XCTAssertEqual(cal.dayKey(lateOnOct31),      "2026-10-31")
+    }
+
     // MARK: - isSameDay
 
     func test_isSameDay_sameLocalDay() {

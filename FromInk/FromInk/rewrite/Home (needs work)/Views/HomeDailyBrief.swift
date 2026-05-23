@@ -109,6 +109,10 @@ struct HomeDailyBrief: View {
                     .allowsHitTesting(model.editorsNoteIsInteractive)
                     .accessibilityHidden(!model.editorsNoteIsInteractive)
                     .overlay(scrimOverlay(action: model.editorsNoteScrimAction))
+                    .modifier(BriefRefreshGesture(
+                        action: model.onRefreshRequested,
+                        label: model.refreshActionLabel
+                    ))
             }
 
             BriefTabSection(model: model.tabSection)
@@ -127,6 +131,29 @@ struct HomeDailyBrief: View {
             Color.clear
                 .contentShape(.rect)
                 .onTapGesture { action() }
+        }
+    }
+}
+
+/// Attaches a long-press gesture + VoiceOver custom action that
+/// triggers a manual brief refresh. The gesture is a no-op when
+/// `action` is nil (wheel mode, or no refresh available). Pulled out
+/// as a `ViewModifier` so the View body stays a single chain — the
+/// gesture is the only place `onRefreshRequested` is consumed.
+private struct BriefRefreshGesture: ViewModifier {
+    let action: (() -> Void)?
+    let label: String
+
+    func body(content: Content) -> some View {
+        if let action {
+            content
+                .contentShape(.rect)
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    action()
+                }
+                .accessibilityAction(named: Text(label), action)
+        } else {
+            content
         }
     }
 }
@@ -199,6 +226,15 @@ extension HomeDailyBrief {
         /// gets a scrim — its own tap handlers stay live.
         let tabSectionOpacity: Double
         let tabSectionIsInteractive: Bool
+
+        /// Long-press gesture handler on the editor's note region.
+        /// `nil` disables the gesture entirely. Used to invoke a manual
+        /// brief refresh — the recovery affordance when the cache is
+        /// stuck on an empty record. Also exposed as a VoiceOver custom
+        /// action with `refreshActionLabel`.
+        let onRefreshRequested: (() -> Void)?
+        /// Localized VoiceOver / long-press hint label.
+        let refreshActionLabel: String
     }
 }
 
@@ -216,6 +252,7 @@ extension HomeDailyBrief.Model {
         backToTodayAction: (() -> Void)? = nil,
         onDoneTapped: (() -> Void)? = nil,
         onScrimTap: (() -> Void)? = nil,
+        onRefreshRequested: (() -> Void)? = nil,
         lede: BriefLede.Model,
         editorsNote: EditorsNoteSection.Model,
         tabSection: BriefTabSection.Model,
@@ -276,5 +313,12 @@ extension HomeDailyBrief.Model {
 
         self.tabSectionOpacity = isWheelMode ? 1.0 : nonFocalOpacity
         self.tabSectionIsInteractive = isWheelMode ? true : nonFocalIsInteractive
+
+        // Refresh gesture: disabled in wheel mode (the wheel + Done↑ is
+        // the only focal interaction there). Otherwise wired through so
+        // a long-press anywhere on the editor's note region triggers a
+        // forced brief regeneration.
+        self.onRefreshRequested = isWheelMode ? nil : onRefreshRequested
+        self.refreshActionLabel = AppStrings.Home.refreshBrief
     }
 }

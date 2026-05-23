@@ -78,14 +78,44 @@ extension DailyBriefClient {
         foundationModels: FoundationModelsService,
         calendarContext: CalendarContext
     ) -> DailyBriefClient {
-        DailyBriefClient(
+        // Single-flight coordinator. Multiple HomeFeature actions can
+        // race into `fetchOrGenerate` for the same dayKey — `.appeared`
+        // + `.foregrounded`, or two rapid `.calendarChanged` events.
+        // Without coordination both calls miss the cache simultaneously
+        // and double-insert into SwiftData (no `@Attribute(.unique)`
+        // available under CloudKit). The shared task table keyed by
+        // dayKey makes the second caller await the first's result.
+        //
+        // `Sendable`-safe via `LockIsolated`. Tasks are removed when
+        // they finish so the table doesn't accumulate.
+        let inflight = LockIsolated<[String: Task<DailyBriefSnapshot, any Error>]>([:])
+
+        return DailyBriefClient(
             fetchOrGenerate: {
-                try await _fetchOrGenerate(
-                    modelContext: modelContext,
-                    eventKit: eventKit,
-                    foundationModels: foundationModels,
-                    cal: calendarContext
-                )
+                let todayKey = calendarContext.dayKey(calendarContext.now())
+                // Atomic check-or-insert under the lock. Without
+                // wrapping both operations in the same `withValue`
+                // block, two callers can both observe the dict as
+                // empty before either inserts — defeating the
+                // single-flight contract entirely.
+                let task = inflight.withValue { dict -> Task<DailyBriefSnapshot, any Error> in
+                    if let existing = dict[todayKey] {
+                        log.info("fetchOrGenerate: joining in-flight for \(todayKey)")
+                        return existing
+                    }
+                    let newTask = Task<DailyBriefSnapshot, any Error> {
+                        defer { inflight.withValue { $0[todayKey] = nil } }
+                        return try await _fetchOrGenerate(
+                            modelContext: modelContext,
+                            eventKit: eventKit,
+                            foundationModels: foundationModels,
+                            cal: calendarContext
+                        )
+                    }
+                    dict[todayKey] = newTask
+                    return newTask
+                }
+                return try await task.value
             },
             refresh: {
                 try await _refresh(
@@ -123,18 +153,32 @@ extension DailyBriefClient {
             },
             generateForDay: { date in
                 // V1: per-date FM generation isn't built yet. For today,
-                // delegate to fetchOrGenerate. For other dates, return
+                // delegate through the same single-flight path as
+                // `fetchOrGenerate` so wheel-dismiss + .appeared races
+                // collapse to one insert. For other dates, return
                 // any cached record or throw — the reducer treats throw
                 // as "no brief available."
                 let dayKey = calendarContext.dayKey(date)
                 let todayKey = calendarContext.dayKey(calendarContext.now())
                 if dayKey == todayKey {
-                    return try await _fetchOrGenerate(
-                        modelContext: modelContext,
-                        eventKit: eventKit,
-                        foundationModels: foundationModels,
-                        cal: calendarContext
-                    )
+                    let task = inflight.withValue { dict -> Task<DailyBriefSnapshot, any Error> in
+                        if let existing = dict[todayKey] {
+                            log.info("generateForDay(today): joining in-flight for \(todayKey)")
+                            return existing
+                        }
+                        let newTask = Task<DailyBriefSnapshot, any Error> {
+                            defer { inflight.withValue { $0[todayKey] = nil } }
+                            return try await _fetchOrGenerate(
+                                modelContext: modelContext,
+                                eventKit: eventKit,
+                                foundationModels: foundationModels,
+                                cal: calendarContext
+                            )
+                        }
+                        dict[todayKey] = newTask
+                        return newTask
+                    }
+                    return try await task.value
                 }
                 // Cached past-day record if it exists.
                 if let existing = await _fetch(forDayKey: dayKey, modelContext: modelContext, cal: calendarContext) {
@@ -224,22 +268,48 @@ private func _fetchOrGenerate(
 
     do {
         if let existing = try loadRecord(forDayKey: todayKey, context: context) {
-            log.info("fetchOrGenerate: found cached — events=\(existing.eventCountAtGeneration), reminders=\(existing.reminderCountAtGeneration)")
+            log.info("fetchOrGenerate: found cached — events=\(existing.eventCountAtGeneration), reminders=\(existing.reminderCountAtGeneration), focusEmpty=\(existing.focusText.isEmpty)")
 
-            let (eventCount, reminderCount) = await fetchLiveCounts(eventKit: eventKit)
+            let counts = await fetchLiveCounts(eventKit: eventKit)
 
-            if existing.eventCountAtGeneration == eventCount
-                && existing.reminderCountAtGeneration == reminderCount {
+            // Cache-hit predicate. A cached record is returned only when
+            // ALL of these hold:
+            //   (a) counts match — staleness check.
+            //   (b) EventKit succeeded — (0,0) from a failed query is not
+            //       a reliable baseline; the cached (0,0) record could
+            //       persist forever during a permission-denied state.
+            //   (c) the record has real content OR FM is currently
+            //       unable to produce content. An empty-content record
+            //       (focusText="" + suggestionText="") generated during
+            //       a transient FM failure poisons the cache otherwise —
+            //       every fetch would short-circuit and the view would
+            //       hide the brief permanently. If FM is back, fall
+            //       through to regenerate; if it's still unavailable,
+            //       return the empty cache to avoid thrashing.
+            let countsMatch = existing.eventCountAtGeneration == counts.eventCount
+                && existing.reminderCountAtGeneration == counts.reminderCount
+            let isEmptyContent = existing.focusText.isEmpty && existing.suggestionText.isEmpty
+            let fmCanRegenerate = foundationModels.isAvailable()
+                && foundationModels.supportsLocale(cal.userLocale())
+
+            if countsMatch && counts.eventKitOK && !(isEmptyContent && fmCanRegenerate) {
                 log.info("fetchOrGenerate: counts match — returning cached")
                 DailyBriefRetention.touchIfStale(existing, now: now, context: context)
-                return DailyBriefSnapshot(record: existing)
+                // Loaded from SwiftData — it's persisted by definition.
+                return DailyBriefSnapshot(record: existing, wasPersisted: true)
             }
 
-            log.info("fetchOrGenerate: counts differ — regenerating")
+            if isEmptyContent && fmCanRegenerate {
+                log.info("fetchOrGenerate: empty cached + FM available — regenerating")
+            } else if !counts.eventKitOK && countsMatch {
+                log.info("fetchOrGenerate: counts (0,0) but EventKit failed — regenerating")
+            } else {
+                log.info("fetchOrGenerate: counts differ — regenerating")
+            }
             return try await regenerate(
                 existing: existing,
-                eventCount: eventCount,
-                reminderCount: reminderCount,
+                eventCount: counts.eventCount,
+                reminderCount: counts.reminderCount,
                 context: context,
                 eventKit: eventKit,
                 foundationModels: foundationModels,
@@ -251,13 +321,13 @@ private func _fetchOrGenerate(
     }
 
     log.info("fetchOrGenerate: no cached record — generating new")
-    let (eventCount, reminderCount) = await fetchLiveCounts(eventKit: eventKit)
+    let counts = await fetchLiveCounts(eventKit: eventKit)
 
     return try await generateNew(
         dayKey: todayKey,
         now: now,
-        eventCount: eventCount,
-        reminderCount: reminderCount,
+        eventCount: counts.eventCount,
+        reminderCount: counts.reminderCount,
         context: context,
         eventKit: eventKit,
         foundationModels: foundationModels,
@@ -275,14 +345,14 @@ private func _refresh(
     let context = modelContext.context()
     let now = cal.now()
     let todayKey = cal.dayKey(now)
-    let (eventCount, reminderCount) = await fetchLiveCounts(eventKit: eventKit)
+    let counts = await fetchLiveCounts(eventKit: eventKit)
     log.info("refresh: force regenerating for \(todayKey)")
 
     if let existing = try loadRecord(forDayKey: todayKey, context: context) {
         return try await regenerate(
             existing: existing,
-            eventCount: eventCount,
-            reminderCount: reminderCount,
+            eventCount: counts.eventCount,
+            reminderCount: counts.reminderCount,
             context: context,
             eventKit: eventKit,
             foundationModels: foundationModels,
@@ -293,8 +363,8 @@ private func _refresh(
     return try await generateNew(
         dayKey: todayKey,
         now: now,
-        eventCount: eventCount,
-        reminderCount: reminderCount,
+        eventCount: counts.eventCount,
+        reminderCount: counts.reminderCount,
         context: context,
         eventKit: eventKit,
         foundationModels: foundationModels,
@@ -315,7 +385,8 @@ private func _fetch(
         return nil
     }
     DailyBriefRetention.touchIfStale(record, now: cal.now(), context: context)
-    return DailyBriefSnapshot(record: record)
+    // Loaded from SwiftData — it's persisted by definition.
+    return DailyBriefSnapshot(record: record, wasPersisted: true)
 }
 
 // MARK: - SwiftData operations
@@ -360,6 +431,7 @@ private func generateNew(
     )
 
     context.insert(record)
+    var wasPersisted = true
     do {
         try context.save()
         log.info("generateNew: persisted to SwiftData")
@@ -369,10 +441,16 @@ private func generateNew(
         // separate cleanup job.
         DailyBriefRetention.evictIfNeeded(context: context)
     } catch {
-        log.error("generateNew: save failed — \(error)")
+        wasPersisted = false
+        // Fault-level: SwiftData save failure is rare and almost always
+        // load-bearing (disk full, iCloud conflict, schema mismatch).
+        // We continue to return the in-memory snapshot so the user
+        // sees today's brief, but flag wasPersisted=false so callers
+        // can surface a hint and so we don't loop on subsequent calls.
+        log.fault("generateNew: SwiftData save failed — \(error, privacy: .public)")
     }
 
-    return DailyBriefSnapshot(record: record)
+    return DailyBriefSnapshot(record: record, wasPersisted: wasPersisted)
 }
 
 @MainActor
@@ -400,14 +478,16 @@ private func regenerate(
     // Regen counts as access — the user just triggered it.
     existing.lastAccessedAt = now
 
+    var wasPersisted = true
     do {
         try context.save()
         log.info("regenerate: persisted to SwiftData")
     } catch {
-        log.error("regenerate: save failed — \(error)")
+        wasPersisted = false
+        log.fault("regenerate: SwiftData save failed — \(error, privacy: .public)")
     }
 
-    return DailyBriefSnapshot(record: existing)
+    return DailyBriefSnapshot(record: existing, wasPersisted: wasPersisted)
 }
 
 // MARK: - Generation core
@@ -520,14 +600,21 @@ private func englishLanguageName(for locale: Locale) -> String {
         ?? "English"
 }
 
-private func fetchLiveCounts(eventKit: EventKitService) async -> (Int, Int) {
+/// Live counts of today's events + reminders. `eventKitOK` is false if
+/// either fetch threw — in that state, a cached record with counts
+/// (0, 0) is NOT a reliable match (could be a real empty day, could be
+/// a permission denial). Callers must check `eventKitOK` before
+/// treating a (0, 0) match as cache-fresh.
+private func fetchLiveCounts(
+    eventKit: EventKitService
+) async -> (eventCount: Int, reminderCount: Int, eventKitOK: Bool) {
     do {
         let events = try await eventKit.fetchTodayEvents()
         let reminders = try await eventKit.fetchDueReminders()
-        return (events.count, reminders.count)
+        return (events.count, reminders.count, true)
     } catch {
         log.error("fetchLiveCounts: failed — \(error)")
-        return (0, 0)
+        return (0, 0, false)
     }
 }
 

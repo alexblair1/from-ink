@@ -172,6 +172,7 @@ struct HomeWiringView: View {
             } : nil,
             onDoneTapped: store.isWheelOpen ? { store.send(.wheelToggled) } : nil,
             onScrimTap: store.isWheelOpen ? { store.send(.wheelToggled) } : nil,
+            onRefreshRequested: { store.send(.briefRefreshRequested) },
             lede: BriefLede.Model(
                 text: firstSentence(of: snapshot.focusText)
             ),
@@ -343,11 +344,14 @@ struct HomeWiringView: View {
     // MARK: - Brief Helpers
 
     private var emptyBriefSnapshot: DailyBriefSnapshot {
+        // Synthetic in-memory placeholder for the `.loading` / `.empty`
+        // states — never written to SwiftData, so `wasPersisted: false`.
         DailyBriefSnapshot(
             dayKey: "",
             focusText: emptyBriefMessage,
             suggestionText: "",
-            generatedAt: calendarContext.now()
+            generatedAt: calendarContext.now(),
+            wasPersisted: false
         )
     }
 
