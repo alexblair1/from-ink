@@ -4,26 +4,27 @@ import SwiftUI
 /// need to look in here?" before the user taps. Per the design's
 /// principle 03: status before tap.
 ///
-/// V1 ships only the `neutral` case — quiet prose-grey hint text
-/// (e.g., the current Appearance value "System"). The design also
-/// calls for an `attention` flag-red mono treatment for things like
-/// "1 NEEDS AUTH" on Integrations, but no surface in V1 has the
-/// underlying data to populate it. When the first attention hint
-/// lands (Integrations gains auth state, Permissions gains denied
-/// state, etc.), this enum gains an `.attention(String)` case in
-/// the same slice that adds the `ink/FlagRed` color asset — no
-/// speculative tokens.
+/// Two presentations, distinguished by intent:
+///   - `.neutral` — quiet prose-grey hint (ink-2). Used for the
+///     current setting value: "System", "Right", "7:00 am".
+///   - `.attention` — flag-red mono uppercase. Reserved for
+///     user-actionable callouts that need immediate eye: "1 NEEDS
+///     AUTH", "Re-authenticate", "Permissions denied". Color comes
+///     from `ColorTokens.flagRed`; loudness is intentional and
+///     sparing — overuse erodes the signal.
 ///
 enum StatusHint: Equatable {
     case neutral(String)
+    case attention(String)
 }
 
 extension StatusHint {
-    /// User-visible text for the hint. Centralized so the row view
-    /// pattern-matches once.
+    /// User-visible text for the hint. Centralized so callers
+    /// pattern-match once.
     var text: String {
         switch self {
-        case .neutral(let value): value
+        case .neutral(let value):   value
+        case .attention(let value): value
         }
     }
 }

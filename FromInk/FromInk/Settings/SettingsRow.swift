@@ -26,11 +26,7 @@ struct SettingsRow: View {
                 Spacer()
 
                 if let hint = model.statusHint {
-                    Text(hint.text)
-                        .font(.system(size: 14, weight: .regular, design: .serif))
-                        .foregroundStyle(ds.colors.ink2)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    statusHintLabel(hint)
                 }
 
                 Image(systemName: "chevron.forward")
@@ -42,6 +38,29 @@ struct SettingsRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Renders the right-side status hint with the case-appropriate
+    /// typography + color. Neutral hints stay in serif prose; attention
+    /// hints flip to mono uppercase + `flagRed` for at-a-glance read.
+    @ViewBuilder
+    private func statusHintLabel(_ hint: StatusHint) -> some View {
+        switch hint {
+        case .neutral(let text):
+            Text(text)
+                .font(.system(size: 14, weight: .regular, design: .serif))
+                .foregroundStyle(ds.colors.ink2)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        case .attention(let text):
+            Text(text)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .tracking(1.5)
+                .textCase(.uppercase)
+                .foregroundStyle(ds.colors.flagRed)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
     }
 }
 

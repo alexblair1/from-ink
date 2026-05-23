@@ -76,7 +76,7 @@ struct SettingsView: View {
         case .themes:
             ThemesDetailView(model: model.detailModels.themes)
         case .integrations:
-            IntegrationsDetailView(model: model.detailModels.integrations)
+            IntegrationsListView(model: model.detailModels.integrations)
         case .permissions:
             PermissionsDetailView(model: model.detailModels.permissions)
         }
@@ -114,7 +114,7 @@ extension SettingsView {
         let appearance: OptionPickerDetailView<AppearanceSetting>.Model
         let handedness: OptionPickerDetailView<Handedness>.Model
         let themes: ThemesDetailView.Model
-        let integrations: IntegrationsDetailView.Model
+        let integrations: IntegrationsListView.Model
         let permissions: PermissionsDetailView.Model
     }
 }

@@ -143,10 +143,9 @@ extension SettingsView.Model {
                 emptyTitle: AppStrings.Settings.themesEmptyTitle,
                 emptyBody: AppStrings.Settings.themesEmptyBody
             ),
-            integrations: IntegrationsDetailView.Model(
-                header: integrationsHeader,
-                emptyTitle: AppStrings.Settings.integrationsEmptyTitle,
-                emptyBody: AppStrings.Settings.integrationsEmptyBody
+            integrations: IntegrationsListView.Model(
+                store: store.scope(state: \.integrations, action: \.integrations),
+                header: integrationsHeader
             ),
             permissions: PermissionsDetailView.Model(
                 header: permissionsHeader,

@@ -31,15 +31,22 @@ struct SettingsFeature: Reducer {
         var destination: SettingsDestination?
         var appearance: AppearanceSetting
         var handedness: Handedness
+        /// Child feature state. Always present so the child reducer
+        /// composed via `Scope` can respond to its own actions and
+        /// hold mock seed data across destination switches. The view
+        /// only renders it when `destination == .integrations`.
+        var integrations: IntegrationsFeature.State
 
         init(
             destination: SettingsDestination? = nil,
             appearance: AppearanceSetting = .system,
-            handedness: Handedness = .right
+            handedness: Handedness = .right,
+            integrations: IntegrationsFeature.State = IntegrationsFeature.State()
         ) {
             self.destination = destination
             self.appearance = appearance
             self.handedness = handedness
+            self.integrations = integrations
         }
     }
 
@@ -54,11 +61,18 @@ struct SettingsFeature: Reducer {
         /// Delegate action — parent intercepts to close the overlay.
         /// SettingsFeature itself returns `.none`.
         case dismissTapped
+        /// Child feature actions. Composed via `Scope`. The parent
+        /// handles destination navigation; the child handles its
+        /// own state machine.
+        case integrations(IntegrationsFeature.Action)
     }
 
     @Dependency(\.userPreferences) var preferences
 
     var body: some Reducer<State, Action> {
+        Scope(state: \.integrations, action: \.integrations) {
+            IntegrationsFeature()
+        }
         Reduce { state, action in
             switch action {
             case .appeared:
@@ -98,6 +112,12 @@ struct SettingsFeature: Reducer {
                 // Parent intercepts. Reducer is intentionally a no-op
                 // here so presentation state stays owned by the
                 // presenter (HomeFeature).
+                return .none
+
+            case .integrations:
+                // Child actions are fully handled by the IntegrationsFeature
+                // reducer scoped above. Parent passes through; no
+                // parent-side interception needed for V1.
                 return .none
             }
         }

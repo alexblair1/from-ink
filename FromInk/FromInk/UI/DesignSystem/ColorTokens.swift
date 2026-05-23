@@ -3,7 +3,7 @@ import SwiftUI
 /// Adaptive named colors from the asset catalog.
 /// All `Color` values resolve light/dark variants at render time.
 ///
-/// Asset catalog: Assets.xcassets/ink/{Paper,Surface,Highlight,Ink,Ink2,Ink3,Rule}.colorset
+/// Asset catalog: Assets.xcassets/ink/{Paper,Surface,Highlight,Ink,Ink2,Ink3,Rule,FlagRed}.colorset
 ///
 /// Do NOT add default values to fields — compile-time enforcement that
 /// every theme defines every token.
@@ -17,6 +17,13 @@ struct ColorTokens: Sendable {
     let ink3: Color
     let rule: Color
     let paperOnInk: Color
+
+    /// Editorial alert / needs-attention color. Reserved for explicit
+    /// user-actionable callouts — "Re-authenticate", "No connection",
+    /// "Permissions denied" — never decoration. Sourced from the
+    /// design system: `--flag: #B5392A` on light, brightened on dark.
+    /// Use sparingly; this is the loudest color in the palette.
+    let flagRed: Color
 
     // Semantic aliases (computed, not stored)
     var tint: Color { ink }
@@ -34,6 +41,7 @@ struct ColorTokens: Sendable {
         ink2:       Color("ink/Ink2"),
         ink3:       Color("ink/Ink3"),
         rule:       Color("ink/Rule"),
-        paperOnInk: Color("ink/Paper")
+        paperOnInk: Color("ink/Paper"),
+        flagRed:    Color("ink/FlagRed")
     )
 }
