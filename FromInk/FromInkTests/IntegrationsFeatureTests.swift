@@ -20,10 +20,63 @@ import XCTest
 ///
 final class IntegrationsFeatureTests: XCTestCase {
 
-    // MARK: - .appeared
+    // MARK: - .appeared → emits mockConnectionsLoaded
 
+    /// Verifies the appeared effect fires and yields a populated
+    /// `mockConnectionsLoaded` action. The action's payload is
+    /// captured directly off the resulting store state rather than
+    /// reconstructed inside the `receive` closure — the closure must
+    /// match the new expected state via mutation, which is awkward
+    /// for the full mock seed graph. Post-receive assertions on
+    /// `store.state` are cleaner here and equally exhaustive.
     @MainActor
-    func test_appeared_loadsMockConnections() async {
+    func test_appeared_emitsMockConnectionsLoaded() async {
+        let store = TestStore(initialState: IntegrationsFeature.State()) {
+            IntegrationsFeature()
+        } withDependencies: {
+            $0.continuousClock = ImmediateClock()
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(.appeared)
+        await store.receive(\.mockConnectionsLoaded)
+
+        // Mock seed is deterministic: 2 providers, 4 accounts, with
+        // one Linear account flagged `.reconnectRequired`.
+        XCTAssertEqual(store.state.connections.count, 2)
+        XCTAssertEqual(store.state.connections[0].provider, .linear)
+        XCTAssertEqual(store.state.connections[0].accounts.count, 3)
+        XCTAssertEqual(store.state.connections[1].provider, .slack)
+        XCTAssertEqual(store.state.connections[1].accounts.count, 1)
+
+        // Defaults are seeded from the first healthy account in each
+        // provider — Linear "From Ink", Slack "Acme".
+        XCTAssertNotNil(store.state.defaults[.linear])
+        XCTAssertNotNil(store.state.defaults[.slack])
+
+        // Quartz Labs is the reconnectRequired account; it must not
+        // be the default.
+        let quartzID = store.state.connections[0].accounts
+            .first(where: { $0.health == .reconnectRequired })?.id
+        XCTAssertNotEqual(store.state.defaults[.linear], quartzID)
+    }
+
+    /// Directly tests the synchronous mutation on
+    /// `mockConnectionsLoaded` — useful because everything else flows
+    /// through this action and we want a contract test that survives
+    /// changes to the seed function.
+    @MainActor
+    func test_mockConnectionsLoaded_replacesConnectionsAndDefaults() async {
+        let account = makeAccount(provider: .linear, displayName: "Solo")
+        let connections = [
+            IntegrationsFeature.Connection(
+                provider: .linear,
+                accounts: [.init(account: account, health: .healthy)]
+            ),
+        ]
+        let defaults: [OAuthProvider: UUID] = [.linear: account.id]
+
         let store = TestStore(initialState: IntegrationsFeature.State()) {
             IntegrationsFeature()
         } withDependencies: {
@@ -31,25 +84,9 @@ final class IntegrationsFeatureTests: XCTestCase {
             $0.uuid = .incrementing
         }
 
-        await store.send(.appeared)
-
-        // Mock seed is deterministic: 2 providers, 4 accounts, with
-        // one Linear account flagged `.reconnectRequired`.
-        await store.receive(\.mockConnectionsLoaded) { state in
-            XCTAssertEqual(state.connections.count, 2)
-            XCTAssertEqual(state.connections[0].provider, .linear)
-            XCTAssertEqual(state.connections[0].accounts.count, 3)
-            XCTAssertEqual(state.connections[1].provider, .slack)
-            XCTAssertEqual(state.connections[1].accounts.count, 1)
-            // Defaults are seeded from the first healthy account in
-            // each provider — Linear "From Ink", Slack "Acme".
-            XCTAssertNotNil(state.defaults[.linear])
-            XCTAssertNotNil(state.defaults[.slack])
-            // Quartz Labs is the reconnectRequired account; it must
-            // not be the default.
-            let quartzID = state.connections[0].accounts
-                .first(where: { $0.health == .reconnectRequired })?.id
-            XCTAssertNotEqual(state.defaults[.linear], quartzID)
+        await store.send(.mockConnectionsLoaded(connections, defaults: defaults)) { state in
+            state.connections = connections
+            state.defaults = defaults
         }
     }
 
