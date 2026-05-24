@@ -367,22 +367,24 @@ struct CanvasScreen: View {
         }
         .task(id: pageID) { await loadPageOnAppear() }
         .onDisappear {
-            // Save-on-navigate: flush whatever's in the canvas right now.
-            // Fires for page swipe (TabView), fullScreenCover dismiss, and
-            // notebook close. The flush is awaitable but we kick it off in
-            // a Task so view teardown doesn't block — the Coordinator's
-            // weak ref to PKCanvasView is what makes this safe even if
-            // the view is gone before the save completes.
-            let bridge = canvasBridge
-            Task { await bridge.flush() }
+            // Save-on-navigate: capture the current drawing SYNCHRONOUSLY
+            // before SwiftUI deallocates the underlying PKCanvasView.
+            // The snapshot owns its values (PKDrawing is a value type;
+            // NotebookClient is a struct of closures), so persistence in
+            // the unstructured Task can't be raced by view teardown.
+            // Fires for page swipe (TabView), fullScreenCover dismiss,
+            // and notebook close.
+            guard let snapshot = canvasBridge.snapshotForFlush() else { return }
+            Task { await CanvasViewBridge.persist(snapshot) }
         }
         .onChange(of: scenePhase) { _, phase in
             // Save-on-background: any non-active scene phase means the
             // user has navigated away from the app — persist before iOS
-            // potentially suspends the process.
-            guard phase != .active else { return }
-            let bridge = canvasBridge
-            Task { await bridge.flush() }
+            // potentially suspends the process. Same synchronous-snapshot
+            // pattern as above.
+            guard phase != .active,
+                  let snapshot = canvasBridge.snapshotForFlush() else { return }
+            Task { await CanvasViewBridge.persist(snapshot) }
         }
     }
 
