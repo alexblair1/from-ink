@@ -23,7 +23,7 @@ struct NotebookCard: View {
                     .lineLimit(1)
                     .frame(width: 130, alignment: .leading)
 
-                Text(notebook.lastOpenedAt.formatted(.relative(presentation: .named)))
+                Text(notebook.modifiedAt.formatted(.relative(presentation: .named)))
                     .font(.system(size: 10))
                     .foregroundStyle(Color.inkSecondary)
                     .frame(width: 130, alignment: .leading)

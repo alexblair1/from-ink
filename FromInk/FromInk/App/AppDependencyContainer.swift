@@ -20,12 +20,22 @@ final class AppDependencyContainer {
 
     private(set) lazy var modelContainer: Result<ModelContainer, BootstrapError> = {
         do {
+            let schema = Schema(FromInkSchemaV1.models)
+            let config = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .none   // Phase 1 — see data_model_edd.md §9
+            )
+            // No `migrationPlan:` — SwiftData uses default lightweight
+            // migration (handles additive changes automatically). The
+            // `FromInkMigrationPlan` skeleton lives in source for the
+            // Phase 2 lock-in; passing it with empty stages confuses
+            // SwiftData into "no migrations possible" mode and blocks
+            // even the lightweight path. Wire it back in when we add
+            // the first explicit stage.
             let container = try ModelContainer(
-                for: Notebook.self,
-                     Folder.self,
-                     RoutedItem.self,
-                     DailyBriefRecord.self,
-                     Item.self
+                for: schema,
+                configurations: config
             )
             return .success(container)
         } catch {
@@ -36,6 +46,49 @@ final class AppDependencyContainer {
 
     private(set) lazy var syncedModelContext: SyncedModelContextDependency = {
         switch modelContainer {
+        case .success(let container):
+            return .live(container: container)
+        case .failure:
+            return .unavailable
+        }
+    }()
+
+    /// Local-only container for per-device data (UserPreferencesRecord).
+    /// `cloudKitDatabase: .none` forever — this container never syncs.
+    ///
+    /// **Important:** must use an explicit URL distinct from the synced
+    /// container. Two `ModelContainer`s pointing at the default URL
+    /// (`Application Support/default.store`) collide and corrupt each
+    /// other's schema — symptom is persistent "no such table: ZNOTEBOOK"
+    /// errors after the second container truncates the first's tables.
+    private(set) lazy var localContainer: Result<ModelContainer, BootstrapError> = {
+        do {
+            let schema = Schema([UserPreferencesRecord.self])
+            let appSupport = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let url = appSupport.appendingPathComponent("fromink-local.store")
+            let config = ModelConfiguration(
+                schema: schema,
+                url: url,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(
+                for: schema,
+                configurations: config
+            )
+            return .success(container)
+        } catch {
+            log.error("Local ModelContainer init failed: \(error)")
+            return .failure(.storageUnavailable(error))
+        }
+    }()
+
+    private(set) lazy var localModelContext: LocalModelContextDependency = {
+        switch localContainer {
         case .success(let container):
             return .live(container: container)
         case .failure:
@@ -77,6 +130,13 @@ final class AppDependencyContainer {
         )
     }()
 
+    private(set) lazy var notebookClient: NotebookClient = {
+        NotebookClient.live(
+            modelContext: syncedModelContext,
+            calendarContext: calendarContext
+        )
+    }()
+
     // MARK: - Factories
 
     static func live() -> AppDependencyContainer { AppDependencyContainer() }
@@ -87,6 +147,7 @@ final class AppDependencyContainer {
         deps.calendarContext = calendarContext
         deps.userPreferences = userPreferences
         deps.syncedModelContext = syncedModelContext
+        deps.localModelContext = localModelContext
         deps.foundationModelsService = foundationModelsService
         deps.eventKitService = eventKitService
         deps.weatherService = weatherService
@@ -95,6 +156,7 @@ final class AppDependencyContainer {
         deps.oauthService = oauthService
         deps.backgroundTokenRefresh = backgroundTokenRefresh
         deps.dailyBriefClient = dailyBriefClient
+        deps.notebookClient = notebookClient
     }
 
     // MARK: - SwiftUI bridge
@@ -108,13 +170,14 @@ final class AppDependencyContainer {
         case .failure:
             // Fallback ephemeral container — the app is in .failed phase;
             // views behind BootstrapFailureView will not be visible.
+            let schema = Schema(FromInkSchemaV1.models)
             return try! ModelContainer(
-                for: Notebook.self,
-                     Folder.self,
-                     RoutedItem.self,
-                     DailyBriefRecord.self,
-                     Item.self,
-                configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+                for: schema,
+                configurations: ModelConfiguration(
+                    schema: schema,
+                    isStoredInMemoryOnly: true,
+                    cloudKitDatabase: .none
+                )
             )
         }
     }

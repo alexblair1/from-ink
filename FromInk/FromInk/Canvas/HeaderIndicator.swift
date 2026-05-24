@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct HeaderIndicator: View {
-    let header: CanvasHeader
+    let header: NoteHeaderSnapshot
 
     var body: some View {
         RoundedRectangle(cornerRadius: 4)
@@ -10,7 +10,7 @@ struct HeaderIndicator: View {
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(Color.primary.opacity(0.18), lineWidth: 1.5)
             }
-            .frame(width: header.contentRect.width, height: header.contentRect.height)
+            .frame(width: header.rect.width, height: header.rect.height)
             .overlay(alignment: .topLeading) {
                 Image(systemName: "bookmark.fill")
                     .font(.system(size: 10, weight: .medium))

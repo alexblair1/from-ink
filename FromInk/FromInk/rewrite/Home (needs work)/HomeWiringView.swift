@@ -1,10 +1,10 @@
 import ComposableArchitecture
 import SwiftUI
-import SwiftData
 
-/// Wiring view for the home screen. Owns @Query for SwiftData live data,
-/// converts Store state + query results into HomeScreenView.Model.
-/// Zero layout — delegates entirely to HomeScreenView.
+/// Wiring view for the home screen. Reads notebooks/folders from the
+/// composed `LibraryFeature` substate; the days of `@Query` + direct
+/// `modelContext` mutation are gone — all writes go through
+/// `NotebookClient` via `LibraryFeature` actions.
 ///
 struct HomeWiringView: View {
     /// `@Bindable` exposes `$store.scope(...)` projection used by
@@ -12,9 +12,6 @@ struct HomeWiringView: View {
     /// reads happen via the regular `store.foo` accessors.
     @Bindable var store: StoreOf<HomeFeature>
 
-    @Query(sort: \Notebook.lastOpenedAt, order: .reverse) private var notebooks: [Notebook]
-    @Query(sort: \Folder.sortOrder) private var folders: [Folder]
-    @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -27,18 +24,17 @@ struct HomeWiringView: View {
     /// will become `max(45, daysSinceEarliestBrief)`.
     private static let wheelRange = 45
 
-    @State private var activeNotebook: Notebook? = nil
-
-    private var filteredNotebooks: [Notebook] {
-        guard !store.searchText.isEmpty else { return notebooks }
-        return notebooks.filter {
+    private var filteredNotebooks: [NotebookSnapshot] {
+        guard !store.searchText.isEmpty else { return store.library.notebooks }
+        return store.library.notebooks.filter {
             $0.title.localizedCaseInsensitiveContains(store.searchText)
         }
     }
 
-    private var rootNotebooks: [Notebook] {
+    private var rootNotebooks: [NotebookSnapshot] {
         filteredNotebooks.filter { $0.folderID == nil }
     }
+
 
     var body: some View {
         HomeScreenView(
@@ -50,15 +46,16 @@ struct HomeWiringView: View {
         )
         .onAppear {
             store.send(.appeared)
-            seedNotebookIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 store.send(.foregrounded)
             }
         }
-        .fullScreenCover(item: $activeNotebook) { notebook in
-            NotebookScreen(notebookID: notebook.id, notebookTitle: notebook.title)
+        .fullScreenCover(
+            item: $store.scope(state: \.notebook, action: \.notebook)
+        ) { notebookStore in
+            NotebookScreen(store: notebookStore)
         }
         // Settings sheet driven by `@Presents`. `.sheet(item:)`
         // binds against the scoped optional store — non-nil presents,
@@ -93,15 +90,11 @@ struct HomeWiringView: View {
         NewNotebookOverlay(
             title: $newNotebookTitle,
             onCreate: {
-                let title = newNotebookTitle.isEmpty
-                    ? AppStrings.Common.untitled
-                    : newNotebookTitle
-                let notebook = Notebook(title: title)
-                modelContext.insert(notebook)
-                try? modelContext.save()
-                store.send(.notebookCreated(title: title))
+                // LibraryFeature creates via NotebookClient; its delegate
+                // (.notebookCreated) is handled by HomeFeature, which
+                // dismisses the sheet and sets presentingNotebookID.
+                store.send(.library(.createNotebookRequested(title: newNotebookTitle)))
                 newNotebookTitle = ""
-                activeNotebook = notebook
             },
             onCancel: {
                 store.send(.newNotebookDismissed)
@@ -300,16 +293,16 @@ struct HomeWiringView: View {
     }
 
     private var notebookCards: [HomeNotebookShelf.NotebookCardModel] {
-        rootNotebooks.map { notebook in
+        rootNotebooks.map { snap in
             HomeNotebookShelf.NotebookCardModel(
-                id: notebook.id,
-                title: notebook.title,
-                timeLabel: relativeTimeLabel(notebook.lastOpenedAt),
+                id: snap.id,
+                title: snap.title,
+                timeLabel: relativeTimeLabel(snap.modifiedAt),
                 onTap: {
-                    notebook.lastOpenedAt = calendarContext.now()
-                    try? modelContext.save()
-                    store.send(.notebookTapped(id: notebook.id))
-                    activeNotebook = notebook
+                    // HomeFeature.notebookTapped sets presentingNotebookID
+                    // AND forwards .library(.touchNotebookOpened) so the
+                    // shelf re-sorts on next refresh.
+                    store.send(.notebookTapped(id: snap.id))
                 }
             )
         }
@@ -429,15 +422,5 @@ struct HomeWiringView: View {
     private func firstSentence(of text: String) -> String {
         guard let range = text.range(of: ".", options: .literal) else { return text }
         return String(text[text.startIndex...range.lowerBound])
-    }
-
-    // MARK: - Seed
-
-    private func seedNotebookIfNeeded() {
-        if notebooks.isEmpty {
-            let notebook = Notebook(title: AppStrings.Library.myNotebook)
-            modelContext.insert(notebook)
-            try? modelContext.save()
-        }
     }
 }

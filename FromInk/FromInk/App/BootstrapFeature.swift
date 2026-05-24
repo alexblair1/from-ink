@@ -143,10 +143,12 @@ struct BootstrapFeature: Reducer {
 
     private func runStorage() -> Effect<Action> {
         .run { send in
-            @Dependency(\.syncedModelContext) var ctx
+            @Dependency(\.syncedModelContext) var synced
+            @Dependency(\.localModelContext) var local
             await send(.stageStarted(.storage))
             do {
-                try await ctx.warmup()
+                try await synced.warmup()
+                try await local.warmup()
                 await send(.stageCompleted(.storage, []))
             } catch {
                 await send(.stageFailedRequired(.storage, .storageUnavailable(error)))

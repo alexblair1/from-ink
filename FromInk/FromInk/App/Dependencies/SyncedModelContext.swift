@@ -30,14 +30,13 @@ extension SyncedModelContextDependency {
     /// Unavailable fallback — returns an in-memory context.
     /// Used when storage init failed; the app boots in degraded mode.
     static let unavailable: SyncedModelContextDependency = {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try! ModelContainer(
-            for: DailyBriefRecord.self,
-            Notebook.self,
-            Folder.self,
-            RoutedItem.self,
-            configurations: config
+        let schema = Schema(FromInkSchemaV1.models)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
         )
+        let container = try! ModelContainer(for: schema, configurations: config)
         return SyncedModelContextDependency(
             context: { container.mainContext },
             warmup: { }
@@ -54,14 +53,13 @@ extension SyncedModelContextDependency: DependencyKey {
     static let liveValue: SyncedModelContextDependency = .unavailable
 
     static let testValue: SyncedModelContextDependency = {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try! ModelContainer(
-            for: DailyBriefRecord.self,
-            Notebook.self,
-            Folder.self,
-            RoutedItem.self,
-            configurations: config
+        let schema = Schema(FromInkSchemaV1.models)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
         )
+        let container = try! ModelContainer(for: schema, configurations: config)
         return SyncedModelContextDependency(
             context: { container.mainContext },
             warmup: { }

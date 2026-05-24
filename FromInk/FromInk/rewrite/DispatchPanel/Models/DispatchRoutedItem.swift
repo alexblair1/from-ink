@@ -1,7 +1,8 @@
 import Foundation
 
 /// Value type representing a routed item (calendar event, reminder, etc.).
-/// Converted from RoutedItem SwiftData model for use in TCA State.
+/// Adapted from `NoteHistoryEntrySnapshot` (kind == .taskRouted) for use
+/// in TCA State on the dispatch panel.
 ///
 struct DispatchRoutedItem: Equatable, Identifiable, Sendable {
     let id: UUID

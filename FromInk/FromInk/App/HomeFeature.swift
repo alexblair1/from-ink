@@ -35,6 +35,16 @@ struct HomeFeature: Reducer {
         /// automatically via `PresentationAction.dismiss`.
         @Presents var settings: SettingsFeature.State?
 
+        /// Composed notebook/folder data. Owned by `LibraryFeature` —
+        /// HomeWiringView reads `library.notebooks` instead of @Query.
+        var library: LibraryFeature.State = LibraryFeature.State()
+
+        /// Presented notebook state. `nil` = nothing presented; non-nil =
+        /// fullScreenCover is up. `@Presents` integrates with SwiftUI's
+        /// dismiss gestures via the `PresentationAction` framework so we
+        /// don't need a parallel "is presenting?" bool.
+        @Presents var notebook: NotebookFeature.State?
+
         init(currentDate: Date? = nil) {
             @Dependency(\.calendarContext) var cal
             self.currentDate = currentDate ?? cal.now()
@@ -106,6 +116,17 @@ struct HomeFeature: Reducer {
         /// swipe-down gesture on the sheet) is auto-handled by
         /// `.ifLet(\.$settings, action: \.settings)`.
         case settings(PresentationAction<SettingsFeature.Action>)
+
+        /// Composed `LibraryFeature` actions — reads/writes notebooks
+        /// + folders go through this. `Scope(state:\.library, action:\.library)`
+        /// runs the child reducer; the parent intercepts
+        /// `.library(.delegate(.notebookCreated(_)))` to dismiss the
+        /// create sheet and present the new notebook.
+        case library(LibraryFeature.Action)
+
+        /// Presented notebook child. Same `@Presents` machinery as
+        /// `settings` — `.dismiss` is auto-handled by `.ifLet`.
+        case notebook(PresentationAction<NotebookFeature.Action>)
     }
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
@@ -118,6 +139,9 @@ struct HomeFeature: Reducer {
     @Dependency(\.continuousClock) var clock
 
     var body: some Reducer<State, Action> {
+        Scope(state: \.library, action: \.library) {
+            LibraryFeature()
+        }
         Reduce { state, action in
             switch action {
             case .appeared:
@@ -126,7 +150,8 @@ struct HomeFeature: Reducer {
                 return .merge(
                     loadBrief(forDayKey: dayKey),
                     loadDayContent(for: date),
-                    observeCalendarChanges()
+                    observeCalendarChanges(),
+                    .send(.library(.onAppear))
                 )
 
             case .foregrounded:
@@ -285,7 +310,32 @@ struct HomeFeature: Reducer {
                 state.isNewNotebookSheetOpen = false
                 return .none
 
-            case .notebookTapped:
+            case .notebookTapped(let id):
+                // Open the notebook in the fullScreenCover and bump its
+                // modifiedAt so it sorts to the top of the shelf next refresh.
+                let title = state.library.notebooks
+                    .first(where: { $0.id == id })?.title ?? AppStrings.Common.untitled
+                state.notebook = NotebookFeature.State(notebookID: id, notebookTitle: title)
+                return .send(.library(.touchNotebookOpened(id: id)))
+
+            // Library's delegate: a notebook was just created. Dismiss the
+            // create sheet and present the new notebook.
+            case .library(.delegate(.notebookCreated(let snap))):
+                state.isNewNotebookSheetOpen = false
+                state.notebook = NotebookFeature.State(
+                    notebookID: snap.id,
+                    notebookTitle: snap.title
+                )
+                return .none
+
+            // Pass-through for every other library action — the Scope ran
+            // the child reducer above.
+            case .library:
+                return .none
+
+            // Notebook child presentation pass-through — `.dismiss` clears
+            // the optional automatically via `.ifLet`.
+            case .notebook:
                 return .none
 
             case .wheelToggled where state.isWheelOpen:
@@ -364,6 +414,9 @@ struct HomeFeature: Reducer {
         // framework can manage presentation lifecycle.
         .ifLet(\.$settings, action: \.settings) {
             SettingsFeature()
+        }
+        .ifLet(\.$notebook, action: \.notebook) {
+            NotebookFeature()
         }
     }
 

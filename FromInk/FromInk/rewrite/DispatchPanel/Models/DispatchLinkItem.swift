@@ -1,7 +1,8 @@
 import Foundation
 
 /// Value type representing a link captured from the canvas.
-/// Converted from CanvasLink for use in TCA State.
+/// Adapted from `NoteLinkSnapshot` (external-destination only) for use
+/// in TCA State on the dispatch panel.
 ///
 struct DispatchLinkItem: Equatable, Identifiable, Sendable {
     let id: UUID

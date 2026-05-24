@@ -1,5 +1,8 @@
 import SwiftUI
 import PencilKit
+import os
+
+private let canvasLog = Logger(subsystem: "com.fromink.app", category: "Canvas")
 
 struct CanvasView: UIViewRepresentable {
     @Binding var tool: CanvasTool
@@ -7,6 +10,18 @@ struct CanvasView: UIViewRepresentable {
     var template: CanvasTemplate = .none
     /// Fixed page height in points — device-independent so every iPad sees the same writing surface.
     var pageHeight: CGFloat = CanvasView.standardPageHeight
+    /// Persisted page identity. Drives the persistence path: `notebookClient.saveDrawing(pageID, ...)`
+    /// fires 800 ms after the last stroke. Defaults to a fresh UUID for legacy/preview
+    /// callers that aren't backed by a real page yet.
+    var pageID: UUID = UUID()
+    /// Initial ink loaded from `NotePage.drawingData`. Applied to the `PKCanvasView`
+    /// once during `makeUIView` BEFORE the delegate is attached, so the load itself
+    /// doesn't kick off the debounce-save loop. `nil` = brand-new page.
+    var initialDrawingData: Data? = nil
+    /// Persistence client. The Coordinator captures this for the debounced
+    /// `saveDrawing` call — `PKDrawing` itself never crosses the dependency
+    /// surface (the Coordinator does `dataRepresentation()` before calling).
+    var notebookClient: NotebookClient? = nil
     var onTwoFingerHoldBegan: () -> Void = {}
     var onTwoFingerHoldEnded: () -> Void = {}
     var onPencilDoubleTap: () -> Void = {}
@@ -41,11 +56,25 @@ struct CanvasView: UIViewRepresentable {
         canvas.drawingPolicy = .pencilOnly
         canvas.backgroundColor = .clear
         canvas.tool = tool.pkTool(settings: penSettings)
-        canvas.delegate = context.coordinator
         canvas.showsVerticalScrollIndicator = false
         canvas.showsHorizontalScrollIndicator = false
         canvas.alwaysBounceVertical = false
         canvas.alwaysBounceHorizontal = false
+
+        // Load persisted ink BEFORE attaching the delegate so the load
+        // itself doesn't trigger `canvasViewDrawingDidChange` → save loop.
+        // If the stored data is corrupt (cross-iOS-version drift), log
+        // and fall back to an empty page — the next save overwrites.
+        if let data = initialDrawingData, !data.isEmpty {
+            do {
+                canvas.drawing = try PKDrawing(data: data)
+            } catch {
+                canvasLog.error("PKDrawing(data:) failed for page \(pageID.uuidString, privacy: .public): \(error.localizedDescription)")
+            }
+        }
+        canvas.delegate = context.coordinator
+        context.coordinator.pageID = pageID
+        context.coordinator.notebookClient = notebookClient
         context.coordinator.currentTool = tool
         context.coordinator.currentPenSettings = penSettings
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
@@ -156,6 +185,10 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.headerStripWidth = headerStripWidth
         context.coordinator.headerStripOnRight = headerStripOnRight
         context.coordinator.onHeaderPanelRequested = onHeaderPanelRequested
+        // Sync persistence inputs in case pageID or client changed
+        // (TabView reuse can rebind these without reinstantiating).
+        context.coordinator.pageID = pageID
+        context.coordinator.notebookClient = notebookClient
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate, PKCanvasViewDelegate, UIPencilInteractionDelegate {
@@ -177,6 +210,15 @@ struct CanvasView: UIViewRepresentable {
         weak var lassoPanRecognizer: UIPanGestureRecognizer?
         weak var headerSwipeRecognizer: UIPanGestureRecognizer?
         private var headerSwipeFired = false
+
+        // Drawing persistence — owned by the Coordinator per CLAUDE.md
+        // "Canvas + TCA boundary": never route 60Hz stroke events through
+        // TCA. The 800ms debounce matches the OCR debounce in the EDD.
+        var pageID: UUID = UUID()
+        var notebookClient: NotebookClient?
+        private var saveDebounceTask: Task<Void, Never>?
+
+        deinit { saveDebounceTask?.cancel() }
 
         private var isNearBottom = false
 
@@ -293,6 +335,28 @@ struct CanvasView: UIViewRepresentable {
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             onStrokeCountChanged(canvasView.drawing.strokes.count)
             onDrawingChanged(canvasView.drawing)
+            scheduleSave(drawing: canvasView.drawing)
+        }
+
+        /// 800 ms debounced persist. Cancels any in-flight save before
+        /// queueing a new one, so a burst of stroke changes (60 Hz under
+        /// active pencil) collapses to a single write per idle window.
+        /// Persistence path: encode → thumbnail → `NotebookClient.saveDrawing`.
+        private func scheduleSave(drawing: PKDrawing) {
+            guard let client = notebookClient else { return }
+            let id = pageID
+            saveDebounceTask?.cancel()
+            saveDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled else { return }
+                let data = drawing.dataRepresentation()
+                let thumbnail = await ThumbnailRenderer.render(drawing: drawing)
+                do {
+                    try await client.saveDrawing(id, data, thumbnail)
+                } catch {
+                    canvasLog.error("saveDrawing failed for page \(id.uuidString, privacy: .public): \(error.localizedDescription)")
+                }
+            }
         }
 
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {

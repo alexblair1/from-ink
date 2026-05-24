@@ -1,28 +1,42 @@
+import ComposableArchitecture
 import SwiftUI
 
+/// Wiring view for a single open notebook. Reads page snapshots from
+/// `NotebookFeature` and binds the TabView page index to the reducer
+/// state. The X (close) button uses `@Environment(\.dismiss)` — when
+/// SwiftUI tears down the `.fullScreenCover`, the `@Presents` wrapper
+/// in `HomeFeature` clears `state.notebook` automatically.
 struct NotebookScreen: View {
-    let notebookID: UUID
-    let notebookTitle: String
-    @State private var pages: [NotebookPage] = [NotebookPage()]
-    @State private var currentIndex = 0
+    @Bindable var store: StoreOf<NotebookFeature>
+
     @State private var showAddButton = false
     @AppStorage("toolbarSide") private var toolbarSideRaw: String = "left"
     @Environment(\.dismiss) private var dismiss
 
     private var toolbarIsLeft: Bool { toolbarSideRaw != "right" }
 
+    private var pages: [NotePageSnapshot] { store.pages }
+
+    private var currentIndexBinding: Binding<Int> {
+        Binding(
+            get: { store.currentIndex },
+            set: { store.send(.currentIndexChanged($0)) }
+        )
+    }
+
     var body: some View {
         ZStack {
-            TabView(selection: $currentIndex) {
-                ForEach(pages.indices, id: \.self) { i in
+            TabView(selection: currentIndexBinding) {
+                ForEach(Array(pages.enumerated()), id: \.element.id) { (i, page) in
                     CanvasScreen(
-                        notebookID: notebookID,
+                        notebookID: store.notebookID,
+                        pageID: page.id,
                         pageIndex: i,
                         onNearBottom: {
-                            if currentIndex == i { showAddButton = true }
+                            if store.currentIndex == i { showAddButton = true }
                         },
                         onAwayFromBottom: {
-                            if currentIndex == i { showAddButton = false }
+                            if store.currentIndex == i { showAddButton = false }
                         }
                     )
                     .tag(i)
@@ -39,13 +53,15 @@ struct NotebookScreen: View {
                         if !toolbarIsLeft { Spacer() }
 
                         PageNavigator(
-                            current: currentIndex + 1,
+                            current: store.currentIndex + 1,
                             total: pages.count,
                             onPrevious: {
-                                withAnimation { currentIndex = max(0, currentIndex - 1) }
+                                let new = max(0, store.currentIndex - 1)
+                                withAnimation { store.send(.currentIndexChanged(new)) }
                             },
                             onNext: {
-                                withAnimation { currentIndex = min(pages.count - 1, currentIndex + 1) }
+                                let new = min(pages.count - 1, store.currentIndex + 1)
+                                withAnimation { store.send(.currentIndexChanged(new)) }
                             }
                         )
                         .padding(.horizontal, 20)
@@ -63,10 +79,8 @@ struct NotebookScreen: View {
                 VStack {
                     Spacer()
                     Button {
-                        let newPage = NotebookPage()
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                            pages.append(newPage)
-                            currentIndex = pages.count - 1
+                            store.send(.addPageTapped)
                             showAddButton = false
                         }
                     } label: {
@@ -108,12 +122,9 @@ struct NotebookScreen: View {
             }
             .ignoresSafeArea()
         }
-        .onChange(of: currentIndex) { _, _ in
+        .task { store.send(.onAppear) }
+        .onChange(of: store.currentIndex) { _, _ in
             showAddButton = false
         }
     }
-}
-
-#Preview {
-    NotebookScreen(notebookID: UUID(), notebookTitle: "Preview")
 }

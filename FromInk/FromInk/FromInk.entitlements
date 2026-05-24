@@ -6,11 +6,19 @@
 	<string>development</string>
 	<key>com.apple.developer.aps-environment</key>
 	<string>development</string>
+	<!--
+	  iCloud entitlement deferred until Phase 3 (CloudKit sync on). With
+	  the container identifier present but `cloudKitDatabase: .none` in
+	  the ModelConfiguration, SwiftData half-initializes the store —
+	  persistent history tracking + remote-change notifications turn on
+	  but the schema never applies, leaving every query failing with
+	  "no such table: ZNOTEBOOK". Restore both keys when wiring CloudKit:
+	    <key>com.apple.developer.icloud-container-identifiers</key>
+	    <array><string>iCloud.com.fromink.app</string></array>
+	    <key>com.apple.developer.icloud-services</key>
+	    <array><string>CloudKit</string></array>
+	-->
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array/>
-	<key>com.apple.developer.icloud-services</key>
-	<array>
-		<string>CloudKit</string>
-	</array>
 </dict>
 </plist>

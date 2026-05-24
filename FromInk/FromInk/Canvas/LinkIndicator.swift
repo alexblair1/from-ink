@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LinkIndicator: View {
-    let link: CanvasLink
+    let link: NoteLinkSnapshot
     let onTap: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -11,7 +11,7 @@ struct LinkIndicator: View {
             // Dashed selection border around the linked region
             RoundedRectangle(cornerRadius: 3)
                 .stroke(Color.gray.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .frame(width: link.contentRect.width, height: link.contentRect.height)
+                .frame(width: link.rect.width, height: link.rect.height)
 
             // Link badge — tap to open, long press for edit/delete
             Button(action: onTap) {
