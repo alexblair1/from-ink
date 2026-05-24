@@ -26,33 +26,44 @@ extension LocalModelContextDependency {
         )
     }
 
-    /// Unavailable fallback — in-memory container for degraded boot or
-    /// preview contexts.
-    static let unavailable: LocalModelContextDependency = {
+    /// Unavailable fallback — in-memory container for degraded boot.
+    /// Used by `AppDependencyContainer` when the on-disk local store
+    /// fails to open. Must NOT be the `liveValue` — see notes there.
+    static let unavailable: LocalModelContextDependency = inMemory()
+
+    static let preview: LocalModelContextDependency = inMemory()
+
+    static func inMemory() -> LocalModelContextDependency {
+        let schema = Schema([UserPreferencesRecord.self])
         let config = ModelConfiguration(
-            schema: Schema([UserPreferencesRecord.self]),
+            schema: schema,
             isStoredInMemoryOnly: true,
             cloudKitDatabase: .none
         )
-        let container = try! ModelContainer(
-            for: Schema([UserPreferencesRecord.self]),
-            configurations: config
-        )
+        let container = try! ModelContainer(for: schema, configurations: config)
         return LocalModelContextDependency(
             context: { container.mainContext },
             warmup: { }
         )
-    }()
-
-    static let preview: LocalModelContextDependency = .unavailable
+    }
 }
 
 // MARK: - DependencyKey
 
 extension LocalModelContextDependency: DependencyKey {
-    static let liveValue: LocalModelContextDependency = .unavailable
+    /// CRITICAL: same rule as `SyncedModelContextDependency.liveValue` —
+    /// no silent in-memory fallback. Crash loudly if accessed before
+    /// `AppDependencyContainer.install(into:)` runs.
+    static let liveValue: LocalModelContextDependency = LocalModelContextDependency(
+        context: {
+            fatalError("localModelContext.liveValue accessed before install. Call AppDependencyContainer.install(into:) at app launch.")
+        },
+        warmup: {
+            fatalError("localModelContext.liveValue accessed before install. Call AppDependencyContainer.install(into:) at app launch.")
+        }
+    )
 
-    static let testValue: LocalModelContextDependency = .unavailable
+    static var testValue: LocalModelContextDependency { .inMemory() }
 }
 
 // MARK: - DependencyValues

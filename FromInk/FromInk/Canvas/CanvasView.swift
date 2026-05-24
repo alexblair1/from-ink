@@ -4,24 +4,83 @@ import os
 
 private let canvasLog = Logger(subsystem: "com.fromink.app", category: "Canvas")
 
+/// Writes a corrupt `PKDrawing` blob to
+/// `Application Support/CorruptDrawings/{pageID}-{timestamp}.pkdata` so
+/// the original bytes survive even when the next save overwrites
+/// `NotePage.drawingData` with an empty PKDrawing. The corrupt blobs
+/// are deliberately leaked here (no cleanup) — they're rare and a
+/// human investigator running into one will want every byte intact.
+private func preserveCorruptDrawingBlob(_ data: Data, pageID: UUID) {
+    do {
+        let appSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let dir = appSupport.appendingPathComponent("CorruptDrawings", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stamp = Int(Date().timeIntervalSince1970)
+        let url = dir.appendingPathComponent("\(pageID.uuidString)-\(stamp).pkdata")
+        try data.write(to: url, options: .atomic)
+        canvasLog.fault("Preserved corrupt PKDrawing blob at \(url.path, privacy: .public)")
+    } catch {
+        canvasLog.fault("Failed to preserve corrupt PKDrawing blob: \(error.localizedDescription)")
+    }
+}
+
+/// Bridge exposing the `CanvasView.Coordinator`'s `flush()` to the parent
+/// SwiftUI view tree. `CanvasScreen` owns one per page and invokes
+/// `flush()` from `.onDisappear` (page swipe or notebook close) and
+/// scenePhase transitions to background.
+///
+/// Holds a weak reference to the Coordinator so the bridge never extends
+/// the canvas's lifetime. If the Coordinator is gone (page torn down,
+/// view recycled), `flush()` is a no-op.
+@MainActor
+final class CanvasViewBridge {
+    private weak var coordinator: CanvasView.Coordinator?
+
+    init() {}
+
+    func attach(coordinator: CanvasView.Coordinator, canvas: PKCanvasView) {
+        self.coordinator = coordinator
+        coordinator.canvas = canvas
+    }
+
+    /// Awaits the current drawing's persistence. Safe to call from view
+    /// lifecycle hooks; returns immediately if no coordinator is attached.
+    func flush() async {
+        await coordinator?.flush()
+    }
+}
+
 struct CanvasView: UIViewRepresentable {
     @Binding var tool: CanvasTool
     var penSettings: PenSettings = .default
     var template: CanvasTemplate = .none
     /// Fixed page height in points — device-independent so every iPad sees the same writing surface.
     var pageHeight: CGFloat = CanvasView.standardPageHeight
-    /// Persisted page identity. Drives the persistence path: `notebookClient.saveDrawing(pageID, ...)`
-    /// fires 800 ms after the last stroke. Defaults to a fresh UUID for legacy/preview
-    /// callers that aren't backed by a real page yet.
+    /// Persisted page identity. Drives the persistence path:
+    /// `notebookClient.saveDrawing(pageID, ...)` fires on lifecycle events
+    /// (page swipe, notebook close, app background) and on a stroke-count
+    /// safety checkpoint — NOT on every stroke. Defaults to a fresh UUID
+    /// for legacy/preview callers that aren't backed by a real page yet.
     var pageID: UUID = UUID()
     /// Initial ink loaded from `NotePage.drawingData`. Applied to the `PKCanvasView`
     /// once during `makeUIView` BEFORE the delegate is attached, so the load itself
-    /// doesn't kick off the debounce-save loop. `nil` = brand-new page.
+    /// doesn't kick off any save. `nil` = brand-new page.
     var initialDrawingData: Data? = nil
-    /// Persistence client. The Coordinator captures this for the debounced
-    /// `saveDrawing` call — `PKDrawing` itself never crosses the dependency
-    /// surface (the Coordinator does `dataRepresentation()` before calling).
+    /// Persistence client. The Coordinator captures this for `flush()` —
+    /// `PKDrawing` never crosses the dependency surface (the Coordinator
+    /// does `dataRepresentation()` before calling).
     var notebookClient: NotebookClient? = nil
+    /// Bridge object the Coordinator populates with its `flush` closure on
+    /// construction. Parents (CanvasScreen) call `bridge.flush()` from
+    /// lifecycle hooks (`onDisappear`, scenePhase change) to persist the
+    /// current drawing without per-stroke writes. Required for save-on-
+    /// lifecycle semantics; if omitted, only stroke-count safety saves fire.
+    var bridge: CanvasViewBridge? = nil
     var onTwoFingerHoldBegan: () -> Void = {}
     var onTwoFingerHoldEnded: () -> Void = {}
     var onPencilDoubleTap: () -> Void = {}
@@ -63,18 +122,29 @@ struct CanvasView: UIViewRepresentable {
 
         // Load persisted ink BEFORE attaching the delegate so the load
         // itself doesn't trigger `canvasViewDrawingDidChange` → save loop.
-        // If the stored data is corrupt (cross-iOS-version drift), log
-        // and fall back to an empty page — the next save overwrites.
+        // If the stored data is corrupt (cross-iOS-version drift):
+        //   1. Log as a FAULT (highest os_log level — surfaces in
+        //      Console.app and triggers crash reporter telemetry).
+        //   2. Preserve the bad blob to a sidecar before the next save
+        //      overwrites it, so a transient OS decode bug doesn't
+        //      become permanent data loss.
+        //   3. Fall back to empty page — the user can keep drawing.
         if let data = initialDrawingData, !data.isEmpty {
             do {
                 canvas.drawing = try PKDrawing(data: data)
             } catch {
-                canvasLog.error("PKDrawing(data:) failed for page \(pageID.uuidString, privacy: .public): \(error.localizedDescription)")
+                canvasLog.fault("PKDrawing(data:) decode FAILED for page \(pageID.uuidString, privacy: .public); preserving corrupt blob to sidecar: \(error.localizedDescription)")
+                preserveCorruptDrawingBlob(data, pageID: pageID)
             }
         }
         canvas.delegate = context.coordinator
         context.coordinator.pageID = pageID
         context.coordinator.notebookClient = notebookClient
+        // Save-on-lifecycle: parents call `bridge.flush()` from `.onDisappear`
+        // and scenePhase background. The bridge holds a weak ref to the
+        // coordinator's `flush` closure so the coordinator owns its own
+        // lifetime.
+        bridge?.attach(coordinator: context.coordinator, canvas: canvas)
         context.coordinator.currentTool = tool
         context.coordinator.currentPenSettings = penSettings
         context.coordinator.onTwoFingerHoldBegan = onTwoFingerHoldBegan
@@ -212,13 +282,19 @@ struct CanvasView: UIViewRepresentable {
         private var headerSwipeFired = false
 
         // Drawing persistence — owned by the Coordinator per CLAUDE.md
-        // "Canvas + TCA boundary": never route 60Hz stroke events through
-        // TCA. The 800ms debounce matches the OCR debounce in the EDD.
+        // "Canvas + TCA boundary": never route stroke events through TCA.
+        // Save-on-lifecycle: parents call `flush()` from `.onDisappear` and
+        // scenePhase background; safety checkpoint fires every N strokes.
         var pageID: UUID = UUID()
         var notebookClient: NotebookClient?
-        private var saveDebounceTask: Task<Void, Never>?
+        weak var canvas: PKCanvasView?
 
-        deinit { saveDebounceTask?.cancel() }
+        /// Stroke count at last persisted save. `safetySaveStrokeInterval`
+        /// strokes since this checkpoint triggers a non-blocking save.
+        private var lastSavedStrokeCount: Int = 0
+        /// Every Nth stroke triggers a background save so a heavy editing
+        /// session has bounded crash-loss exposure.
+        private static let safetySaveStrokeInterval = 50
 
         private var isNearBottom = false
 
@@ -333,29 +409,55 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - PKCanvasViewDelegate
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            onStrokeCountChanged(canvasView.drawing.strokes.count)
+            let count = canvasView.drawing.strokes.count
+            onStrokeCountChanged(count)
             onDrawingChanged(canvasView.drawing)
-            scheduleSave(drawing: canvasView.drawing)
+            maybeSafetyCheckpoint(drawing: canvasView.drawing, strokeCount: count)
         }
 
-        /// 800 ms debounced persist. Cancels any in-flight save before
-        /// queueing a new one, so a burst of stroke changes (60 Hz under
-        /// active pencil) collapses to a single write per idle window.
-        /// Persistence path: encode → thumbnail → `NotebookClient.saveDrawing`.
-        private func scheduleSave(drawing: PKDrawing) {
-            guard let client = notebookClient else { return }
+        /// Fires a background save when `safetySaveStrokeInterval` strokes
+        /// have accumulated since the last persisted checkpoint. Bounds
+        /// crash-loss exposure during long editing sessions without
+        /// per-stroke writes. The actual lifecycle saves (page swipe,
+        /// notebook close, app background) go through `flush()`.
+        private func maybeSafetyCheckpoint(drawing: PKDrawing, strokeCount: Int) {
+            let delta = strokeCount - lastSavedStrokeCount
+            guard delta >= Coordinator.safetySaveStrokeInterval else { return }
+            lastSavedStrokeCount = strokeCount
             let id = pageID
-            saveDebounceTask?.cancel()
-            saveDebounceTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(800))
-                guard !Task.isCancelled else { return }
+            guard let client = notebookClient else { return }
+            Task { @MainActor in
                 let data = drawing.dataRepresentation()
                 let thumbnail = await ThumbnailRenderer.render(drawing: drawing)
                 do {
                     try await client.saveDrawing(id, data, thumbnail)
                 } catch {
-                    canvasLog.error("saveDrawing failed for page \(id.uuidString, privacy: .public): \(error.localizedDescription)")
+                    canvasLog.error("safety saveDrawing failed for page \(id.uuidString, privacy: .public): \(error.localizedDescription)")
                 }
+            }
+        }
+
+        /// Persists the current `PKCanvasView.drawing` synchronously
+        /// (awaitable). Called from `CanvasViewBridge.flush()` which
+        /// CanvasScreen invokes from `.onDisappear` (page swipe / notebook
+        /// close) and `.onChange(of: scenePhase)` for background.
+        ///
+        /// No-op if nothing has changed since the last save (compares
+        /// stroke count). Safe to call repeatedly.
+        @MainActor
+        func flush() async {
+            guard let canvas, let client = notebookClient else { return }
+            let drawing = canvas.drawing
+            let count = drawing.strokes.count
+            guard count != lastSavedStrokeCount || count > 0 else { return }
+            lastSavedStrokeCount = count
+            let id = pageID
+            let data = drawing.dataRepresentation()
+            let thumbnail = await ThumbnailRenderer.render(drawing: drawing)
+            do {
+                try await client.saveDrawing(id, data, thumbnail)
+            } catch {
+                canvasLog.error("flush saveDrawing failed for page \(id.uuidString, privacy: .public): \(error.localizedDescription)")
             }
         }
 

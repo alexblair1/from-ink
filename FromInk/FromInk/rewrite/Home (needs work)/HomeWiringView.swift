@@ -24,10 +24,17 @@ struct HomeWiringView: View {
     /// will become `max(45, daysSinceEarliestBrief)`.
     private static let wheelRange = 45
 
+    /// Local search text. Kept as `@State` here because the underlying
+    /// reducer (HomeFeature.searchText) is read-only — the binding setter
+    /// was a no-op which produced an unresponsive search field. When the
+    /// search feature lands as a proper child reducer, this moves into
+    /// state and the binding wires to a `searchTextChanged` action.
+    @State private var localSearchText: String = ""
+
     private var filteredNotebooks: [NotebookSnapshot] {
-        guard !store.searchText.isEmpty else { return store.library.notebooks }
+        guard !localSearchText.isEmpty else { return store.library.notebooks }
         return store.library.notebooks.filter {
-            $0.title.localizedCaseInsensitiveContains(store.searchText)
+            $0.title.localizedCaseInsensitiveContains(localSearchText)
         }
     }
 
@@ -39,10 +46,7 @@ struct HomeWiringView: View {
     var body: some View {
         HomeScreenView(
             model: homeScreenModel,
-            searchText: Binding(
-                get: { store.searchText },
-                set: { _ in /* TODO: wire searchText through an action when search is implemented */ }
-            )
+            searchText: $localSearchText
         )
         .onAppear {
             store.send(.appeared)

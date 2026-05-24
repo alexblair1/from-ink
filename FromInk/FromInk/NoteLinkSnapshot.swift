@@ -20,13 +20,16 @@ struct NoteLinkSnapshot: Equatable, Identifiable, Sendable {
 }
 
 /// The resolved destination of a `NoteLink`. The `NotebookClient` accepts
-/// this enum and stores exactly one of the three persisted fields based
-/// on the case; the snapshot returns it as a closed value type for
-/// pattern matching at the view layer.
+/// `.external` / `.page` / `.notebook` for writes; the snapshot may also
+/// return `.broken` when the persisted record has all three destination
+/// fields nil (corruption, cross-device sync race, or a Phase 3 partial
+/// write). View layer should render `.broken` as a visible broken-link
+/// indicator rather than silently routing somewhere.
 enum NoteLinkDestination: Equatable, Sendable, Hashable {
     case external(URL)
     case page(UUID)
     case notebook(UUID)
+    case broken
 }
 
 // MARK: - Conversion from @Model
@@ -45,9 +48,9 @@ extension NoteLinkSnapshot {
 extension NoteLinkDestination {
     /// Resolves the stored fields on a `NoteLink` into the closed enum.
     /// External URL takes priority, then page ref, then notebook ref.
-    /// If none are set, falls back to `.external(URL?)` with an empty
-    /// `about:blank` URL — the persistence layer enforces non-empty
-    /// destinations at write time, so this fallback is degenerate.
+    /// If none are set OR the externalURL fails to parse, returns
+    /// `.broken` so the view layer can surface a clear indicator
+    /// instead of silently sending the user to a fake URL.
     init(model: NoteLink) {
         if let raw = model.externalURL, let url = URL(string: raw) {
             self = .external(url)
@@ -56,7 +59,7 @@ extension NoteLinkDestination {
         } else if let notebookID = model.targetNotebookID {
             self = .notebook(notebookID)
         } else {
-            self = .external(URL(string: "about:blank")!)
+            self = .broken
         }
     }
 }

@@ -6,17 +6,15 @@ import SwiftData
 /// so SwiftData stores them off-row and CloudKit promotes them to `CKAsset`
 /// on sync (avoiding the 1 MB per-record limit).
 ///
-/// **Lifecycle responsibilities (deferred to `NotebookClient`):**
+/// **Lifecycle responsibilities owned by `NotebookClient`:**
 /// - Reindexing siblings after `transferPage(to:at:)`
 /// - Updating `Notebook.modifiedAt` when any page mutates
-/// - Cascade-deleting `headers` / `links` / `history` via the inverse
-///   relationship declared on this class (when Step 3 rewrites `Notebook`,
-///   the parent-side `@Relationship(deleteRule: .cascade, ...)` macro
-///   lands there)
-///
-/// The `notebook` back-pointer here is intentionally plain (no
-/// `@Relationship` macro) — the macro lives on the parent side only to
-/// avoid SwiftData's "duplicate inverse" runtime error.
+/// - Cascade deletion of children (`headers` / `links` / `history`) is
+///   driven by the `@Relationship(deleteRule: .cascade, inverse: ...)`
+///   macros declared on `Notebook.pages` (parent side only). The
+///   `notebook` back-pointer below is intentionally plain — declaring
+///   `@Relationship` on both sides triggers SwiftData's "duplicate
+///   inverse" runtime error.
 @Model final class NotePage {
     var id: UUID = UUID()
     var index: Int = 0

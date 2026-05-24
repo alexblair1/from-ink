@@ -27,9 +27,22 @@ extension SyncedModelContextDependency {
         )
     }
 
-    /// Unavailable fallback — returns an in-memory context.
-    /// Used when storage init failed; the app boots in degraded mode.
-    static let unavailable: SyncedModelContextDependency = {
+    /// Unavailable fallback — returns an in-memory context. Used by
+    /// `AppDependencyContainer` when the on-disk store fails to open
+    /// (the bootstrap stage surfaces a `.failed` phase; views behind the
+    /// failure UI never observe this context). Must NOT be used as the
+    /// `liveValue` — see notes there.
+    static let unavailable: SyncedModelContextDependency = inMemory()
+
+    /// In-memory container for previews — same shape as `unavailable`
+    /// but semantically distinct (preview-only, not a degraded-boot
+    /// signal). Both back onto the same factory.
+    static let preview: SyncedModelContextDependency = inMemory()
+
+    /// Factory for an isolated in-memory container. Each call returns a
+    /// fresh store, so test cases can't leak data into one another via
+    /// shared static instances.
+    static func inMemory() -> SyncedModelContextDependency {
         let schema = Schema(FromInkSchemaV1.models)
         let config = ModelConfiguration(
             schema: schema,
@@ -41,30 +54,31 @@ extension SyncedModelContextDependency {
             context: { container.mainContext },
             warmup: { }
         )
-    }()
-
-    /// In-memory container for previews.
-    static let preview: SyncedModelContextDependency = .unavailable
+    }
 }
 
 // MARK: - DependencyKey
 
 extension SyncedModelContextDependency: DependencyKey {
-    static let liveValue: SyncedModelContextDependency = .unavailable
+    /// CRITICAL: `liveValue` must NOT silently fall back to an in-memory
+    /// store. A missed `container.install(into:)` would cause writes to
+    /// succeed against an orphan container and evaporate at process exit.
+    /// We crash loudly instead — the same safety pattern `NotebookClient`
+    /// uses (throwing stub). The real implementation is wired by
+    /// `AppDependencyContainer` at app launch via `prepareDependencies`.
+    static let liveValue: SyncedModelContextDependency = SyncedModelContextDependency(
+        context: {
+            fatalError("syncedModelContext.liveValue accessed before install. Call AppDependencyContainer.install(into:) at app launch (via prepareDependencies or Store withDependencies).")
+        },
+        warmup: {
+            fatalError("syncedModelContext.liveValue accessed before install. Call AppDependencyContainer.install(into:) at app launch.")
+        }
+    )
 
-    static let testValue: SyncedModelContextDependency = {
-        let schema = Schema(FromInkSchemaV1.models)
-        let config = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: true,
-            cloudKitDatabase: .none
-        )
-        let container = try! ModelContainer(for: schema, configurations: config)
-        return SyncedModelContextDependency(
-            context: { container.mainContext },
-            warmup: { }
-        )
-    }()
+    /// `testValue` returns an in-memory container so TestStore-based
+    /// reducer tests can read/write without explicit dependency setup.
+    /// Each test gets a fresh store via `.inMemory()`.
+    static var testValue: SyncedModelContextDependency { .inMemory() }
 }
 
 // MARK: - DependencyValues

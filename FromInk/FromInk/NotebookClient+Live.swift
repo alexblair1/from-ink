@@ -106,6 +106,7 @@ extension NotebookClient {
                     let nb = Notebook(
                         title: title,
                         createdAt: now,
+                        modifiedAt: now,
                         kind: kind,
                         folder: folder
                     )
@@ -189,6 +190,22 @@ extension NotebookClient {
                         throw NotebookClientError.notebookNotFound(notebookID)
                     }
                     let pageByID = Dictionary(uniqueKeysWithValues: (nb.pages ?? []).map { ($0.id, $0) })
+                    // Validate orderedPageIDs covers exactly the notebook's
+                    // current page set — caller must not pass stale or
+                    // foreign IDs. A mismatch (Phase 3: page deleted on
+                    // another device that synced between fetch + reindex)
+                    // throws rather than silently skipping the unknown ID
+                    // and producing a gap in the index sequence.
+                    let known = Set(pageByID.keys)
+                    let requested = Set(orderedPageIDs)
+                    if known != requested {
+                        if let missing = requested.subtracting(known).first {
+                            throw NotebookClientError.pageNotFound(missing)
+                        }
+                        // Caller omitted some pages — fall through and
+                        // reindex only the ones they sent (allows partial
+                        // reorders if that's the intent).
+                    }
                     for (i, id) in orderedPageIDs.enumerated() {
                         pageByID[id]?.index = i
                     }
@@ -206,6 +223,23 @@ extension NotebookClient {
                         throw NotebookClientError.notebookNotFound(destNotebookID)
                     }
                     let source = page.notebook
+
+                    // Same-notebook "transfer" = reorder. Use reindexPages
+                    // semantics instead — keeps the path simpler and
+                    // avoids the inverse-relationship dance that would
+                    // re-add the page to dest.pages it never left.
+                    if let source, source.id == dest.id {
+                        var pages = (dest.pages ?? []).sorted { $0.index < $1.index }
+                        pages.removeAll { $0.id == page.id }
+                        let clamped = min(max(index, 0), pages.count)
+                        pages.insert(page, at: clamped)
+                        reindex(pages: pages)
+                        dest.modifiedAt = calendarContext.now()
+                        page.modifiedAt = calendarContext.now()
+                        try ctx.save()
+                        return
+                    }
+
                     page.notebook = dest
 
                     // Insert at requested index in destination, then renumber.
@@ -215,7 +249,7 @@ extension NotebookClient {
                     destPages.insert(page, at: clamped)
                     reindex(pages: destPages)
 
-                    if let source, source.id != dest.id {
+                    if let source {
                         reindex(pages: source.pages ?? [])
                         source.modifiedAt = calendarContext.now()
                     }
@@ -363,7 +397,7 @@ extension NotebookClient {
                     }
                     let entry = NoteHistoryEntry(
                         page: page,
-                        kind: draft.kind,
+                        kind: draft.kind.historyKind,
                         timestamp: calendarContext.now()
                     )
                     entry.taskTitle = draft.taskTitle
@@ -559,5 +593,14 @@ private func apply(_ destination: NoteLinkDestination, to link: NoteLink) {
         link.externalURL = nil
         link.targetPageID = nil
         link.targetNotebookID = id
+    case .broken:
+        // Writing a broken destination is a no-op — the persistence
+        // layer never produces it; only reads can yield `.broken` when
+        // the underlying record's three destination fields are all nil.
+        // Treat as a defensive clear so a caller passing it doesn't
+        // silently keep stale data.
+        link.externalURL = nil
+        link.targetPageID = nil
+        link.targetNotebookID = nil
     }
 }

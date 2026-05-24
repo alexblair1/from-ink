@@ -69,20 +69,43 @@ struct NotebookClient: Sendable {
     var removeTagFromNotebook: @Sendable (_ tagID: UUID, _ notebookID: UUID) async throws -> Void
 }
 
-/// Caller-facing draft of a `NoteHistoryEntry`. The `NotebookClient`
-/// translates this into the right `kind`-discriminated flat-field write
-/// at the persistence layer. EventKit-driven history rows (event /
-/// reminder kinds) bypass this draft and are written by a separate
-/// EventKit observation pipeline (out of scope for this PR).
+/// Caller-facing draft of a task-routed `NoteHistoryEntry`. The
+/// `NotebookClient` translates this into the right flat-field write at
+/// the persistence layer.
+///
+/// **Scope: task entries only.** `kind` is restricted to the `task_*`
+/// cases because the draft only carries `task*` fields. EventKit-driven
+/// history rows (`.event` / `.reminder` kinds) carry different fields
+/// (event title + dates + calendar name; reminder title + due date) and
+/// are written by a separate EventKit observation pipeline that doesn't
+/// yet exist; when it lands it'll add `EventDraft` / `ReminderDraft`
+/// types with the right field shape.
 struct NoteHistoryDraft: Sendable, Equatable {
-    var kind: HistoryKind
+    /// Restricted `HistoryKind` covering only the task lifecycle —
+    /// `.event` and `.reminder` are excluded so a degenerate draft
+    /// (e.g., kind=.event but only task fields populated) can't compile.
+    enum TaskKind: Sendable, Equatable {
+        case routed
+        case completed
+        case deleted
+
+        var historyKind: HistoryKind {
+            switch self {
+            case .routed:    return .taskRouted
+            case .completed: return .taskCompleted
+            case .deleted:   return .taskDeleted
+            }
+        }
+    }
+
+    var kind: TaskKind
     var taskTitle: String = ""
     var taskDestination: String = ""           // Integration.rawValue
     var taskDestinationURL: String = ""
     var taskEventKitIdentifier: String?
 
     init(
-        kind: HistoryKind,
+        kind: TaskKind,
         taskTitle: String = "",
         taskDestination: String = "",
         taskDestinationURL: String = "",
@@ -114,7 +137,17 @@ extension NotebookClient: DependencyKey {
     /// Fallback — every closure throws. The real client is constructed
     /// in `AppDependencyContainer` and installed via `install(into:)`.
     static let liveValue: NotebookClient = .throwing
-    static let testValue: NotebookClient = .throwing
+
+    /// In-memory client for TestStore tests. Backed by a fresh
+    /// `SyncedModelContextDependency.inMemory()` container per access,
+    /// so reducer tests get a clean store without explicit setup.
+    /// Overrideable per-test via `withDependencies { $0.notebookClient = ... }`.
+    static var testValue: NotebookClient {
+        .live(
+            modelContext: .inMemory(),
+            calendarContext: .testValue
+        )
+    }
 
     /// Convenience: every closure throws `CancellationError`. Useful as
     /// a base for test customization with `withDependencies { ... }`.

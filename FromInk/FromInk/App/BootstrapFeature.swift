@@ -72,7 +72,16 @@ struct BootstrapFeature: Reducer {
 
                 let effect = nextStage(after: stage, state: state)
 
-                if state.completedStages.contains(.briefSeed) {
+                // Ready only when ALL stages have completed — gating on
+                // `briefSeed` alone is racy because `briefSeed` is fired
+                // after `[authRestore, eventKitPermission, fmWarmup]`
+                // complete, but those run in parallel. If `briefSeed`
+                // happens to resolve before a still-in-flight `authRestore`
+                // (e.g., FM cache hit + slow keychain sweep), declaring
+                // ready early causes `bootCompleted` to fire twice with
+                // different degradation sets.
+                let allDone = Stage.allCases.allSatisfy(state.completedStages.contains)
+                if allDone {
                     state.phase = .ready
                     state.currentStage = nil
                     return .merge(
@@ -169,9 +178,14 @@ struct BootstrapFeature: Reducer {
                     await send(.stageCompleted(.authRestore, []))
                     return
                 }
-                // Sweep tokens expiring within 1 hour.
+                // Sweep tokens expiring within 1 hour. Failures here
+                // (network unreachable mid-sweep) degrade auth but
+                // don't fail the stage — refresh will retry on next
+                // foreground via the background task scheduler.
                 await oauth.sweepExpiring(3600)
-                // Schedule recurring background refresh for Slack's 30-day token.
+                // Schedule recurring background refresh for Slack's 30-day
+                // token. Wrapped because `scheduleNext` can fail if the
+                // BGTaskScheduler is unavailable (e.g., extension context).
                 bgRefresh.scheduleNext()
                 await send(.stageCompleted(.authRestore, degradations))
             } catch {

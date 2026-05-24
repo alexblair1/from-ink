@@ -51,6 +51,14 @@ struct CanvasScreen: View {
     /// so this state is read-only after the initial load.
     @State private var loadedDrawingData: Data? = nil
     @State private var hasLoadedDrawing = false
+
+    /// Bridge to the `CanvasView.Coordinator`. Allows this view to
+    /// persist the live `PKDrawing` from `.onDisappear` (page swipe or
+    /// fullScreenCover dismiss) and on scenePhase background. Replaces
+    /// the prior 800ms per-stroke debounce — strokes only persist on
+    /// lifecycle transitions + a safety checkpoint every 50 strokes.
+    @State private var canvasBridge = CanvasViewBridge()
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("correctHandwriting") private var correctHandwriting = true
     #if DEBUG
     @State private var showDebugSheet = false
@@ -75,8 +83,12 @@ struct CanvasScreen: View {
     /// Transient lasso preview kept by header id — used to display the
     /// pretty handwriting image in the dispatch panel for the rest of
     /// the session. Cleared on next page open since `NoteHeader` doesn't
-    /// persist images.
+    /// persist images. Soft-capped at `maxPreviewImages` entries
+    /// (FIFO eviction) so a marathon session marking many headers doesn't
+    /// retain hundreds of multi-MB UIImages indefinitely.
     @State private var headerPreviewImages: [UUID: UIImage] = [:]
+    @State private var headerPreviewInsertionOrder: [UUID] = []
+    private static let maxPreviewImages = 50
     @State private var canvasScrollTarget: CGPoint? = nil
 
     // Routing
@@ -126,7 +138,7 @@ struct CanvasScreen: View {
         // task fields on `NoteHistoryEntry` carry the same data plus
         // gain a page parent for cascade-delete + per-page filtering.
         let draft = NoteHistoryDraft(
-            kind: .taskRouted,
+            kind: .routed,
             taskTitle: task.title,
             taskDestination: result.integration.rawValue,
             taskDestinationURL: result.destinationURL,
@@ -177,7 +189,7 @@ struct CanvasScreen: View {
                         let snap = try await notebookClient.addHeader(pid, rect, text)
                         await MainActor.run {
                             headers.append(snap)
-                            headerPreviewImages[snap.id] = image
+                            cachePreviewImage(image, for: snap.id)
                         }
                     } catch {
                         // Silent — the header drop just doesn't persist.
@@ -354,6 +366,24 @@ struct CanvasScreen: View {
             toolbarStore.send(.dispatchAcknowledged)
         }
         .task(id: pageID) { await loadPageOnAppear() }
+        .onDisappear {
+            // Save-on-navigate: flush whatever's in the canvas right now.
+            // Fires for page swipe (TabView), fullScreenCover dismiss, and
+            // notebook close. The flush is awaitable but we kick it off in
+            // a Task so view teardown doesn't block — the Coordinator's
+            // weak ref to PKCanvasView is what makes this safe even if
+            // the view is gone before the save completes.
+            let bridge = canvasBridge
+            Task { await bridge.flush() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Save-on-background: any non-active scene phase means the
+            // user has navigated away from the app — persist before iOS
+            // potentially suspends the process.
+            guard phase != .active else { return }
+            let bridge = canvasBridge
+            Task { await bridge.flush() }
+        }
     }
 
     /// Loads persisted ink + headers + links + history for the page on
@@ -370,6 +400,7 @@ struct CanvasScreen: View {
                 headers = detail.headers
                 links = detail.links
                 headerPreviewImages = [:]
+                headerPreviewInsertionOrder = []
             }
         } catch {
             // Silent — empty page renders fine; next stroke save writes data.
@@ -456,6 +487,7 @@ struct CanvasScreen: View {
             pageID: pageID,
             initialDrawingData: loadedDrawingData,
             notebookClient: notebookClient,
+            bridge: canvasBridge,
             onTwoFingerHoldBegan: { toolbarStore.send(.twoFingerHoldBegan) },
             onTwoFingerHoldEnded: { toolbarStore.send(.twoFingerHoldEnded) },
             onPencilDoubleTap: { toolbarStore.send(.pencilDoubleTapped) },
@@ -629,6 +661,22 @@ struct CanvasScreen: View {
         pendingLinkOCRText = link.ocrText
         isRecognizingLink = false
         activeSheet = .link
+    }
+
+    /// FIFO cache insert with soft cap. When the cache is full we drop
+    /// the oldest entry — the dispatch panel for that header just shows
+    /// no image (OCR text still renders). User-visible degradation is
+    /// only "the very oldest of many lasso previews stops showing its
+    /// pretty preview"; everything else still works.
+    private func cachePreviewImage(_ image: UIImage, for id: UUID) {
+        if headerPreviewImages[id] == nil {
+            headerPreviewInsertionOrder.append(id)
+        }
+        headerPreviewImages[id] = image
+        while headerPreviewInsertionOrder.count > Self.maxPreviewImages {
+            let evictID = headerPreviewInsertionOrder.removeFirst()
+            headerPreviewImages.removeValue(forKey: evictID)
+        }
     }
 
     /// Removes links whose ink has been fully erased. Synchronous local

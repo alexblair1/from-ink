@@ -13,18 +13,17 @@ struct FromInkApp: App {
     init() {
         let container = AppDependencyContainer.live()
         self.container = container
-        // Install dependencies process-wide so `@Dependency(...)` accesses
-        // from SwiftUI views (not just TCA reducers) resolve to the live
-        // implementations. Without this, raw views fall back to each
-        // dependency's `liveValue` — and our `NotebookClient.liveValue`
-        // is a safety stub that throws on every call.
+        // Single install path: `prepareDependencies` sets the process-wide
+        // registry, and TCA's Store inherits from it. Calling
+        // `withDependencies` on the Store as well would create two
+        // parallel install paths that must stay in sync — drift between
+        // them is a class of bug we'd rather not have. SwiftUI views
+        // using `@Dependency(...)` also resolve through `prepareDependencies`.
         prepareDependencies { deps in
             container.install(into: &deps)
         }
         self.store = Store(initialState: AppFeature.State()) {
             AppFeature()
-        } withDependencies: { deps in
-            container.install(into: &deps)
         }
         // Register background tasks before app finishes launching.
         container.backgroundTokenRefresh.register()

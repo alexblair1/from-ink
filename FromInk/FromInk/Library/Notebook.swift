@@ -54,6 +54,7 @@ import SwiftData
         id: UUID = UUID(),
         title: String = "Untitled",
         createdAt: Date = Date(),
+        modifiedAt: Date? = nil,
         kind: DocumentKind = .notebook,
         coverColorHex: String = "#FAFAF8",
         folder: Folder? = nil,
@@ -62,7 +63,11 @@ import SwiftData
         self.id = id
         self.title = title
         self.createdAt = createdAt
-        self.modifiedAt = createdAt
+        // Default `modifiedAt` to `createdAt` so a freshly minted notebook
+        // reads as "modified now" without callers having to supply both.
+        // Backfill / import flows that need a distinct value (e.g.,
+        // restoring a notebook last edited yesterday) pass it explicitly.
+        self.modifiedAt = modifiedAt ?? createdAt
         self.documentKindRaw = kind.rawValue
         self.coverColorHex = coverColorHex
         self.folder = folder
