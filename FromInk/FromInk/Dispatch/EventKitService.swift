@@ -40,6 +40,23 @@ struct EventKitService: Sendable {
     /// brief-generation semantics (all overdue + due-today regardless of
     /// the day being viewed).
     var fetchReminders: @Sendable (Date) async throws -> [ReminderSnapshot]
+
+    // MARK: - Authorization
+
+    /// Synchronous read of the current calendar event authorization.
+    /// Used by the Permissions settings surface to render row state and
+    /// by call-site guards (we already check this inside `fetchEvents`).
+    var eventAuthStatus: @Sendable () -> PermissionAuthStatus
+    /// Synchronous read of the current reminder authorization.
+    var reminderAuthStatus: @Sendable () -> PermissionAuthStatus
+
+    /// Prompts the user for full calendar access via the iOS 17+ API.
+    /// Resolves to the post-prompt status (which may still be `.denied`
+    /// if the user declined). Idempotent: if access is already granted,
+    /// returns immediately without re-prompting.
+    var requestEventAccess: @Sendable () async -> PermissionAuthStatus
+    /// Prompts the user for full reminder access.
+    var requestReminderAccess: @Sendable () async -> PermissionAuthStatus
 }
 
 extension EventKitService: DependencyKey {
@@ -126,6 +143,13 @@ extension EventKitService: DependencyKey {
             return (start, end)
         }
 
+        @Sendable func eventStatus() -> PermissionAuthStatus {
+            PermissionAuthStatus(EKEventStore.authorizationStatus(for: .event))
+        }
+        @Sendable func reminderStatus() -> PermissionAuthStatus {
+            PermissionAuthStatus(EKEventStore.authorizationStatus(for: .reminder))
+        }
+
         return .init(
             fetchTodayEvents: {
                 guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
@@ -172,6 +196,25 @@ extension EventKitService: DependencyKey {
                     withDueDateStarting: today ? nil : start,
                     ending: end
                 )
+            },
+            eventAuthStatus: { eventStatus() },
+            reminderAuthStatus: { reminderStatus() },
+            requestEventAccess: {
+                // Idempotent — if already granted, skip the prompt so
+                // we don't surface a system dialog the user has already
+                // resolved.
+                if EKEventStore.authorizationStatus(for: .event) == .fullAccess {
+                    return .fullAccess
+                }
+                _ = try? await store.requestFullAccessToEvents()
+                return eventStatus()
+            },
+            requestReminderAccess: {
+                if EKEventStore.authorizationStatus(for: .reminder) == .fullAccess {
+                    return .fullAccess
+                }
+                _ = try? await store.requestFullAccessToReminders()
+                return reminderStatus()
             }
         )
     }
@@ -194,7 +237,11 @@ extension EventKitService: DependencyKey {
             fetchTodayEvents: { [canned] },
             fetchDueReminders: { [cannedReminder] },
             fetchEvents: { _ in [canned] },
-            fetchReminders: { _ in [cannedReminder] }
+            fetchReminders: { _ in [cannedReminder] },
+            eventAuthStatus: { .fullAccess },
+            reminderAuthStatus: { .fullAccess },
+            requestEventAccess: { .fullAccess },
+            requestReminderAccess: { .fullAccess }
         )
     }
 }

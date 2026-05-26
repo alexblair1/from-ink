@@ -36,17 +36,24 @@ struct SettingsFeature: Reducer {
         /// hold mock seed data across destination switches. The view
         /// only renders it when `destination == .integrations`.
         var integrations: IntegrationsFeature.State
+        /// Permissions child state — same always-present pattern as
+        /// `integrations`. View renders only when the destination is
+        /// `.permissions`, but the reducer keeps state warm so a
+        /// re-push doesn't trigger a re-prompt.
+        var permissions: PermissionsFeature.State
 
         init(
             destination: SettingsDestination? = nil,
             appearance: AppearanceSetting = .system,
             handedness: Handedness = .right,
-            integrations: IntegrationsFeature.State = IntegrationsFeature.State()
+            integrations: IntegrationsFeature.State = IntegrationsFeature.State(),
+            permissions: PermissionsFeature.State = PermissionsFeature.State()
         ) {
             self.destination = destination
             self.appearance = appearance
             self.handedness = handedness
             self.integrations = integrations
+            self.permissions = permissions
         }
     }
 
@@ -65,6 +72,8 @@ struct SettingsFeature: Reducer {
         /// handles destination navigation; the child handles its
         /// own state machine.
         case integrations(IntegrationsFeature.Action)
+        /// Permissions child actions — same Scope pattern.
+        case permissions(PermissionsFeature.Action)
     }
 
     @Dependency(\.userPreferences) var preferences
@@ -72,6 +81,9 @@ struct SettingsFeature: Reducer {
     var body: some Reducer<State, Action> {
         Scope(state: \.integrations, action: \.integrations) {
             IntegrationsFeature()
+        }
+        Scope(state: \.permissions, action: \.permissions) {
+            PermissionsFeature()
         }
         Reduce { state, action in
             switch action {
@@ -118,6 +130,11 @@ struct SettingsFeature: Reducer {
                 // Child actions are fully handled by the IntegrationsFeature
                 // reducer scoped above. Parent passes through; no
                 // parent-side interception needed for V1.
+                return .none
+
+            case .permissions:
+                // Permissions child actions handled by the scoped
+                // PermissionsFeature reducer above.
                 return .none
             }
         }

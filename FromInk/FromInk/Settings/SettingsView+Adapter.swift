@@ -148,10 +148,55 @@ extension SettingsView.Model {
                 header: integrationsHeader
             ),
             permissions: PermissionsDetailView.Model(
-                header: permissionsHeader,
-                emptyTitle: AppStrings.Settings.permissionsEmptyTitle,
-                emptyBody: AppStrings.Settings.permissionsEmptyBody
+                store: store.scope(state: \.permissions, action: \.permissions),
+                header: permissionsHeader
             )
         )
+    }
+}
+
+// MARK: - Permissions adapter
+
+extension PermissionsDetailView.Model {
+    /// Bridges `PermissionsFeature` state into the stateless detail view.
+    /// Each row carries its current status label/color, a CTA hint, and
+    /// a tap closure routed to the right child action. `onAppear` and
+    /// `onSceneBecameActive` keep the rows live across navigation and
+    /// system-Settings round-trips.
+    init(
+        store: StoreOf<PermissionsFeature>,
+        header: SettingsDetailHeader.Model,
+        ds: DesignSystem = .standard
+    ) {
+        self.header = header
+
+        let calendar = store.calendar
+        let reminders = store.reminders
+
+        self.rows = [
+            PermissionsDetailView.Row(
+                id: "calendar",
+                icon: "calendar",
+                title: AppStrings.Settings.permissionCalendar,
+                body: AppStrings.Settings.permissionCalendarDescription,
+                statusLabel: calendar.statusLabel,
+                statusColor: calendar.statusColor(ds: ds),
+                cta: calendar.ctaLabel,
+                onTap: { store.send(.calendarRowTapped) }
+            ),
+            PermissionsDetailView.Row(
+                id: "reminders",
+                icon: "checklist",
+                title: AppStrings.Settings.permissionReminders,
+                body: AppStrings.Settings.permissionRemindersDescription,
+                statusLabel: reminders.statusLabel,
+                statusColor: reminders.statusColor(ds: ds),
+                cta: reminders.ctaLabel,
+                onTap: { store.send(.remindersRowTapped) }
+            ),
+        ]
+
+        self.onAppear = { store.send(.appeared) }
+        self.onSceneBecameActive = { store.send(.sceneBecameActive) }
     }
 }
