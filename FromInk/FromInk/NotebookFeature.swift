@@ -25,6 +25,16 @@ struct NotebookFeature: Reducer {
         var currentIndex: Int = 0
         var hasLoadedOnce: Bool = false
 
+        /// Toolbar lives at the notebook level (not per-page) so tool
+        /// selection persists across page swipes and `ToolbarWiringView`
+        /// renders once as a sibling of the `TabView`.
+        var toolbar: ToolbarFeature.State = .init()
+
+        /// Notebook-wide template selection. Owned here so the template
+        /// picker panel (rendered at notebook level alongside the toolbar)
+        /// can write it and every page reads the same value.
+        var activeTemplate: CanvasTemplate = .none
+
         init(notebookID: UUID, notebookTitle: String) {
             self.notebookID = notebookID
             self.notebookTitle = notebookTitle
@@ -39,17 +49,24 @@ struct NotebookFeature: Reducer {
         case addPageTapped
         case pageCreated(NotePageSnapshot)
         case currentIndexChanged(Int)
+        case templateSelected(CanvasTemplate)
+        case toolbar(ToolbarFeature.Action)
     }
 
     @Dependency(\.notebookClient) var notebookClient
 
     var body: some Reducer<State, Action> {
+        Scope(state: \.toolbar, action: \.toolbar) {
+            ToolbarFeature()
+        }
+
         Reduce { state, action in
             switch action {
             case .onAppear:
                 return .merge(
                     refresh(notebookID: state.notebookID),
-                    observeStoreChanges()
+                    observeStoreChanges(),
+                    .send(.toolbar(.onAppear))
                 )
 
             case .storeDidChange:
@@ -94,6 +111,19 @@ struct NotebookFeature: Reducer {
 
             case .currentIndexChanged(let idx):
                 state.currentIndex = idx
+                return .none
+
+            case .templateSelected(let template):
+                state.activeTemplate = template
+                state.toolbar.openPanel = nil
+                return .none
+
+            case .toolbar(.templateSelected(let template)):
+                // Toolbar's forwarded action; promote to the
+                // notebook-level template change above.
+                return .send(.templateSelected(template))
+
+            case .toolbar:
                 return .none
             }
         }

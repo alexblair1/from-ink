@@ -43,7 +43,63 @@ final class ToolbarFeatureTests: XCTestCase {
 
         await store.send(.toolTapped(.pen)) {
             $0.openPanel = .toolCustomization(.pen)
+            $0.customizingSettings = .default
         }
+    }
+
+    func test_toolTapped_activeWithCustomization_seedsCustomizingFromSavedSettings() async {
+        // When the panel opens for a tool that has saved settings, the
+        // reducer pre-populates `customizingSettings` from the stored
+        // entry — the view never has to fall back to `.default` itself.
+        let saved = PenSettings(penType: .fineliner, thicknessIndex: 3)
+        let store = TestStore(
+            initialState: ToolbarFeature.State(
+                activeToolID: .pen,
+                toolSettings: [ToolSettingsEntry(id: .pen, settings: saved)]
+            ),
+            reducer: { ToolbarFeature() }
+        )
+
+        await store.send(.toolTapped(.pen)) {
+            $0.openPanel = .toolCustomization(.pen)
+            $0.customizingSettings = saved
+        }
+    }
+
+    func test_toolSettingsChanged_whilePanelOpen_updatesCustomizingSettings() async {
+        let next = PenSettings(penType: .fineliner, thicknessIndex: 4)
+        let store = TestStore(
+            initialState: ToolbarFeature.State(
+                activeToolID: .pen,
+                openPanel: .toolCustomization(.pen),
+                customizingSettings: .default
+            ),
+            reducer: { ToolbarFeature() },
+            withDependencies: {
+                $0.userPreferences = UserPreferences(
+                    loadToolSettings: { [] },
+                    saveToolSettings: { _, _ in },
+                    loadToolbarSide: { .left },
+                    saveToolbarSide: { _ in },
+                    loadActiveToolID: { ToolID(rawValue: "pen") },
+                    saveActiveToolID: { _ in },
+                    loadTemplate: { .none },
+                    saveTemplate: { _ in },
+                    loadAppearance: { .system },
+                    saveAppearance: { _ in },
+                    loadHandedness: { .right },
+                    saveHandedness: { _ in }
+                )
+            }
+        )
+
+        await store.send(.toolSettingsChanged(.pen, next)) {
+            $0.toolSettings[id: .pen] = ToolSettingsEntry(id: .pen, settings: next)
+            $0.activeSettings = next
+            $0.customizingSettings = next
+        }
+
+        await store.finish()
     }
 
     func test_toolTapped_activeWithCustomization_closesPanel() async {

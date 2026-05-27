@@ -25,15 +25,22 @@ struct CanvasScreen: View {
     /// Display-only sibling index within the parent notebook. Used by the
     /// page navigator chrome; persistence is keyed off `pageID`.
     var pageIndex: Int = 0
+    /// Shared toolbar store, owned by the parent `NotebookScreen` so the
+    /// toolbar stays pinned across page swipes and tool selection persists
+    /// across pages.
+    var toolbarStore: StoreOf<ToolbarFeature>
+    /// Notebook-wide template selection, owned by `NotebookScreen`. Read
+    /// here; written from the template picker panel at notebook level.
+    var activeTemplate: CanvasTemplate = .none
+    /// True for the page the TabView is currently showing. Used to guard
+    /// observers of shared toolbar state so adjacent preloaded pages
+    /// don't multi-fire dispatch presentations.
+    var isCurrentPage: Bool = true
     var onNearBottom: () -> Void = {}
     var onAwayFromBottom: () -> Void = {}
 
     @Dependency(\.notebookClient) private var notebookClient
 
-    // TCA stores
-    @State private var toolbarStore = Store(initialState: ToolbarFeature.State()) {
-        ToolbarFeature()
-    }
     @State private var dispatchPanelStore = Store(
         initialState: DispatchPanelFeature.State()
     ) {
@@ -42,7 +49,6 @@ struct CanvasScreen: View {
 
     // Legacy state still needed until full CanvasFeature migration
     @State private var currentDrawing = PKDrawing()
-    @State private var activeTemplate: CanvasTemplate = .none
     @State private var strokeCount: Int = 0
 
     /// Loaded once from `NotePage.drawingData` on `.task` and passed to
@@ -246,30 +252,6 @@ struct CanvasScreen: View {
                 headerIndicators
                 linkIndicators
 
-                ToolbarWiringView(
-                    store: toolbarStore,
-                    zones: ToolbarZoneConfig.standard(isCompact: sizeClass == .compact)
-                )
-                    .frame(maxHeight: .infinity, alignment: .center)
-                    .frame(
-                        maxWidth: .infinity,
-                        alignment: toolbarSide == .left ? .leading : .trailing
-                    )
-
-                // Panel presentation — driven by toolbarStore.openPanel
-                if toolbarStore.openPanel != nil {
-                    Color.clear
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            toolbarStore.send(.panelDismissed)
-                        }
-                }
-
-                if let panel = toolbarStore.openPanel {
-                    toolbarPanel(panel)
-                }
-
                 if showLassoMenu {
                     // Selection highlight — stays visible while menu is up
                     RoundedRectangle(cornerRadius: 4)
@@ -296,9 +278,6 @@ struct CanvasScreen: View {
                 }
 
                 dispatchSidePanelLayer
-            }
-            .onAppear {
-                toolbarStore.send(.onAppear)
             }
             .onChange(of: currentDrawing.strokes.count) { _, _ in
                 pruneErasedLinks()
@@ -360,7 +339,11 @@ struct CanvasScreen: View {
             dispatchPanelStore.send(.dismissed)
         }
         .onChange(of: toolbarStore.isDispatchRequested) { _, requested in
-            guard requested else { return }
+            // Toolbar store is shared across pages. Only the currently
+            // visible page should react and acknowledge, otherwise
+            // preloaded adjacent CanvasScreens would all present their
+            // dispatch panel.
+            guard requested, isCurrentPage else { return }
             syncDispatchPanelData()
             dispatchPanelStore.send(.presented)
             toolbarStore.send(.dispatchAcknowledged)
@@ -589,45 +572,6 @@ struct CanvasScreen: View {
     }
 
     @ViewBuilder
-    private func toolbarPanel(_ panel: PanelKind) -> some View {
-        let tw = LayoutTokens.standard.toolbarWidth
-        let panelGap = LayoutTokens.standard.toolbarPanelGap
-
-        Group {
-            switch panel {
-            case .toolCustomization(let toolID):
-                let tool: CanvasTool = CanvasTool(rawValue: toolID.rawValue) ?? .pen
-                PenCustomizationPanel(
-                    tool: tool,
-                    settings: Binding(
-                        get: { toolbarStore.toolSettings[id: toolID]?.settings ?? .default },
-                        set: { toolbarStore.send(.toolSettingsChanged(toolID, $0)) }
-                    ),
-                    onDismiss: { toolbarStore.send(.panelDismissed) }
-                )
-
-            case .templatePicker:
-                TemplatePickerPanel(
-                    template: Binding(
-                        get: { activeTemplate },
-                        set: { activeTemplate = $0; toolbarStore.send(.panelDismissed) }
-                    ),
-                    onDismiss: { toolbarStore.send(.panelDismissed) }
-                )
-
-            case .canvasSettings:
-                CanvasSettingsPanel(
-                    onDismiss: { toolbarStore.send(.panelDismissed) }
-                )
-            }
-        }
-        .frame(maxHeight: .infinity, alignment: .center)
-        .padding(.leading, toolbarSide == .left ? tw + panelGap : 0)
-        .padding(.trailing, toolbarSide == .right ? tw + panelGap : 0)
-        .frame(maxWidth: .infinity, alignment: toolbarSide == .left ? .leading : .trailing)
-    }
-
-    @ViewBuilder
     private var headerIndicators: some View {
         ForEach(headers) { header in
             let viewX = header.rect.midX - scrollOffset.x
@@ -793,5 +737,9 @@ private extension DispatchRoutedItem {
 }
 
 #Preview {
-    CanvasScreen()
+    CanvasScreen(
+        toolbarStore: Store(initialState: ToolbarFeature.State()) {
+            ToolbarFeature()
+        }
+    )
 }

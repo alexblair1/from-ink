@@ -53,7 +53,11 @@ final class DailyBriefClientTests: XCTestCase {
                 return reminders
             },
             fetchEvents: { _ in events },
-            fetchReminders: { _ in reminders }
+            fetchReminders: { _ in reminders },
+            eventAuthStatus: { .fullAccess },
+            reminderAuthStatus: { .fullAccess },
+            requestEventAccess: { .fullAccess },
+            requestReminderAccess: { .fullAccess }
         )
     }
 
@@ -418,7 +422,11 @@ final class DailyBriefClientTests: XCTestCase {
                 return []
             },
             fetchEvents: { _ in [] },
-            fetchReminders: { _ in [] }
+            fetchReminders: { _ in [] },
+            eventAuthStatus: { .fullAccess },
+            reminderAuthStatus: { .fullAccess },
+            requestEventAccess: { .fullAccess },
+            requestReminderAccess: { .fullAccess }
         )
 
         let client = DailyBriefClient.live(

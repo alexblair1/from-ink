@@ -266,6 +266,44 @@ private func _fetchOrGenerate(
     let todayKey = cal.dayKey(now)
     log.info("fetchOrGenerate: dayKey=\(todayKey)")
 
+    // Permission short-circuit. When neither calendar nor reminders is
+    // authorized there's nothing to generate from. Skipping here avoids
+    // (a) hitting FM with empty data (which hallucinates), and (b)
+    // thrashing the cache predicate on every call (which would force
+    // an "empty cached + FM available = regenerate" loop). If there's
+    // a previously-cached record (possibly with hallucinated content
+    // from before this fix or from a prior permissions-granted state),
+    // we wipe its content to empty so the view hides cleanly — the
+    // brief view shows nothing on empty focus.
+    let canFetchEvents = eventKit.eventAuthStatus() == .fullAccess
+    let canFetchReminders = eventKit.reminderAuthStatus() == .fullAccess
+    if !canFetchEvents && !canFetchReminders {
+        log.info("fetchOrGenerate: neither calendar nor reminders authorized — short-circuit")
+        if let existing = try? loadRecord(forDayKey: todayKey, context: context) {
+            if !existing.focusText.isEmpty || !existing.suggestionText.isEmpty {
+                existing.focusText = ""
+                existing.suggestionText = ""
+                existing.eventCountAtGeneration = 0
+                existing.reminderCountAtGeneration = 0
+                try? context.save()
+            }
+            return DailyBriefSnapshot(record: existing, wasPersisted: true)
+        }
+        // No cached record — runGeneration's gate returns empty, so
+        // generateNew persists an empty record. Subsequent calls take
+        // the cached-record branch above and don't re-enter generation.
+        return try await generateNew(
+            dayKey: todayKey,
+            now: now,
+            eventCount: 0,
+            reminderCount: 0,
+            context: context,
+            eventKit: eventKit,
+            foundationModels: foundationModels,
+            cal: cal
+        )
+    }
+
     do {
         if let existing = try loadRecord(forDayKey: todayKey, context: context) {
             log.info("fetchOrGenerate: found cached — events=\(existing.eventCountAtGeneration), reminders=\(existing.reminderCountAtGeneration), focusEmpty=\(existing.focusText.isEmpty)")
@@ -500,9 +538,30 @@ private func runGeneration(
     focusText: String,
     suggestionText: String
 ) {
-    log.info("runGeneration: fetching EventKit")
-    let events = try await eventKit.fetchTodayEvents()
-    let reminders = try await eventKit.fetchDueReminders()
+    // Permission gate (must come before fetching). `EventKitService`
+    // returns `[]` from `fetchTodayEvents` / `fetchDueReminders` when
+    // authorization is not `.fullAccess` — which is indistinguishable
+    // from a real empty day at the call site. Passing that data to
+    // Foundation Models causes the model to hallucinate plausible-
+    // sounding placeholder items ("meeting with client A", "report
+    // due") to fill the gap rather than write about nothing.
+    //
+    // Each source is gated independently so a user who granted
+    // calendar but not reminders still gets a calendar-only brief,
+    // and vice versa. Only when BOTH are denied do we skip the FM
+    // call entirely — the view already hides the editor's note on
+    // empty focus, so this routes the denied state to that path.
+    let canFetchEvents = eventKit.eventAuthStatus() == .fullAccess
+    let canFetchReminders = eventKit.reminderAuthStatus() == .fullAccess
+
+    guard canFetchEvents || canFetchReminders else {
+        log.info("runGeneration: neither calendar nor reminders authorized — skipping FM, brief hidden")
+        return ("", "")
+    }
+
+    log.info("runGeneration: fetching EventKit (events=\(canFetchEvents), reminders=\(canFetchReminders))")
+    let events = canFetchEvents ? (try await eventKit.fetchTodayEvents()) : []
+    let reminders = canFetchReminders ? (try await eventKit.fetchDueReminders()) : []
     log.info("runGeneration: EventKit — \(events.count) events, \(reminders.count) reminders")
 
     var focusText = ""
@@ -538,7 +597,13 @@ private func runGeneration(
         return (focusText, suggestionText)
     }
 
-    let prompt = buildPrompt(events: events, reminders: reminders, cal: cal)
+    let prompt = buildPrompt(
+        events: events,
+        reminders: reminders,
+        includeCalendarSection: canFetchEvents,
+        includeRemindersSection: canFetchReminders,
+        cal: cal
+    )
     if let brief = await runFMWithRetry(prompt: prompt, foundationModels: foundationModels) {
         focusText = brief.focus
         suggestionText = brief.suggestion
@@ -758,9 +823,24 @@ private func reminderBadge(_ dueDate: Date, now: Date) -> String {
 
 // MARK: - Prompt builder
 
+/// Builds the FM prompt. Goal: a short, human daily note that feels
+/// like the app knows the user from their actual calendar and
+/// reminders. Structure is three parts:
+///
+///   1. Optional language directive (non-English locales only).
+///   2. Setup + data (today's date and whatever sections the user
+///      has authorized).
+///   3. A single closing instruction with the format, voice, and
+///      no-invention rule.
+///
+/// Sections are omitted entirely when the user hasn't granted that
+/// source — denied data is not represented in the prompt at all so
+/// the model doesn't confuse "no permission" with "real empty day."
 private func buildPrompt(
     events: [CalendarEventSnapshot],
     reminders: [ReminderSnapshot],
+    includeCalendarSection: Bool,
+    includeRemindersSection: Bool,
     cal: CalendarContext
 ) -> String {
     let now = cal.now()
@@ -771,54 +851,45 @@ private func buildPrompt(
     var parts: [String] = []
 
     // Language directive — placed first (primacy effect) so the model
-    // locks onto the target output language before reading the
-    // English instruction body. Skipped for English locales since
-    // telling an English-locale model to "respond in English" when
-    // the prompt is already in English just adds noise.
-    //
-    // The language name is rendered in English (e.g., "French",
-    // "Japanese") because that's the most reliable form for the
-    // model's instruction-following — verified empirically against
-    // Apple's on-device Foundation Models with a Japanese
-    // hardcoded directive. See git history for the experiment.
+    // locks onto the target output language before reading the English
+    // instruction body. Skipped for English locales since telling an
+    // English-locale model to "respond in English" when the prompt is
+    // already in English just adds noise. Language name is rendered
+    // in English (e.g., "French", "Japanese") — most reliable form
+    // for the model's instruction-following.
     let langCode = cal.userLocale().language.languageCode?.identifier ?? "en"
     if langCode != "en" {
-        let englishLanguageName = englishLanguageName(for: cal.userLocale())
-        parts.append("Respond ONLY in \(englishLanguageName). Even though these instructions are in English, your entire output must be in \(englishLanguageName).")
+        let name = englishLanguageName(for: cal.userLocale())
+        parts.append("Respond ONLY in \(name). Even though these instructions are in English, your entire output must be in \(name).")
     }
 
-    parts.append("Generate a concise daily brief. Today is \(todayFormatted).")
-    // Surgical voice fix — keeps the prompt short so the FM
-    // doesn't over-constrain itself, but pins the failure mode
-    // we saw ("I'll head to PT" instead of "you'll head to PT").
-    parts.append("Write in second person ('you have', 'you'll', 'your'). Never first person.")
-    // Surgical app-rec fix — From Ink already handles tasks /
-    // calendar / reminders, so recommending another app
-    // contradicts the product. Stated once, terse.
-    parts.append("Do not recommend other apps, task managers, or productivity tools.")
-    // Surgical title-interpretation fix — past FM took 'stand-up'
-    // (a meeting) and wrote 'stand-up performances'.
-    parts.append("Event and reminder titles are literal calendar names — do not reinterpret them.")
-    if events.isEmpty {
-        parts.append("Calendar: No events today.")
-    } else {
-        let list = events.map {
-            "- \($0.startDate.formatted(.dateTime.hour().minute())): \($0.title)"
-        }.joined(separator: "\n")
-        parts.append("Calendar events:\n\(list)")
+    parts.append("You're writing a short personal daily note for the user, grounded in their real calendar and reminders. Today is \(todayFormatted).")
+
+    if includeCalendarSection {
+        if events.isEmpty {
+            parts.append("Calendar today: nothing scheduled.")
+        } else {
+            let list = events.map {
+                "- \($0.startDate.formatted(.dateTime.hour().minute())): \($0.title)"
+            }.joined(separator: "\n")
+            parts.append("Calendar today:\n\(list)")
+        }
     }
-    if !reminders.isEmpty {
-        let list = reminders.prefix(5).map { "- \($0.title)" }.joined(separator: "\n")
-        parts.append("Due reminders:\n\(list)")
+    if includeRemindersSection {
+        if reminders.isEmpty {
+            parts.append("Reminders due: none.")
+        } else {
+            let list = reminders.prefix(5).map { "- \($0.title)" }.joined(separator: "\n")
+            parts.append("Reminders due:\n\(list)")
+        }
     }
-    parts.append(
-        "Write 'focus' as a 2-3 sentence paragraph in plain English. "
-        + "Name events by title and time, mention any overdue reminders "
-        + "by name, and close with what matters most. No bullet points "
-        + "or headers. Suggestion: one short actionable tip drawn from "
-        + "the events or reminders above, or an empty string if nothing "
-        + "specific applies."
-    )
+
+    parts.append("""
+    Write the 'focus' as 2–3 sentences in second person ("you", "your"), addressed to the user. Reference real events by title (and time) and real reminders by name. Never invent items that aren't listed above; if nothing is listed, the focus must be an empty string. Speak naturally — like a thoughtful assistant who knows what's on the user's plate today.
+
+    Write the 'suggestion' as one short, specific tip drawn directly from the listed items, or an empty string if nothing specific applies.
+    """)
+
     return parts.joined(separator: "\n\n")
 }
 

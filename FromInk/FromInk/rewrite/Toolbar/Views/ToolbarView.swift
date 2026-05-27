@@ -1,36 +1,62 @@
 import SwiftUI
 
 /// Feature view for the toolbar. No TCA imports.
-/// Renders zones from a Model built by the wiring layer.
 ///
+/// The rail stretches edge-to-edge vertically. Zones tagged `pinnedTop`
+/// hug the top, `pinnedBottom` zones hug the bottom, and `flexible`
+/// zones live in a scrollable middle so the writing tools stay reachable
+/// even on a short iPhone screen. On tall iPads where everything fits,
+/// `.scrollBounceBehavior(.basedOnSize)` suppresses rubber-banding.
 struct ToolbarView: View {
     let model: Model
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(model.zones) { zone in
-                if zone.id != model.zones.first?.id && !zone.items.isEmpty {
-                    HairlineRule()
-                }
+            zonesGroup(model.pinnedTopZones)
 
-                ForEach(zone.items) { item in
-                    switch item {
-                    case .toolButton(let buttonModel):
-                        ToolButtonView(model: buttonModel)
-                    case .actionButton(let buttonModel):
-                        ActionButtonView(model: buttonModel)
-                    case .dragHandle(let handleModel):
-                        DragHandleView(model: handleModel)
-                    }
+            if model.showsTopBoundaryRule {
+                HairlineRule()
+            }
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    zonesGroup(model.flexibleZones)
                 }
             }
+            .scrollBounceBehavior(.basedOnSize)
+
+            if model.showsBottomBoundaryRule {
+                HairlineRule()
+            }
+
+            zonesGroup(model.pinnedBottomZones)
         }
         .frame(width: model.width)
+        .frame(maxHeight: .infinity)
         .background(model.background)
         .overlay(alignment: model.borderAlignment) {
             Rectangle()
                 .fill(model.borderColor)
                 .frame(width: model.borderWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func zonesGroup(_ zones: [Model.Zone]) -> some View {
+        ForEach(Array(zones.enumerated()), id: \.element.id) { index, zone in
+            if index > 0 && !zone.items.isEmpty {
+                HairlineRule()
+            }
+            ForEach(zone.items) { item in
+                switch item {
+                case .toolButton(let buttonModel):
+                    ToolButtonView(model: buttonModel)
+                case .actionButton(let buttonModel):
+                    ActionButtonView(model: buttonModel)
+                case .dragHandle(let handleModel):
+                    DragHandleView(model: handleModel)
+                }
+            }
         }
     }
 }
@@ -39,7 +65,11 @@ struct ToolbarView: View {
 
 extension ToolbarView {
     struct Model {
-        let zones: [Zone]
+        let pinnedTopZones: [Zone]
+        let flexibleZones: [Zone]
+        let pinnedBottomZones: [Zone]
+        let showsTopBoundaryRule: Bool
+        let showsBottomBoundaryRule: Bool
         let borderAlignment: Alignment
         let width: CGFloat
         let background: Color
@@ -58,11 +88,11 @@ extension ToolbarView {
 
             var id: String {
                 switch self {
-                case .toolButton(let m): 
+                case .toolButton(let m):
                     "tool-\(m.id)"
-                case .actionButton(let m): 
+                case .actionButton(let m):
                     "action-\(m.id)"
-                case .dragHandle: 
+                case .dragHandle:
                     "handle"
                 }
             }
@@ -74,11 +104,17 @@ extension ToolbarView {
 
 extension ToolbarView.Model {
     init(
-        zones: [Zone],
+        pinnedTopZones: [Zone],
+        flexibleZones: [Zone],
+        pinnedBottomZones: [Zone],
         side: ToolbarSide,
         ds: DesignSystem = .standard
     ) {
-        self.zones = zones
+        self.pinnedTopZones = pinnedTopZones
+        self.flexibleZones = flexibleZones
+        self.pinnedBottomZones = pinnedBottomZones
+        self.showsTopBoundaryRule = !pinnedTopZones.isEmpty && !flexibleZones.isEmpty
+        self.showsBottomBoundaryRule = !flexibleZones.isEmpty && !pinnedBottomZones.isEmpty
         self.borderAlignment = side == .left ? .trailing : .leading
         self.width = ds.layout.toolbarWidth
         self.background = ds.colors.paper

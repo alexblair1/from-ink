@@ -2,18 +2,27 @@ import ComposableArchitecture
 import SwiftUI
 
 /// Wiring view for a single open notebook. Reads page snapshots from
-/// `NotebookFeature` and binds the TabView page index to the reducer
-/// state. The X (close) button uses `@Environment(\.dismiss)` — when
-/// SwiftUI tears down the `.fullScreenCover`, the `@Presents` wrapper
-/// in `HomeFeature` clears `state.notebook` automatically.
+/// `NotebookFeature`, binds the TabView page index to the reducer, and
+/// renders the toolbar plus its panel overlays at this level so they
+/// stay pinned during page swipes. Per-page overlays (lasso menu,
+/// header/link indicators, dispatch side panel) stay inside `CanvasScreen`.
+///
+/// The X (close) button uses `@Environment(\.dismiss)` — when SwiftUI
+/// tears down the `.fullScreenCover`, the `@Presents` wrapper in
+/// `HomeFeature` clears `state.notebook` automatically.
 struct NotebookScreen: View {
     @Bindable var store: StoreOf<NotebookFeature>
 
     @State private var showAddButton = false
-    @AppStorage("toolbarSide") private var toolbarSideRaw: String = "left"
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
-    private var toolbarIsLeft: Bool { toolbarSideRaw != "right" }
+    private var toolbarStore: StoreOf<ToolbarFeature> {
+        store.scope(state: \.toolbar, action: \.toolbar)
+    }
+
+    private var toolbarSide: ToolbarSide { store.toolbar.side }
+    private var toolbarIsLeft: Bool { toolbarSide == .left }
 
     private var pages: [NotePageSnapshot] { store.pages }
 
@@ -32,6 +41,9 @@ struct NotebookScreen: View {
                         notebookID: store.notebookID,
                         pageID: page.id,
                         pageIndex: i,
+                        toolbarStore: toolbarStore,
+                        activeTemplate: store.activeTemplate,
+                        isCurrentPage: i == store.currentIndex,
                         onNearBottom: {
                             if store.currentIndex == i { showAddButton = true }
                         },
@@ -121,10 +133,80 @@ struct NotebookScreen: View {
                 Spacer()
             }
             .ignoresSafeArea()
+
+            // Toolbar — stretched edge-to-edge on the chosen side. Lives
+            // at notebook level (sibling of the TabView) so it doesn't
+            // translate horizontally with page swipes.
+            ToolbarWiringView(
+                store: toolbarStore,
+                zones: ToolbarZoneConfig.standard(isCompact: sizeClass == .compact)
+            )
+            .frame(maxHeight: .infinity)
+            .frame(
+                maxWidth: .infinity,
+                alignment: toolbarIsLeft ? .leading : .trailing
+            )
+
+            // Toolbar panel overlay — also at notebook level so it stays
+            // pinned across page swipes. Tap outside to dismiss.
+            if store.toolbar.openPanel != nil {
+                Color.clear
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        toolbarStore.send(.panelDismissed)
+                    }
+            }
+
+            if let panel = store.toolbar.openPanel {
+                toolbarPanel(panel)
+            }
         }
         .task { store.send(.onAppear) }
         .onChange(of: store.currentIndex) { _, _ in
             showAddButton = false
         }
+    }
+
+    /// Toolbar customization / template / settings panel. Vertically
+    /// centered, horizontally offset opposite the toolbar. v1 doesn't
+    /// track the active tool button's frame — see toolbar EDD.
+    @ViewBuilder
+    private func toolbarPanel(_ panel: PanelKind) -> some View {
+        let tw = LayoutTokens.standard.toolbarWidth
+        let panelGap = LayoutTokens.standard.toolbarPanelGap
+
+        Group {
+            switch panel {
+            case .toolCustomization(let toolID):
+                let tool: CanvasTool = CanvasTool(rawValue: toolID.rawValue) ?? .pen
+                PenCustomizationPanel(
+                    tool: tool,
+                    settings: Binding(
+                        get: { store.toolbar.customizingSettings },
+                        set: { toolbarStore.send(.toolSettingsChanged(toolID, $0)) }
+                    ),
+                    onDismiss: { toolbarStore.send(.panelDismissed) }
+                )
+
+            case .templatePicker:
+                TemplatePickerPanel(
+                    template: Binding(
+                        get: { store.activeTemplate },
+                        set: { store.send(.templateSelected($0)) }
+                    ),
+                    onDismiss: { toolbarStore.send(.panelDismissed) }
+                )
+
+            case .canvasSettings:
+                CanvasSettingsPanel(
+                    onDismiss: { toolbarStore.send(.panelDismissed) }
+                )
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .center)
+        .padding(.leading, toolbarIsLeft ? tw + panelGap : 0)
+        .padding(.trailing, toolbarIsLeft ? 0 : tw + panelGap)
+        .frame(maxWidth: .infinity, alignment: toolbarIsLeft ? .leading : .trailing)
     }
 }

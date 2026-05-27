@@ -24,6 +24,62 @@ struct ReminderSnapshot: Sendable, Equatable {
     let isAllDay: Bool
 }
 
+/// Sendable view of an EKCalendar. `id` is `calendarIdentifier`,
+/// stable across launches.
+struct CalendarSnapshot: Sendable, Equatable, Identifiable {
+    let id: String
+    let title: String
+    /// CGColor packed to a hex string ("#RRGGBBAA"). Lets the UI render
+    /// the calendar accent without importing AppKit/UIKit colors at the
+    /// snapshot boundary.
+    let colorHex: String
+    let isWritable: Bool
+    let sourceTitle: String
+}
+
+struct ReminderListSnapshot: Sendable, Equatable, Identifiable {
+    let id: String
+    let title: String
+    let colorHex: String
+    let isWritable: Bool
+}
+
+/// Editable draft of an event. Crosses the dependency boundary so the
+/// creation feature never touches `EKEvent` directly.
+struct DraftEvent: Sendable, Equatable {
+    var title: String
+    var notes: String
+    var startDate: Date
+    var endDate: Date
+    var isAllDay: Bool
+    var location: String
+    /// `calendarIdentifier` of the target calendar. Nil = use the default
+    /// calendar for events.
+    var calendarID: String?
+    /// Minutes-before-event alarm offsets. `[15]` = one alarm 15 min
+    /// before; empty = no alarms.
+    var alarmsMinutesBefore: [Int]
+}
+
+struct DraftReminder: Sendable, Equatable {
+    var title: String
+    var notes: String
+    /// Nil means "no due date" — Reminders accepts undated reminders.
+    var dueDate: Date?
+    /// True if the due date includes a specific time (`hour` component).
+    /// False = "anytime that day."
+    var hasTime: Bool
+    /// 0 = none, 1 = high, 5 = medium, 9 = low. Matches `EKReminder.priority`.
+    var priority: Int
+    /// `calendarIdentifier` of the target list. Nil = default list.
+    var listID: String?
+}
+
+/// Opaque stable identifier returned by EventKit on save. Stored in
+/// `NoteHistoryEntry.taskEventKitIdentifier` to re-open the original
+/// EK record later.
+typealias EventKitIdentifier = String
+
 // MARK: - Dependency
 
 struct EventKitService: Sendable {
@@ -57,6 +113,47 @@ struct EventKitService: Sendable {
     var requestEventAccess: @Sendable () async -> PermissionAuthStatus
     /// Prompts the user for full reminder access.
     var requestReminderAccess: @Sendable () async -> PermissionAuthStatus
+
+    // MARK: - Writes (replace EventKitUI on macOS, supplement on iOS)
+
+    /// All writable calendars the user has connected. The creation UI
+    /// uses this to populate the calendar picker; the default selection
+    /// matches `EKEventStore.defaultCalendarForNewEvents` when present.
+    var listCalendars: @Sendable () async throws -> [CalendarSnapshot]
+    var listReminderLists: @Sendable () async throws -> [ReminderListSnapshot]
+
+    /// Persist a draft as a new EKEvent. Returns the calendar
+    /// identifier so the dispatch history entry can re-open the record.
+    var createEvent: @Sendable (DraftEvent) async throws -> EventKitIdentifier
+    /// Update an existing event by identifier with the draft's fields.
+    var updateEvent: @Sendable (EventKitIdentifier, DraftEvent) async throws -> Void
+    var createReminder: @Sendable (DraftReminder) async throws -> EventKitIdentifier
+    var updateReminder: @Sendable (EventKitIdentifier, DraftReminder) async throws -> Void
+
+    /// Fetch the current state of a saved event/reminder so the editor
+    /// can pre-populate when re-opening from dispatch history. Returns
+    /// nil if the record was deleted from EventKit.
+    var fetchEventDraft: @Sendable (EventKitIdentifier) async throws -> DraftEvent?
+    var fetchReminderDraft: @Sendable (EventKitIdentifier) async throws -> DraftReminder?
+
+    var deleteEvent: @Sendable (EventKitIdentifier) async throws -> Void
+    var deleteReminder: @Sendable (EventKitIdentifier) async throws -> Void
+}
+
+// MARK: - Errors
+
+enum EventKitWriteError: Error, LocalizedError, Equatable {
+    case notAuthorized
+    case calendarUnavailable
+    case recordNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthorized: return "Calendar or Reminders access is required."
+        case .calendarUnavailable: return "No writable calendar is available."
+        case .recordNotFound: return "This item is no longer in your calendar."
+        }
+    }
 }
 
 extension EventKitService: DependencyKey {
@@ -215,6 +312,80 @@ extension EventKitService: DependencyKey {
                 }
                 _ = try? await store.requestFullAccessToReminders()
                 return reminderStatus()
+            },
+            listCalendars: {
+                guard eventStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                store.reset()
+                return store.calendars(for: .event)
+                    .filter { $0.allowsContentModifications }
+                    .map(CalendarSnapshot.init(calendar:))
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            },
+            listReminderLists: {
+                guard reminderStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                store.reset()
+                return store.calendars(for: .reminder)
+                    .filter { $0.allowsContentModifications }
+                    .map(ReminderListSnapshot.init(calendar:))
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            },
+            createEvent: { draft in
+                guard eventStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                let event = EKEvent(eventStore: store)
+                try apply(draft, to: event, store: store)
+                try store.save(event, span: .thisEvent, commit: true)
+                return event.eventIdentifier
+            },
+            updateEvent: { id, draft in
+                guard eventStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                store.reset()
+                guard let event = store.event(withIdentifier: id) else {
+                    throw EventKitWriteError.recordNotFound
+                }
+                try apply(draft, to: event, store: store)
+                try store.save(event, span: .thisEvent, commit: true)
+            },
+            createReminder: { draft in
+                guard reminderStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                let reminder = EKReminder(eventStore: store)
+                try apply(draft, to: reminder, store: store)
+                try store.save(reminder, commit: true)
+                return reminder.calendarItemIdentifier
+            },
+            updateReminder: { id, draft in
+                guard reminderStatus() == .fullAccess else { throw EventKitWriteError.notAuthorized }
+                store.reset()
+                guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else {
+                    throw EventKitWriteError.recordNotFound
+                }
+                try apply(draft, to: reminder, store: store)
+                try store.save(reminder, commit: true)
+            },
+            fetchEventDraft: { id in
+                store.reset()
+                guard let event = store.event(withIdentifier: id) else { return nil }
+                return DraftEvent(event: event)
+            },
+            fetchReminderDraft: { id in
+                store.reset()
+                guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else {
+                    return nil
+                }
+                return DraftReminder(reminder: reminder)
+            },
+            deleteEvent: { id in
+                store.reset()
+                guard let event = store.event(withIdentifier: id) else {
+                    throw EventKitWriteError.recordNotFound
+                }
+                try store.remove(event, span: .thisEvent, commit: true)
+            },
+            deleteReminder: { id in
+                store.reset()
+                guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else {
+                    throw EventKitWriteError.recordNotFound
+                }
+                try store.remove(reminder, commit: true)
             }
         )
     }
@@ -233,6 +404,20 @@ extension EventKitService: DependencyKey {
             isAllDay: false
         )
 
+        let cannedCalendar = CalendarSnapshot(
+            id: "test-cal-1",
+            title: "Work",
+            colorHex: "#3478F6FF",
+            isWritable: true,
+            sourceTitle: "iCloud"
+        )
+        let cannedList = ReminderListSnapshot(
+            id: "test-list-1",
+            title: "Reminders",
+            colorHex: "#FF3B30FF",
+            isWritable: true
+        )
+
         return .init(
             fetchTodayEvents: { [canned] },
             fetchDueReminders: { [cannedReminder] },
@@ -241,7 +426,17 @@ extension EventKitService: DependencyKey {
             eventAuthStatus: { .fullAccess },
             reminderAuthStatus: { .fullAccess },
             requestEventAccess: { .fullAccess },
-            requestReminderAccess: { .fullAccess }
+            requestReminderAccess: { .fullAccess },
+            listCalendars: { [cannedCalendar] },
+            listReminderLists: { [cannedList] },
+            createEvent: { _ in "test-event-id" },
+            updateEvent: { _, _ in },
+            createReminder: { _ in "test-reminder-id" },
+            updateReminder: { _, _ in },
+            fetchEventDraft: { _ in nil },
+            fetchReminderDraft: { _ in nil },
+            deleteEvent: { _ in },
+            deleteReminder: { _ in }
         )
     }
 }
@@ -251,4 +446,159 @@ extension DependencyValues {
         get { self[EventKitService.self] }
         set { self[EventKitService.self] = newValue }
     }
+}
+
+// MARK: - EK ⇄ Snapshot bridges
+
+private func apply(_ draft: DraftEvent, to event: EKEvent, store: EKEventStore) throws {
+    event.title = draft.title
+    event.notes = draft.notes.isEmpty ? nil : draft.notes
+    event.startDate = draft.startDate
+    event.endDate = draft.endDate
+    event.isAllDay = draft.isAllDay
+    event.location = draft.location.isEmpty ? nil : draft.location
+
+    let targetCalendar = draft.calendarID.flatMap(store.calendar(withIdentifier:))
+        ?? store.defaultCalendarForNewEvents
+    guard let calendar = targetCalendar else { throw EventKitWriteError.calendarUnavailable }
+    event.calendar = calendar
+
+    // Reset alarms before applying — EventKit appends otherwise.
+    if let existing = event.alarms { existing.forEach(event.removeAlarm(_:)) }
+    for minutes in draft.alarmsMinutesBefore {
+        event.addAlarm(EKAlarm(relativeOffset: TimeInterval(-minutes * 60)))
+    }
+}
+
+private func apply(_ draft: DraftReminder, to reminder: EKReminder, store: EKEventStore) throws {
+    reminder.title = draft.title
+    reminder.notes = draft.notes.isEmpty ? nil : draft.notes
+    reminder.priority = draft.priority
+
+    if let due = draft.dueDate {
+        let units: Set<Calendar.Component> = draft.hasTime
+            ? [.year, .month, .day, .hour, .minute]
+            : [.year, .month, .day]
+        reminder.dueDateComponents = Calendar.autoupdatingCurrent.dateComponents(units, from: due)
+    } else {
+        reminder.dueDateComponents = nil
+    }
+
+    let targetList = draft.listID.flatMap(store.calendar(withIdentifier:))
+        ?? store.defaultCalendarForNewReminders()
+    guard let list = targetList else { throw EventKitWriteError.calendarUnavailable }
+    reminder.calendar = list
+}
+
+private extension CalendarSnapshot {
+    init(calendar: EKCalendar) {
+        self.init(
+            id: calendar.calendarIdentifier,
+            title: calendar.title,
+            colorHex: cgColorHex(calendar.cgColor),
+            isWritable: calendar.allowsContentModifications,
+            sourceTitle: calendar.source?.title ?? ""
+        )
+    }
+}
+
+private extension ReminderListSnapshot {
+    init(calendar: EKCalendar) {
+        self.init(
+            id: calendar.calendarIdentifier,
+            title: calendar.title,
+            colorHex: cgColorHex(calendar.cgColor),
+            isWritable: calendar.allowsContentModifications
+        )
+    }
+}
+
+extension DraftEvent {
+    init(event: EKEvent) {
+        self.init(
+            title: event.title ?? "",
+            notes: event.notes ?? "",
+            startDate: event.startDate,
+            endDate: event.endDate,
+            isAllDay: event.isAllDay,
+            location: event.location ?? "",
+            calendarID: event.calendar?.calendarIdentifier,
+            alarmsMinutesBefore: (event.alarms ?? []).compactMap { alarm in
+                let offset = alarm.relativeOffset
+                guard offset < 0 else { return nil }
+                return Int((-offset / 60).rounded())
+            }
+        )
+    }
+
+    /// Suggested draft for a brand-new event seeded from an extracted task.
+    /// Defaults to tomorrow 9am-10am, with the task title and notes
+    /// pre-filled. Aligns with the previous `EventEditView` defaults.
+    static func suggested(
+        title: String,
+        notes: String,
+        now: Date = Date(),
+        calendar cal: Calendar = .autoupdatingCurrent
+    ) -> DraftEvent {
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
+        let start = cal.date(
+            bySettingHour: 9, minute: 0, second: 0,
+            of: cal.startOfDay(for: tomorrow)
+        ) ?? tomorrow
+        let end = cal.date(byAdding: .hour, value: 1, to: start) ?? start
+        return DraftEvent(
+            title: title,
+            notes: notes,
+            startDate: start,
+            endDate: end,
+            isAllDay: false,
+            location: "",
+            calendarID: nil,
+            alarmsMinutesBefore: []
+        )
+    }
+}
+
+extension DraftReminder {
+    init(reminder: EKReminder) {
+        let components = reminder.dueDateComponents
+        let date = components?.date
+        let hasTime = components?.hour != nil
+        self.init(
+            title: reminder.title ?? "",
+            notes: reminder.notes ?? "",
+            dueDate: date,
+            hasTime: hasTime,
+            priority: reminder.priority,
+            listID: reminder.calendar?.calendarIdentifier
+        )
+    }
+
+    static func suggested(
+        title: String,
+        notes: String,
+        dueDate: Date? = nil
+    ) -> DraftReminder {
+        DraftReminder(
+            title: title,
+            notes: notes,
+            dueDate: dueDate,
+            hasTime: dueDate != nil,
+            priority: 0,
+            listID: nil
+        )
+    }
+}
+
+/// Pack a CGColor's RGBA into a stable "#RRGGBBAA" string so snapshot
+/// types don't need to import AppKit/UIKit. Falls back to opaque black.
+private func cgColorHex(_ color: CGColor?) -> String {
+    guard let color, let comps = color.components, comps.count >= 3 else {
+        return "#000000FF"
+    }
+    let r = UInt8(max(0, min(1, comps[0])) * 255)
+    let g = UInt8(max(0, min(1, comps[1])) * 255)
+    let b = UInt8(max(0, min(1, comps[2])) * 255)
+    let a = UInt8(max(0, min(1, comps.count >= 4 ? comps[3] : 1)) * 255)
+    return String(format: "#%02X%02X%02X%02X", r, g, b, a)
 }

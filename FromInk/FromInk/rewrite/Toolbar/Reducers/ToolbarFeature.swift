@@ -18,10 +18,18 @@ struct ToolbarFeature: Reducer {
         var side: ToolbarSide = .left
         var isBoltVisible: Bool = false
         var isDispatchRequested: Bool = false
+
+        /// Pre-resolved settings for the currently open tool-customization
+        /// panel. Kept on the reducer (not derived in the view with a
+        /// `?? .default` fallback) so the panel binding never has to
+        /// express "what's the default for an unsaved tool" — the
+        /// reducer answers that question authoritatively when the panel
+        /// opens. Only meaningful while `openPanel == .toolCustomization(_)`.
+        var customizingSettings: PenSettings = .default
     }
 
     @CasePathable
-    enum Action {
+    enum Action: Equatable {
         // Tool interaction
         case toolTapped(ToolID)
 
@@ -74,7 +82,11 @@ struct ToolbarFeature: Reducer {
             case .toolTapped(let id):
                 let canCustomize = ToolDescriptor.descriptor(for: id)?.hasCustomization ?? false
                 guard canCustomize else { return .none }
-                state.openPanel = state.openPanel == .toolCustomization(id) ? nil : .toolCustomization(id)
+                let willOpen = state.openPanel != .toolCustomization(id)
+                state.openPanel = willOpen ? .toolCustomization(id) : nil
+                if willOpen {
+                    state.customizingSettings = state.toolSettings[id: id]?.settings ?? .default
+                }
                 return .none
 
             case .pencilDoubleTapped where state.activeToolID == .eraser:
@@ -110,6 +122,9 @@ struct ToolbarFeature: Reducer {
                 state.toolSettings[id: id] = ToolSettingsEntry(id: id, settings: settings)
                 if id == state.activeToolID {
                     state.activeSettings = settings
+                }
+                if state.openPanel == .toolCustomization(id) {
+                    state.customizingSettings = settings
                 }
 
                 return .run { _ in
