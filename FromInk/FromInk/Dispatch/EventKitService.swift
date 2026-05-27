@@ -531,32 +531,6 @@ extension DraftEvent {
         )
     }
 
-    /// Suggested draft for a brand-new event seeded from an extracted task.
-    /// Defaults to tomorrow 9am-10am, with the task title and notes
-    /// pre-filled. Aligns with the previous `EventEditView` defaults.
-    static func suggested(
-        title: String,
-        notes: String,
-        now: Date = Date(),
-        calendar cal: Calendar = .autoupdatingCurrent
-    ) -> DraftEvent {
-        let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
-        let start = cal.date(
-            bySettingHour: 9, minute: 0, second: 0,
-            of: cal.startOfDay(for: tomorrow)
-        ) ?? tomorrow
-        let end = cal.date(byAdding: .hour, value: 1, to: start) ?? start
-        return DraftEvent(
-            title: title,
-            notes: notes,
-            startDate: start,
-            endDate: end,
-            isAllDay: false,
-            location: "",
-            calendarID: nil,
-            alarmsMinutesBefore: []
-        )
-    }
 }
 
 extension DraftReminder {
@@ -574,20 +548,6 @@ extension DraftReminder {
         )
     }
 
-    static func suggested(
-        title: String,
-        notes: String,
-        dueDate: Date? = nil
-    ) -> DraftReminder {
-        DraftReminder(
-            title: title,
-            notes: notes,
-            dueDate: dueDate,
-            hasTime: dueDate != nil,
-            priority: 0,
-            listID: nil
-        )
-    }
 }
 
 /// Pack a CGColor's RGBA into a stable "#RRGGBBAA" string so snapshot

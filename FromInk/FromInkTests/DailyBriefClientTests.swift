@@ -57,7 +57,17 @@ final class DailyBriefClientTests: XCTestCase {
             eventAuthStatus: { .fullAccess },
             reminderAuthStatus: { .fullAccess },
             requestEventAccess: { .fullAccess },
-            requestReminderAccess: { .fullAccess }
+            requestReminderAccess: { .fullAccess },
+            listCalendars: { [] },
+            listReminderLists: { [] },
+            createEvent: { _ in "test-event" },
+            updateEvent: { _, _ in },
+            createReminder: { _ in "test-reminder" },
+            updateReminder: { _, _ in },
+            fetchEventDraft: { _ in nil },
+            fetchReminderDraft: { _ in nil },
+            deleteEvent: { _ in },
+            deleteReminder: { _ in }
         )
     }
 
@@ -426,7 +436,17 @@ final class DailyBriefClientTests: XCTestCase {
             eventAuthStatus: { .fullAccess },
             reminderAuthStatus: { .fullAccess },
             requestEventAccess: { .fullAccess },
-            requestReminderAccess: { .fullAccess }
+            requestReminderAccess: { .fullAccess },
+            listCalendars: { [] },
+            listReminderLists: { [] },
+            createEvent: { _ in "test-event" },
+            updateEvent: { _, _ in },
+            createReminder: { _ in "test-reminder" },
+            updateReminder: { _, _ in },
+            fetchEventDraft: { _ in nil },
+            fetchReminderDraft: { _ in nil },
+            deleteEvent: { _ in },
+            deleteReminder: { _ in }
         )
 
         let client = DailyBriefClient.live(

@@ -6,15 +6,22 @@ private enum ActiveSheet: Identifiable {
     case lasso
     case brief
     case link
-    case calendarEdit(InkTask)
     var id: String {
         switch self {
-        case .lasso:              return "lasso"
-        case .brief:              return "brief"
-        case .link:               return "link"
-        case .calendarEdit(let t): return "calendarEdit-\(t.id)"
+        case .lasso: return "lasso"
+        case .brief: return "brief"
+        case .link:  return "link"
         }
     }
+}
+
+/// Active dispatch flow. Holds the originating task (needed to build
+/// the `NoteHistoryDraft` after a successful send) alongside the
+/// TCA store that backs the universal Dispatch modal. Per-page
+/// lifecycle by design — swiping pages dismisses an in-progress edit.
+private struct DispatchFlow {
+    let task: InkTask
+    let store: StoreOf<DispatchFeature>
 }
 
 struct CanvasScreen: View {
@@ -99,6 +106,9 @@ struct CanvasScreen: View {
 
     // Routing
     @State private var routingPermissionError: String? = nil
+    /// Non-nil while the universal Dispatch modal is showing for a task
+    /// that needed user input (calendar route without a due date).
+    @State private var dispatchFlow: DispatchFlow? = nil
 
     // Links (persisted via NotebookClient; UI cache of NoteLinkSnapshot)
     @State private var links: [NoteLinkSnapshot] = []
@@ -124,7 +134,7 @@ struct CanvasScreen: View {
                     case .success(let result):
                         saveRoutedItem(task: task, result: result)
                     case .needsCalendarUI:
-                        activeSheet = .calendarEdit(task)
+                        presentDispatchFlow(for: task)
                     }
                 case .linear, .slack, .mail, .messages, .contacts:
                     break  // stub — covered by future integration issues
@@ -135,6 +145,67 @@ struct CanvasScreen: View {
             } catch {
                 routingPermissionError = error.localizedDescription
             }
+        }
+    }
+
+    /// Builds the universal Dispatch store seeded with the originating
+    /// task as a single line. The reducer's `.onAppear` seeds
+    /// `calendarStart` to `cal.now()` — today, current moment — so this
+    /// call site never touches `Date()`. Destination defaults to
+    /// `.calendar` because the user just chose to route to Calendar;
+    /// they can still flip to Reminders or Mail inside the modal.
+    private func presentDispatchFlow(for task: InkTask) {
+        let store = Store(
+            initialState: DispatchFeature.State(
+                tasks: [DispatchTask.single(from: task)]
+            )
+        ) {
+            DispatchFeature()
+        }
+        dispatchFlow = DispatchFlow(task: task, store: store)
+    }
+
+    /// Bridges the Dispatch completion signal back to the routing
+    /// pipeline. The chosen destination at completion time decides
+    /// which `Integration` the resulting `NoteHistoryDraft` records —
+    /// the user may have switched from Calendar to Reminders mid-modal.
+    private func handleDispatchCompletion(
+        _ completion: DispatchFeature.State.Completion,
+        task: InkTask,
+        store: StoreOf<DispatchFeature>
+    ) {
+        switch completion {
+        case .finished:
+            // Record any tasks that were sent (single or stack mode).
+            for dispatchTask in store.tasks {
+                guard store.resolved[dispatchTask.id] == .sent else { continue }
+                let integration = integrationAtCompletion(store: store)
+                let result = RoutingResult(
+                    integration: integration,
+                    destinationURL: destinationURL(integration: integration, line: dispatchTask.line),
+                    eventKitIdentifier: nil
+                )
+                saveRoutedItem(task: task, result: result)
+            }
+        case .cancelled:
+            break
+        }
+        dispatchFlow = nil
+    }
+
+    private func integrationAtCompletion(store: StoreOf<DispatchFeature>) -> Integration {
+        store.currentIntegration
+    }
+
+    private func destinationURL(integration: Integration, line: String) -> String {
+        // The actual EventKit identifier isn't carried through the
+        // dispatch state — store the destination kind in the URL so the
+        // dispatch panel can group history correctly.
+        switch integration {
+        case .calendar:  return "x-apple-calevent://dispatch"
+        case .reminders: return "x-apple-reminderkit://dispatch"
+        case .mail:      return "mailto://dispatch"
+        default:         return ""
         }
     }
 
@@ -278,6 +349,17 @@ struct CanvasScreen: View {
                 }
 
                 dispatchSidePanelLayer
+
+                // Universal Dispatch overlay — shown when a routed task
+                // needs user input. Rendered last in the ZStack so it
+                // covers all other page content while active.
+                if let flow = dispatchFlow {
+                    DispatchWiringView(store: flow.store)
+                        .onChange(of: flow.store.completion) { _, completion in
+                            guard let completion else { return }
+                            handleDispatchCompletion(completion, task: flow.task, store: flow.store)
+                        }
+                }
             }
             .onChange(of: currentDrawing.strokes.count) { _, _ in
                 pruneErasedLinks()
@@ -546,16 +628,6 @@ struct CanvasScreen: View {
                     }
                 }
             )
-        case .calendarEdit(let task):
-            EventEditView(
-                taskTitle: task.title,
-                onSave: { result in
-                    saveRoutedItem(task: task, result: result)
-                    activeSheet = nil
-                },
-                onCancel: { activeSheet = nil }
-            )
-            .ignoresSafeArea()
         case .link:
             LinkInputSheet(
                 isLoading: isRecognizingLink,

@@ -562,6 +562,104 @@ Color("canvas")           // never Color(hex: "#1A1A1A")
 
 ---
 
+## Native Idiomatic Swift
+
+Foundation already solves most problems we'll encounter. Reach for the platform API first; introduce abstraction only when there's a concrete payoff (testability seam, three or more call sites, a real cross-platform boundary). Code that wraps a single Foundation call in a named helper, threads a sentinel value through state, or copies a default forward "because the old code did it" — that is not the kind of code we ship.
+
+### Anti-patterns we have actually shipped (don't repeat)
+
+**1. Sentinel values to mean "not set yet."**
+
+```swift
+// Don't — `.distantPast` as a "fill in later" marker, with matched
+// detection in the reducer's onAppear. Three moving parts (placeholder
+// constructor, sentinel default, sentinel check) for "I don't know yet."
+struct State {
+    var startDate: Date = .distantPast
+}
+case .onAppear:
+    if state.startDate == .distantPast {
+        state.startDate = cal.now()
+    }
+```
+
+```swift
+// Do — express absence with `Optional`; resolve at the use site.
+struct State {
+    var startDate: Date? = nil
+}
+// Read as `state.startDate ?? cal.now()` where the moment is needed,
+// or seed it explicitly when transitioning into a state where it's
+// known to be non-nil.
+```
+
+**2. Helpers that wrap a single Foundation call.**
+
+```swift
+// Don't — a named helper that just does what `Calendar` already does.
+// Hides intent (what wall-clock time? what calendar?) and makes the
+// call site read less like the platform.
+static func suggested(now: Date, calendar cal: Calendar) -> DraftEvent {
+    let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
+    let start = cal.date(bySettingHour: 9, minute: 0, second: 0,
+                          of: cal.startOfDay(for: tomorrow)) ?? tomorrow
+    return DraftEvent(/* ... */ startDate: start /* ... */)
+}
+```
+
+```swift
+// Do — inline the Foundation calls at the single place they're needed.
+// If a real third call site appears, extract — and even then prefer an
+// extension on `Calendar` or `Date` over a freestanding wrapper.
+state.calendarStart = cal.now()
+```
+
+**3. Copy-forward legacy defaults.**
+
+```swift
+// Don't — pasting a default because the code being replaced used it.
+// That's deferred thinking, not a design decision.
+//
+//   "Aligns with the previous EventEditView defaults."   ← red flag
+```
+
+When migrating, treat every default as a fresh design question. Apple's own apps are the precedent: `Calendar.app` defaults new events to **now**, rounded; `Reminders.app` defaults to **no due date**. If a default in our code differs from Apple's, the diff needs a comment naming the rationale (Apple HIG departure, observed user need, explicit design spec). Without that rationale the default doesn't belong.
+
+### When a helper IS allowed
+
+A function or type that wraps Foundation deserves to exist only if it:
+
+1. **Encapsulates a non-obvious invariant.** Example: `mergedDate(datePart:timePart:cal:)` in `DispatchFeature.swift` enforces "extract y/m/d from one Date, h/m from another, in the SAME `Calendar`" — a correctness rule that's easy to get wrong inline. Document the invariant in the doc comment so the reader knows why the helper exists.
+2. **Has three or more call sites** that would otherwise duplicate the same multi-line composition.
+3. **Crosses a boundary** — testability seam, cross-platform conditional, public API surface.
+
+If none of those apply, write the Foundation call inline. One call inline is always clearer than one call hidden behind a name.
+
+### Date handling additions to the dates EDD
+
+The dates EDD (`Documentation/dates_edd.md`) is the authoritative spec; these are the load-bearing patterns to remember at the keyboard:
+
+- **Day arithmetic** uses `Calendar.date(byAdding:value:to:)` — DST-safe. Never `addingTimeInterval(86400)` for "next day."
+- **Day boundaries** use `Calendar.startOfDay(for:)`. Never hand-build midnight via `DateComponents` in an unspecified time zone.
+- **Component manipulation** uses the same `Calendar` instance for extraction and reconstruction (`dateComponents(_:from:)` → `date(from:)`). Mixing calendars or letting one default to `autoupdatingCurrent` while the other is fixed changes the time zone implicitly — that's the off-by-one trap.
+- **Comparisons** use `Calendar.isDate(_:inSameDayAs:)`, `Calendar.isDateInToday(_:)`, `Calendar.compare(_:to:toGranularity:)`. Never `==` on Dates for "same day" — that's nanosecond equality.
+- **Formatting** uses `Date.FormatStyle` (`date.formatted(.dateTime.month().day().locale(userLocale))`). Never `DateFormatter`. Pass `.locale(...)`, and when the format style supports them `.calendar(...)` and `.timeZone(...)`, sourced from `CalendarContext` — so tests with `.fixed` clocks produce stable strings.
+- **Day-key strings** (cache keys, persistence) go through `CalendarContext.dayKey(_:)`. Don't roll a one-off formatter.
+- **Ranges** use `DateInterval` or `Range<Date>`. Don't pass `(start: Date, end: Date)` tuples — the type already exists.
+- **Bare clocks** — `Date()`, `Calendar.current`, `Calendar.autoupdatingCurrent` are banned outside `CalendarContext.liveValue`. Use `@Dependency(\.calendarContext) var cal` everywhere else.
+
+### Review prompts (PR-time questions)
+
+- Is there a sentinel value standing in for an `Optional`?
+- Is there a wrapper helper with only one call site? Could it be inlined?
+- Is there a default value carried forward from legacy code with no rationale comment?
+- Is there a `Date()`, `Calendar.current`, or `Calendar.autoupdatingCurrent` outside `CalendarContext.liveValue`?
+- Does the date code behave correctly in `America/New_York`, `Asia/Tokyo`, and across a spring-forward DST transition?
+
+If the answer to any of these is wrong, the change isn't ready.
+
+---
+
 ## Code Styling
 
 ### Reducer style
