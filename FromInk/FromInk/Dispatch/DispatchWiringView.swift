@@ -83,15 +83,15 @@ extension DispatchView.Model {
             }
         }
 
-        // Destination-aware fields. Calendar has Date + Time + Calendar
-        // (third field, full width); Reminders has List + Due; Mail has
-        // To + Subject (inline text fields, no third field).
-        let fieldA: DispatchView.Model.Field
-        let fieldB: DispatchView.Model.Field
-        var fieldC: DispatchView.Model.Field? = nil
+        // Destination-aware fields. Calendar today renders a Date+Time
+        // pair plus a full-width Calendar selector; Reminders is a
+        // List+Due pair; Mail is a To+Subject pair of inline text
+        // fields. Stage 3 grows the Calendar set; the row-array shape
+        // accommodates whatever each destination needs.
+        let fields: [DispatchView.Model.FieldRow]
         switch destination {
         case .calendar:
-            fieldA = .init(
+            let date = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.date,
                 value: Self.dateOnlyDisplay(store.calendarStart, cal: cal),
                 placeholder: "",
@@ -101,7 +101,7 @@ extension DispatchView.Model {
                     : nil,
                 onTextChange: nil
             )
-            fieldB = .init(
+            let time = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.time,
                 value: Self.timeOnlyDisplay(store.calendarStart, cal: cal),
                 placeholder: "",
@@ -114,7 +114,7 @@ extension DispatchView.Model {
             let selectedCalendarTitle = store.eventCalendarID.flatMap { id in
                 store.eventCalendars[id: id]?.title
             } ?? store.eventCalendars.first?.title ?? ""
-            fieldC = .init(
+            let calendarField = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.calendar,
                 value: selectedCalendarTitle,
                 placeholder: "",
@@ -124,11 +124,13 @@ extension DispatchView.Model {
                     : nil,
                 onTextChange: nil
             )
+            fields = [.pair(date, time), .full(calendarField)]
+
         case .reminders:
             let listTitle = store.reminderListID.flatMap { id in
                 store.reminderLists[id: id]?.title
             } ?? store.reminderLists.first?.title ?? ""
-            fieldA = .init(
+            let list = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.list,
                 value: listTitle,
                 placeholder: "",
@@ -138,7 +140,7 @@ extension DispatchView.Model {
                     : nil,
                 onTextChange: nil
             )
-            fieldB = .init(
+            let due = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.due,
                 value: Self.dueDisplay(
                     store.reminderDue,
@@ -152,8 +154,10 @@ extension DispatchView.Model {
                     : nil,
                 onTextChange: nil
             )
+            fields = [.pair(list, due)]
+
         case .mail:
-            fieldA = .init(
+            let to = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.to,
                 value: store.mailTo,
                 placeholder: NSLocalizedString(
@@ -165,7 +169,7 @@ extension DispatchView.Model {
                 onTap: nil,
                 onTextChange: { value in store.send(.mailToChanged(value)) }
             )
-            fieldB = .init(
+            let subject = DispatchView.Model.Field(
                 label: AppStrings.DispatchModal.subject,
                 value: store.mailSubject.isEmpty ? store.currentLine : store.mailSubject,
                 placeholder: NSLocalizedString(
@@ -177,6 +181,7 @@ extension DispatchView.Model {
                 onTap: nil,
                 onTextChange: { value in store.send(.mailSubjectChanged(value)) }
             )
+            fields = [.pair(to, subject)]
         }
 
         // Picker overlay payload (nil = no picker, just the main modal).
@@ -290,9 +295,7 @@ extension DispatchView.Model {
             sendToLabel: AppStrings.DispatchModal.sendTo,
             destinationTabModel: destinationTabModel,
             isPermissionGranted: isGranted,
-            fieldA: fieldA,
-            fieldB: fieldB,
-            fieldC: fieldC,
+            fields: fields,
             noteLabel: AppStrings.DispatchModal.noteLabel,
             notePlaceholder: AppStrings.DispatchModal.notePlaceholder,
             permissionCard: permissionCard,

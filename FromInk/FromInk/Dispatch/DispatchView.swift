@@ -259,12 +259,16 @@ struct DispatchView: View {
     @ViewBuilder
     private var fieldsSection: some View {
         VStack(spacing: model.innerSpacing) {
-            HStack(alignment: .top, spacing: model.innerSpacing) {
-                fieldCell(model.fieldA)
-                fieldCell(model.fieldB)
-            }
-            if let fieldC = model.fieldC {
-                fieldCell(fieldC)
+            ForEach(Array(model.fields.enumerated()), id: \.offset) { _, row in
+                switch row {
+                case .pair(let a, let b):
+                    HStack(alignment: .top, spacing: model.innerSpacing) {
+                        fieldCell(a)
+                        fieldCell(b)
+                    }
+                case .full(let f):
+                    fieldCell(f)
+                }
             }
         }
         .padding(.horizontal, model.horizontalPadding)
@@ -667,14 +671,13 @@ extension DispatchView {
         let sendToLabel: String
         let destinationTabModel: InkTabStrip<String>.Model
 
-        // Fields (destination-aware). `fieldA` + `fieldB` render
-        // side-by-side as a 2-col row. `fieldC` is optional and renders
-        // full-width on its own row below — used by Calendar to host
-        // the "Calendar" selector beneath the Date+Time row.
+        // Fields (destination-aware). Rows lay out top-to-bottom; each
+        // row is either a `.pair(Field, Field)` (two cells side-by-side)
+        // or a `.full(Field)` (single cell spanning the row). Reminders
+        // and Mail use a single pair today; Calendar uses pair + full,
+        // and will grow to many rows in Stage 3.
         let isPermissionGranted: Bool
-        let fieldA: Field
-        let fieldB: Field
-        let fieldC: Field?
+        let fields: [FieldRow]
 
         // Note
         let noteLabel: String
@@ -751,6 +754,15 @@ extension DispatchView {
             let isInline: Bool
             let onTap: (() -> Void)?
             let onTextChange: ((String) -> Void)?
+        }
+
+        /// One row in the destination-aware fields section. Pairs render
+        /// two `Field` cells side-by-side; `.full` renders a single cell
+        /// spanning the row width. Caller composes whatever shape the
+        /// destination needs — no fixed slot count.
+        enum FieldRow {
+            case pair(Field, Field)
+            case full(Field)
         }
 
         enum ProgressMark: Equatable {
