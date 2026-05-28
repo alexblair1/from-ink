@@ -75,6 +75,16 @@ extension AppStrings {
             value: "Time",
             comment: "Calendar field label — start time (separate from date)"
         )
+        static let endDate = NSLocalizedString(
+            "dispatch.modal.field.endDate",
+            value: "End Date",
+            comment: "Calendar field label — end date (separate from end time)"
+        )
+        static let endTime = NSLocalizedString(
+            "dispatch.modal.field.endTime",
+            value: "End Time",
+            comment: "Calendar field label — end time (separate from end date)"
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

@@ -22,6 +22,16 @@ struct DispatchFeature: Reducer {
 
     @ObservableState
     struct State: Equatable {
+        /// New-event duration when the user hasn't edited the End fields.
+        /// Tests assert preservation of the *current* duration across
+        /// start edits — not literal equality with this constant — so
+        /// changing the default here won't ripple through assertions.
+        static let defaultEventDuration: TimeInterval = 1800
+        /// Floor between start and end. EKEvent rejects `end <= start`;
+        /// the reducer clamps direct end edits and shielding logic floors
+        /// preserved-duration math here to keep state valid.
+        static let minEventDuration: TimeInterval = 60
+
         /// The line(s) being dispatched. Single mode has 1, stack mode N.
         var tasks: [DispatchTask]
         var currentIndex: Int = 0
@@ -34,10 +44,13 @@ struct DispatchFeature: Reducer {
         // switching destinations doesn't lose user input. The view reads
         // only the pair relevant to `destination`.
 
-        /// Calendar — start moment + duration. Seeded from CalendarContext
-        /// on `.onAppear` (never bare `Date()`).
-        var calendarStart: Date = .distantPast
-        var calendarDuration: TimeInterval = 1800 // 30 min
+        /// Calendar — start + end moments. Nil until `.onAppear` seeds
+        /// from CalendarContext (no `.distantPast` sentinels — the CLAUDE.md
+        /// "no fake placeholders" rule). End defaults to start + the
+        /// `defaultEventDuration` constant; subsequent edits to start
+        /// preserve the (end − start) duration by sliding end along.
+        var calendarStart: Date? = nil
+        var calendarEnd: Date? = nil
 
         /// Which writable calendar the event is saved into. Nil falls
         /// through to `EKEventStore.defaultCalendarForNewEvents` on save.
@@ -83,6 +96,8 @@ struct DispatchFeature: Reducer {
         enum Overlay: Equatable {
             case calendarDate
             case calendarTime
+            case calendarEndDate
+            case calendarEndTime
             case eventCalendar
             case reminderDue
             case reminderList
@@ -173,14 +188,16 @@ struct DispatchFeature: Reducer {
 
         // Destination + fields
         case destinationSelected(State.Destination)
-        case calendarStartChanged(Date)
         /// Edits the date portion of `calendarStart`; preserves time.
         /// Used by the modal date picker so the time field doesn't get
         /// stomped when the user adjusts the calendar day.
         case calendarDateChanged(Date)
         /// Edits the time portion of `calendarStart`; preserves date.
         case calendarTimeChanged(Date)
-        case calendarDurationChanged(TimeInterval)
+        /// Edits the date portion of `calendarEnd`; preserves time.
+        case calendarEndDateChanged(Date)
+        /// Edits the time portion of `calendarEnd`; preserves date.
+        case calendarEndTimeChanged(Date)
         case eventCalendarSelected(String)
         case eventCalendarsLoaded([CalendarSnapshot])
         case reminderListSelected(String)
@@ -247,28 +264,28 @@ struct DispatchFeature: Reducer {
                 state.destination = dest
                 return .none
 
-            case .calendarStartChanged(let date):
-                state.calendarStart = date
-                return .none
-
             case .calendarDateChanged(let date):
-                state.calendarStart = mergedDate(
-                    datePart: date,
-                    timePart: state.calendarStart,
-                    cal: cal.userCalendar()
-                )
+                let timePart = state.calendarStart ?? cal.now()
+                let merged = mergedDate(datePart: date, timePart: timePart, cal: cal)
+                shiftCalendarStart(in: &state, to: merged)
                 return .none
 
             case .calendarTimeChanged(let date):
-                state.calendarStart = mergedDate(
-                    datePart: state.calendarStart,
-                    timePart: date,
-                    cal: cal.userCalendar()
-                )
+                let datePart = state.calendarStart ?? cal.now()
+                let merged = mergedDate(datePart: datePart, timePart: date, cal: cal)
+                shiftCalendarStart(in: &state, to: merged)
                 return .none
 
-            case .calendarDurationChanged(let dur):
-                state.calendarDuration = max(60, dur)
+            case .calendarEndDateChanged(let date):
+                let timePart = state.calendarEnd ?? cal.now()
+                let merged = mergedDate(datePart: date, timePart: timePart, cal: cal)
+                state.calendarEnd = clampEndAfterStart(end: merged, start: state.calendarStart)
+                return .none
+
+            case .calendarEndTimeChanged(let date):
+                let datePart = state.calendarEnd ?? cal.now()
+                let merged = mergedDate(datePart: datePart, timePart: date, cal: cal)
+                state.calendarEnd = clampEndAfterStart(end: merged, start: state.calendarStart)
                 return .none
 
             case .eventCalendarSelected(let id):
@@ -411,8 +428,9 @@ struct DispatchFeature: Reducer {
                 let destination = state.destination
                 let line = task.line
                 let note = state.note
-                let calendarStart = state.calendarStart
-                let calendarEnd = calendarStart.addingTimeInterval(state.calendarDuration)
+                let calendarStart = state.calendarStart ?? cal.now()
+                let calendarEnd = state.calendarEnd
+                    ?? calendarStart.addingTimeInterval(State.defaultEventDuration)
                 let eventCalendarID = state.eventCalendarID
                 let reminderListID = state.reminderListID
                 let reminderDue = state.reminderDue
@@ -484,12 +502,18 @@ struct DispatchFeature: Reducer {
             // MARK: - Lifecycle
 
             case .onAppear:
-                // Seed calendarStart if still at the placeholder. Default
-                // is `now` — today, current moment. The user picks a
+                // Lazy seed of calendar start/end. Default start is
+                // `now` — today, current moment. The user picks a
                 // specific time via the Time field if they want; we
                 // don't pre-anchor to tomorrow or to a rounded hour.
-                if state.calendarStart == .distantPast {
+                // calendarEnd defaults to start + defaultEventDuration
+                // and follows start unless the user explicitly edits
+                // the end fields.
+                if state.calendarStart == nil {
                     state.calendarStart = cal.now()
+                }
+                if state.calendarEnd == nil, let start = state.calendarStart {
+                    state.calendarEnd = start.addingTimeInterval(State.defaultEventDuration)
                 }
                 return .run { send in
                     // Snapshot current statuses without prompting; the
@@ -529,6 +553,40 @@ struct DispatchFeature: Reducer {
 
 // MARK: - Helpers
 
+/// Move `calendarStart` to `newStart` while preserving the current
+/// `(end − start)` interval. Mirrors Apple Calendar: dragging the start
+/// time slides the end with it, so the event duration stays fixed
+/// unless the user explicitly edits the End fields. If either side of
+/// the existing interval is nil (pre-seed edge case), fall back to the
+/// default duration. Floors at `minEventDuration` so a degenerate
+/// `end <= start` state self-heals on the next start edit.
+private func shiftCalendarStart(in state: inout DispatchFeature.State, to newStart: Date) {
+    let duration: TimeInterval
+    if let oldStart = state.calendarStart, let oldEnd = state.calendarEnd {
+        duration = oldEnd.timeIntervalSince(oldStart)
+    } else {
+        duration = DispatchFeature.State.defaultEventDuration
+    }
+    let safe = max(DispatchFeature.State.minEventDuration, duration)
+    state.calendarStart = newStart
+    state.calendarEnd = newStart.addingTimeInterval(safe)
+}
+
+/// Enforce `end >= start + minEventDuration`. EKEvent rejects
+/// `end <= start`; this is the gate that keeps direct end-field edits
+/// inside that constraint. The picker is bound to `state.calendarEnd`,
+/// so the user briefly sees their pick then watches it snap into a
+/// valid range — that bounce is intentional UX (matches Apple Calendar),
+/// not a rendering bug to "fix" by removing the clamp.
+///
+/// `start == nil` is the pre-seed edge case; we pass `end` through
+/// without enforcement so onAppear's seed produces a coherent state on
+/// the next tick.
+private func clampEndAfterStart(end: Date, start: Date?) -> Date {
+    guard let start else { return end }
+    return max(end, start.addingTimeInterval(DispatchFeature.State.minEventDuration))
+}
+
 private func advanceIndex(in state: inout DispatchFeature.State, by delta: Int) {
     let target = state.currentIndex + delta
     if state.tasks.indices.contains(target) {
@@ -557,19 +615,25 @@ private func nextUnresolvedIndex(in state: DispatchFeature.State) -> Int? {
     return nil
 }
 
-/// Combine the y/m/d of one Date with the hour/minute of another.
-/// Used to keep Date and Time as independently editable fields even
-/// though they share a single `calendarStart` storage on State.
-private func mergedDate(datePart: Date, timePart: Date, cal: Calendar) -> Date {
-    let dateComponents = cal.dateComponents([.year, .month, .day], from: datePart)
-    let timeComponents = cal.dateComponents([.hour, .minute], from: timePart)
+/// Combine the y/m/d of one Date with the hour/minute of another, in
+/// the user's calendar. Used to keep Date and Time as independently
+/// editable fields even though they share a single Date storage on
+/// State. Takes `CalendarContext` (not raw `Calendar`) so the user's
+/// calendar is resolved at the helper boundary — every caller passes
+/// the same `cal`, and extracting + reconstructing in the SAME
+/// `Calendar` instance avoids the off-by-one trap called out in the
+/// dates EDD.
+private func mergedDate(datePart: Date, timePart: Date, cal: CalendarContext) -> Date {
+    let userCal = cal.userCalendar()
+    let dateComponents = userCal.dateComponents([.year, .month, .day], from: datePart)
+    let timeComponents = userCal.dateComponents([.hour, .minute], from: timePart)
     var merged = DateComponents()
     merged.year = dateComponents.year
     merged.month = dateComponents.month
     merged.day = dateComponents.day
     merged.hour = timeComponents.hour
     merged.minute = timeComponents.minute
-    return cal.date(from: merged) ?? datePart
+    return userCal.date(from: merged) ?? datePart
 }
 
 private func nextRoundHour(cal: CalendarContext) -> Date {

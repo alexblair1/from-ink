@@ -70,10 +70,12 @@ final class DispatchFeatureTests: XCTestCase {
     func test_onAppear_seedsCalendarStartToNow_andLoadsCalendarsAndLists() async {
         let store = makeStore()
 
-        // The reducer seeds `calendarStart` inline before returning the
-        // auth-read effect, so the mutation lands on .onAppear itself.
+        // The reducer seeds `calendarStart` AND `calendarEnd` inline
+        // before returning the auth-read effect, so the mutations land
+        // on .onAppear itself. End defaults to start + 30 min.
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         // Auth status reads are synchronous fullAccess in this stub.
         await store.receive(.authStatusesResolved(
@@ -105,6 +107,7 @@ final class DispatchFeatureTests: XCTestCase {
         // The seed happens inline in `.onAppear` before the effect runs.
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         // Drain follow-up effects.
         await store.skipReceivedActions()
@@ -114,6 +117,7 @@ final class DispatchFeatureTests: XCTestCase {
         let existing = Date(timeIntervalSince1970: 1_700_000_000)
         var state = DispatchFeature.State(tasks: [.init(line: "x")])
         state.calendarStart = existing
+        state.calendarEnd = existing.addingTimeInterval(3600)
 
         let store = TestStore(
             initialState: state,
@@ -126,10 +130,12 @@ final class DispatchFeatureTests: XCTestCase {
         )
 
         // calendarStart is not the .distantPast sentinel, so .onAppear
-        // must leave it alone — the user may have already adjusted it.
+        // must leave both it and calendarEnd alone — the user may have
+        // already adjusted them.
         await store.send(.onAppear)
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.calendarStart, existing)
+        XCTAssertEqual(store.state.calendarEnd, existing.addingTimeInterval(3600))
     }
 
     // MARK: - Line editing
@@ -163,6 +169,7 @@ final class DispatchFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow  // 14:00 UTC = 10:00 EDT
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.skipReceivedActions()
 
@@ -178,6 +185,11 @@ final class DispatchFeatureTests: XCTestCase {
                 minute: cal.component(.minute, from: Self.fixedNow)
             ))!
             state.calendarStart = expected
+            // End slides by the same delta — preserves the (end − start)
+            // duration that the seed set (defaultEventDuration here, but
+            // see `test_calendarStartChanged_preservesArbitraryDuration`
+            // for the general invariant).
+            state.calendarEnd = expected.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
     }
 
@@ -185,6 +197,7 @@ final class DispatchFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.skipReceivedActions()
 
@@ -200,6 +213,151 @@ final class DispatchFeatureTests: XCTestCase {
                 minute: cal.component(.minute, from: newTime)
             ))!
             state.calendarStart = expected
+            state.calendarEnd = expected.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+    }
+
+    func test_calendarStartChanged_preservesArbitraryDuration() async {
+        // Synthetic state with a 2-hour (not 30-min) event. The
+        // duration-preserving guarantee should hold for whatever
+        // duration the user chose, not just the default.
+        let start = Self.fixedNow
+        let end = start.addingTimeInterval(7200)  // 2 hours
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.calendarStart = start
+        state.calendarEnd = end
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = stubEventKit()
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        // Move start forward 3 hours. End must slide forward 3 hours
+        // too — 2-hour interval preserved.
+        let newStart = start.addingTimeInterval(10_800)
+        await store.send(.calendarTimeChanged(newStart)) { newState in
+            let cal = CalendarContext.fixed(now: Self.fixedNow).userCalendar()
+            let merged = cal.date(from: DateComponents(
+                year: cal.component(.year, from: start),
+                month: cal.component(.month, from: start),
+                day: cal.component(.day, from: start),
+                hour: cal.component(.hour, from: newStart),
+                minute: cal.component(.minute, from: newStart)
+            ))!
+            newState.calendarStart = merged
+            newState.calendarEnd = merged.addingTimeInterval(7200)
+        }
+    }
+
+    func test_calendarEndDateChanged_swapsDate_preservesEndTime() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        // Pick a different day; end TIME (h:m) must survive intact.
+        let newDate = Date(timeIntervalSince1970: 1_781_000_000)
+        await store.send(.calendarEndDateChanged(newDate)) { state in
+            let cal = CalendarContext.fixed(now: Self.fixedNow).userCalendar()
+            let priorEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+            let expected = cal.date(from: DateComponents(
+                year: cal.component(.year, from: newDate),
+                month: cal.component(.month, from: newDate),
+                day: cal.component(.day, from: newDate),
+                hour: cal.component(.hour, from: priorEnd),
+                minute: cal.component(.minute, from: priorEnd)
+            ))!
+            state.calendarEnd = expected
+        }
+    }
+
+    func test_calendarEndTimeChanged_swapsTime_preservesEndDate() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        // Different day, different hour — only h:m should land on end.
+        let newTime = Date(timeIntervalSince1970: 1_700_000_000)
+        await store.send(.calendarEndTimeChanged(newTime)) { state in
+            let cal = CalendarContext.fixed(now: Self.fixedNow).userCalendar()
+            let priorEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+            let expected = cal.date(from: DateComponents(
+                year: cal.component(.year, from: priorEnd),
+                month: cal.component(.month, from: priorEnd),
+                day: cal.component(.day, from: priorEnd),
+                hour: cal.component(.hour, from: newTime),
+                minute: cal.component(.minute, from: newTime)
+            ))!
+            state.calendarEnd = expected
+        }
+    }
+
+    func test_calendarEndDateChanged_beforeStart_clampsToStartPlusMin() async {
+        // User picks an end date BEFORE start. Reducer clamps to
+        // start + minEventDuration so EKEvent's `end > start`
+        // invariant is preserved.
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        let oneYearBefore = Self.fixedNow.addingTimeInterval(-365 * 86400)
+        await store.send(.calendarEndDateChanged(oneYearBefore)) { state in
+            state.calendarEnd = Self.fixedNow
+                .addingTimeInterval(DispatchFeature.State.minEventDuration)
+        }
+    }
+
+    func test_calendarTimeChanged_recoversFromDegenerateEnd_atMinFloor() async {
+        // Degenerate input state: end already lies BEFORE start (someone
+        // poked at an Optional in the wrong order, a migration loaded
+        // bad rows, etc.). The reducer's shiftCalendarStart helper
+        // floors the preserved duration at minEventDuration so the next
+        // start edit self-heals the invariant rather than carrying the
+        // negative duration forward.
+        let start = Self.fixedNow
+        let badEnd = start.addingTimeInterval(-3600)  // end 1hr BEFORE start
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.calendarStart = start
+        state.calendarEnd = badEnd
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = stubEventKit()
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        // Shift start by editing the time; the preserved duration is
+        // negative, so the floor kicks in.
+        let newTime = start.addingTimeInterval(3600)
+        await store.send(.calendarTimeChanged(newTime)) { newState in
+            let cal = CalendarContext.fixed(now: Self.fixedNow).userCalendar()
+            let merged = cal.date(from: DateComponents(
+                year: cal.component(.year, from: start),
+                month: cal.component(.month, from: start),
+                day: cal.component(.day, from: start),
+                hour: cal.component(.hour, from: newTime),
+                minute: cal.component(.minute, from: newTime)
+            ))!
+            newState.calendarStart = merged
+            newState.calendarEnd = merged
+                .addingTimeInterval(DispatchFeature.State.minEventDuration)
         }
     }
 
@@ -209,6 +367,7 @@ final class DispatchFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.skipReceivedActions()
 
@@ -236,6 +395,7 @@ final class DispatchFeatureTests: XCTestCase {
         let store = makeStore(eventAuth: .notDetermined)
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.receive(.authStatusesResolved(
             calendar: .notDetermined,
@@ -385,6 +545,7 @@ final class DispatchFeatureTests: XCTestCase {
 
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.receive(.authStatusesResolved(
             calendar: .fullAccess,
@@ -432,6 +593,7 @@ final class DispatchFeatureTests: XCTestCase {
 
         await store.send(.onAppear) {
             $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
         }
         await store.skipReceivedActions()
 

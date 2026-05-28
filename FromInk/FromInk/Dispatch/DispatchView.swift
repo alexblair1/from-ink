@@ -510,36 +510,8 @@ struct DispatchView: View {
     @ViewBuilder
     private func pickerContent(_ overlay: Model.PickerOverlay) -> some View {
         switch overlay {
-        case .calendarDate(let date):
-            DatePicker(
-                selection: Binding(
-                    get: { date },
-                    set: { model.onCalendarDateChanged?($0) }
-                ),
-                displayedComponents: [.date]
-            ) { EmptyView() }
-            .labelsHidden()
-            .datePickerStyle(.graphical)
-            .tint(model.ink)
-            .environment(\.locale, model.locale)
-            .environment(\.calendar, model.calendar)
-            .environment(\.timeZone, model.timeZone)
-
-        case .calendarTime(let date):
-            DatePicker(
-                selection: Binding(
-                    get: { date },
-                    set: { model.onCalendarTimeChanged?($0) }
-                ),
-                displayedComponents: [.hourAndMinute]
-            ) { EmptyView() }
-            .labelsHidden()
-            .datePickerStyle(.wheel)
-            .tint(model.ink)
-            .environment(\.locale, model.locale)
-            .environment(\.calendar, model.calendar)
-            .environment(\.timeZone, model.timeZone)
-            .frame(maxWidth: .infinity)
+        case .calendarPicker(let kind, let date):
+            calendarPickerView(kind: kind, date: date)
 
         case .reminderDue(let date, let hasTime):
             VStack(alignment: .leading, spacing: model.innerSpacing) {
@@ -589,6 +561,43 @@ struct DispatchView: View {
             singleSelectList(calendars, selected: selected, onTap: { id in
                 model.onEventCalendarSelected?(id)
             })
+        }
+    }
+
+    /// All four calendar pickers (start/end × date/time) share an
+    /// identical modifier chain — only the displayed components and
+    /// the `.datePickerStyle` differ. Branching on `kind.isTime` here
+    /// keeps the switch in `pickerContent` to one calendar arm.
+    @ViewBuilder
+    private func calendarPickerView(
+        kind: Model.PickerOverlay.CalendarPickerKind,
+        date: Date
+    ) -> some View {
+        let binding = Binding(
+            get: { date },
+            set: { model.onCalendarPickerChanged?(kind, $0) }
+        )
+        if kind.isTime {
+            DatePicker(selection: binding, displayedComponents: [.hourAndMinute]) {
+                EmptyView()
+            }
+            .labelsHidden()
+            .datePickerStyle(.wheel)
+            .tint(model.ink)
+            .environment(\.locale, model.locale)
+            .environment(\.calendar, model.calendar)
+            .environment(\.timeZone, model.timeZone)
+            .frame(maxWidth: .infinity)
+        } else {
+            DatePicker(selection: binding, displayedComponents: [.date]) {
+                EmptyView()
+            }
+            .labelsHidden()
+            .datePickerStyle(.graphical)
+            .tint(model.ink)
+            .environment(\.locale, model.locale)
+            .environment(\.calendar, model.calendar)
+            .environment(\.timeZone, model.timeZone)
         }
     }
 
@@ -712,8 +721,7 @@ extension DispatchView {
         // Picker overlay
         let pickerOverlay: PickerOverlay?
         let onPickerDismiss: () -> Void
-        let onCalendarDateChanged: ((Date) -> Void)?
-        let onCalendarTimeChanged: ((Date) -> Void)?
+        let onCalendarPickerChanged: ((PickerOverlay.CalendarPickerKind, Date) -> Void)?
         let onEventCalendarSelected: ((String) -> Void)?
         let onReminderDueChanged: ((Date?) -> Void)?
         let onReminderHasTimeChanged: ((Bool) -> Void)?
@@ -852,19 +860,44 @@ extension DispatchView {
         }
 
         enum PickerOverlay: Equatable {
-            case calendarDate(Date)
-            case calendarTime(Date)
+            /// All four calendar pickers (start/end × date/time) share
+            /// identical structure — a `Date` payload and a date- or
+            /// time-style DatePicker. Collapsed under one case with a
+            /// `CalendarPickerKind` discriminator so the picker view
+            /// has one switch arm per render style (date / time)
+            /// instead of four.
+            case calendarPicker(CalendarPickerKind, Date)
             case eventCalendar([PickerChoice], selected: String?)
             case reminderDue(Date?, hasTime: Bool)
             case reminderList([PickerChoice], selected: String?)
 
+            enum CalendarPickerKind: Equatable {
+                case startDate, startTime, endDate, endTime
+
+                /// Time pickers render `.wheel`, date pickers render `.graphical`.
+                var isTime: Bool {
+                    switch self {
+                    case .startTime, .endTime: return true
+                    case .startDate, .endDate: return false
+                    }
+                }
+
+                var title: String {
+                    switch self {
+                    case .startDate: return AppStrings.DispatchModal.date
+                    case .startTime: return AppStrings.DispatchModal.time
+                    case .endDate:   return AppStrings.DispatchModal.endDate
+                    case .endTime:   return AppStrings.DispatchModal.endTime
+                    }
+                }
+            }
+
             var title: String {
                 switch self {
-                case .calendarDate:  return AppStrings.DispatchModal.date
-                case .calendarTime:  return AppStrings.DispatchModal.time
-                case .eventCalendar: return AppStrings.DispatchModal.calendar
-                case .reminderDue:   return AppStrings.DispatchModal.due
-                case .reminderList:  return AppStrings.DispatchModal.list
+                case .calendarPicker(let kind, _): return kind.title
+                case .eventCalendar:               return AppStrings.DispatchModal.calendar
+                case .reminderDue:                 return AppStrings.DispatchModal.due
+                case .reminderList:                return AppStrings.DispatchModal.list
                 }
             }
         }

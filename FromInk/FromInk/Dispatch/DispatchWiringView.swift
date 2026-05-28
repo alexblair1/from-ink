@@ -32,6 +32,14 @@ extension DispatchView.Model {
         let destination = store.destination
         let isGranted = store.currentAuth == .fullAccess
 
+        // Resolve calendar dates once. The reducer seeds on `.onAppear`,
+        // but a render in the brief window before the seed lands sees
+        // `nil` — fall back to `now` + default duration so the displayed
+        // values match what the seed produces moments later.
+        let displayStart = store.calendarStart ?? cal.now()
+        let displayEnd = store.calendarEnd
+            ?? displayStart.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+
         // Destination tab strip — reuses InkTabStrip (the home-screen
         // tab pattern). Identifiers are the Destination raw values so
         // the strip stays decoupled from the reducer's enum.
@@ -94,7 +102,7 @@ extension DispatchView.Model {
             let date = DispatchView.Model.Field(
                 kind: .date,
                 label: AppStrings.DispatchModal.date,
-                value: Self.dateOnlyDisplay(store.calendarStart, cal: cal),
+                value: Self.dateOnlyDisplay(displayStart, cal: cal),
                 placeholder: "",
                 behavior: isGranted
                     ? .picker(action: { store.send(.overlayOpened(.calendarDate)) })
@@ -103,10 +111,28 @@ extension DispatchView.Model {
             let time = DispatchView.Model.Field(
                 kind: .time,
                 label: AppStrings.DispatchModal.time,
-                value: Self.timeOnlyDisplay(store.calendarStart, cal: cal),
+                value: Self.timeOnlyDisplay(displayStart, cal: cal),
                 placeholder: "",
                 behavior: isGranted
                     ? .picker(action: { store.send(.overlayOpened(.calendarTime)) })
+                    : .disabledPicker
+            )
+            let endDate = DispatchView.Model.Field(
+                kind: .endDate,
+                label: AppStrings.DispatchModal.endDate,
+                value: Self.dateOnlyDisplay(displayEnd, cal: cal),
+                placeholder: "",
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.calendarEndDate)) })
+                    : .disabledPicker
+            )
+            let endTime = DispatchView.Model.Field(
+                kind: .endTime,
+                label: AppStrings.DispatchModal.endTime,
+                value: Self.timeOnlyDisplay(displayEnd, cal: cal),
+                placeholder: "",
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.calendarEndTime)) })
                     : .disabledPicker
             )
             let selectedCalendarTitle = store.eventCalendarID.flatMap { id in
@@ -121,7 +147,11 @@ extension DispatchView.Model {
                     ? .picker(action: { store.send(.overlayOpened(.eventCalendar)) })
                     : .disabledPicker
             )
-            fields = [.pair(date, time), .full(calendarField)]
+            fields = [
+                .pair(date, time),
+                .pair(endDate, endTime),
+                .full(calendarField),
+            ]
 
         case .reminders:
             let listTitle = store.reminderListID.flatMap { id in
@@ -173,9 +203,13 @@ extension DispatchView.Model {
         let pickerOverlay: DispatchView.Model.PickerOverlay?
         switch store.openOverlay {
         case .calendarDate:
-            pickerOverlay = .calendarDate(store.calendarStart)
+            pickerOverlay = .calendarPicker(.startDate, displayStart)
         case .calendarTime:
-            pickerOverlay = .calendarTime(store.calendarStart)
+            pickerOverlay = .calendarPicker(.startTime, displayStart)
+        case .calendarEndDate:
+            pickerOverlay = .calendarPicker(.endDate, displayEnd)
+        case .calendarEndTime:
+            pickerOverlay = .calendarPicker(.endTime, displayEnd)
         case .eventCalendar:
             let choices = store.eventCalendars.map {
                 DispatchView.Model.PickerChoice(id: $0.id, title: $0.title)
@@ -294,8 +328,14 @@ extension DispatchView.Model {
             errorMessage: errorMessage,
             pickerOverlay: pickerOverlay,
             onPickerDismiss: { store.send(.overlayDismissed) },
-            onCalendarDateChanged: { date in store.send(.calendarDateChanged(date)) },
-            onCalendarTimeChanged: { date in store.send(.calendarTimeChanged(date)) },
+            onCalendarPickerChanged: { kind, date in
+                switch kind {
+                case .startDate: store.send(.calendarDateChanged(date))
+                case .startTime: store.send(.calendarTimeChanged(date))
+                case .endDate:   store.send(.calendarEndDateChanged(date))
+                case .endTime:   store.send(.calendarEndTimeChanged(date))
+                }
+            },
             onEventCalendarSelected: { id in
                 store.send(.eventCalendarSelected(id))
                 store.send(.overlayDismissed)
