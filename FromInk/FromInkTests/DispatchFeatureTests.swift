@@ -9,6 +9,7 @@ final class DispatchFeatureTests: XCTestCase {
     // weekday afternoon — not a DST boundary, not a year/month edge.
     private static let fixedNow = Date(timeIntervalSince1970: 1_779_624_000)
 
+
     /// Bridges `CalendarContext.fixed` (deterministic clock) and a fully-
     /// stubbed `EventKitService` so every test gets a clean dependency
     /// set without having to repeat the boilerplate.

@@ -259,7 +259,7 @@ struct DispatchView: View {
     @ViewBuilder
     private var fieldsSection: some View {
         VStack(spacing: model.innerSpacing) {
-            ForEach(Array(model.fields.enumerated()), id: \.offset) { _, row in
+            ForEach(model.fields) { row in
                 switch row {
                 case .pair(let a, let b):
                     HStack(alignment: .top, spacing: model.innerSpacing) {
@@ -278,10 +278,15 @@ struct DispatchView: View {
     private func fieldCell(_ field: Model.Field) -> some View {
         VStack(alignment: .leading, spacing: model.tightSpacing) {
             monoLabel(field.label)
-            if field.isInline {
+            switch field.behavior {
+            case .picker(let action):
+                pickerCell(value: field.value, isEnabled: true, action: action)
+            case .disabledPicker:
+                pickerCell(value: field.value, isEnabled: false, action: {})
+            case .inline(let onChange):
                 TextField(field.placeholder, text: Binding(
                     get: { field.value },
-                    set: { field.onTextChange?($0) }
+                    set: { onChange($0) }
                 ))
                 .textFieldStyle(.plain)
                 .font(model.bodyFont)
@@ -291,29 +296,35 @@ struct DispatchView: View {
                 .overlay(
                     Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
                 )
-            } else {
-                Button(action: { field.onTap?() }) {
-                    HStack {
-                        Text(field.value.isEmpty ? "—" : field.value)
-                            .font(model.bodyFont)
-                            .foregroundStyle(model.ink)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.down")
-                            .font(model.chevronFont)
-                            .foregroundStyle(model.ink2)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .overlay(
-                        Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(field.onTap == nil)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Shared picker-cell chrome (value text + chevron + bordered row).
+    /// Single render path for both `.picker` and `.disabledPicker` —
+    /// the only difference is the `.disabled` modifier and which
+    /// action runs on tap.
+    private func pickerCell(value: String, isEnabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(value.isEmpty ? AppStrings.Common.emptyValuePlaceholder : value)
+                    .font(model.bodyFont)
+                    .foregroundStyle(model.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down")
+                    .font(model.chevronFont)
+                    .foregroundStyle(model.ink2)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .overlay(
+                Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
     }
 
     // MARK: - Note
@@ -746,23 +757,92 @@ extension DispatchView {
         let chevronFont: Font
 
         struct Field {
+            /// Semantic role of the field. Drives stable SwiftUI
+            /// identity (so a row swap doesn't trigger focus loss or
+            /// animation cross-fade) and lets the adapter declare what
+            /// each row IS without parsing labels.
+            ///
+            /// **Convention:** `kind` and `behavior` are independently
+            /// typed but conventionally paired by the adapter:
+            ///   - Tap-to-open-picker kinds (date, time, endDate, endTime,
+            ///     eventCalendar, location, recurrence, alarm, list, due)
+            ///     pair with `.picker` or `.disabledPicker`.
+            ///   - Inline-text-input kinds (url, to, subject) pair with
+            ///     `.inline`.
+            /// The compiler doesn't enforce this — only the adapter
+            /// (single construction site) does. If we ever introduce a
+            /// second construction site, consider a generic phantom
+            /// type to lift the convention into the type system.
+            let kind: Kind
             let label: String
             let value: String
             let placeholder: String
-            /// True for inline text fields (Mail "To" / "Subject");
-            /// false for tap-to-open-picker fields (Date / Time / List / Due).
-            let isInline: Bool
-            let onTap: (() -> Void)?
-            let onTextChange: ((String) -> Void)?
+            let behavior: Behavior
+
+            /// Every field that could appear in any destination form,
+            /// enumerated. Adding a destination field requires a case
+            /// here — the compiler then surfaces every site that needs
+            /// to update.
+            enum Kind: String {
+                // Calendar
+                case date, time, endDate, endTime
+                case eventCalendar
+                case location, url
+                case recurrence, alarm
+                // Reminders
+                case list, due
+                // Mail
+                case to, subject
+            }
+
+            /// Tap-to-open-picker vs. inline-text-field, modeled as a
+            /// sum type so the two callback styles are mutually
+            /// exclusive at the type level. The "no choices to offer"
+            /// case is its own variant rather than an optional closure
+            /// inside `.picker` — three explicit cases, zero optionals,
+            /// switch exhaustiveness covers every render path.
+            enum Behavior {
+                /// Tappable picker row with a real action.
+                case picker(action: () -> Void)
+                /// Picker row rendered in a disabled state. Used when the
+                /// picker has no choices to offer (e.g., a Reminders list
+                /// picker when the user has no writable lists).
+                case disabledPicker
+                /// Inline `TextField`. The closure receives every keystroke.
+                case inline(onChange: (String) -> Void)
+            }
         }
 
         /// One row in the destination-aware fields section. Pairs render
-        /// two `Field` cells side-by-side; `.full` renders a single cell
-        /// spanning the row width. Caller composes whatever shape the
-        /// destination needs — no fixed slot count.
-        enum FieldRow {
+        /// two `Field` cells side-by-side (when the two fields naturally
+        /// read together — Date + Time, To + Subject); `.full` renders
+        /// a single cell spanning the row width (for solo fields like
+        /// Calendar selector, Location, URL).
+        enum FieldRow: Identifiable {
             case pair(Field, Field)
             case full(Field)
+
+            /// Stable per-role id so SwiftUI doesn't conflate two
+            /// semantically distinct rows that happen to land at the
+            /// same index (which would cause focus loss and animation
+            /// discontinuities when conditional rows enter or leave).
+            ///
+            /// **Uniqueness invariant:** the adapter MUST emit at most
+            /// one row per `Field.Kind` per render. Two `.full` rows
+            /// sharing a Kind, or a `.pair` whose two kinds match
+            /// another row's pair (in either order), would collide and
+            /// trigger SwiftUI's "ForEach with duplicate id" warning at
+            /// runtime. Naturally maintained because each destination
+            /// form lists each field exactly once — but worth knowing
+            /// before adding repeated rows (e.g., multiple alarms).
+            var id: String {
+                switch self {
+                case .pair(let a, let b):
+                    "pair-\(a.kind.rawValue)-\(b.kind.rawValue)"
+                case .full(let f):
+                    "full-\(f.kind.rawValue)"
+                }
+            }
         }
 
         enum ProgressMark: Equatable {

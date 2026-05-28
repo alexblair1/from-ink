@@ -105,6 +105,16 @@ extension AppStrings {
             value: "Subject",
             comment: "Mail field label — subject"
         )
+        static let mailToPlaceholder = NSLocalizedString(
+            "dispatch.modal.mail.toPlaceholder",
+            value: "name@example.com",
+            comment: "Placeholder for the Mail recipient field"
+        )
+        static let mailSubjectPlaceholder = NSLocalizedString(
+            "dispatch.modal.mail.subjectPlaceholder",
+            value: "Subject",
+            comment: "Placeholder for the Mail subject field"
+        )
 
         static let noteLabel = NSLocalizedString(
             "dispatch.modal.note.label",

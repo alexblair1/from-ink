@@ -104,6 +104,15 @@ struct DispatchFeature: Reducer {
 
         var currentLine: String { currentTask?.line ?? "" }
 
+        /// Mail subject as used by both the view (placeholder/display)
+        /// and the send path (mailto URL). Falls back to the current
+        /// line when the user hasn't typed an explicit subject — single
+        /// rule, single site, no chance of the view and the reducer
+        /// drifting from each other on what "empty subject" means.
+        var effectiveMailSubject: String {
+            mailSubject.isEmpty ? currentLine : mailSubject
+        }
+
         var currentAuth: PermissionAuthStatus {
             switch destination {
             case .calendar:  return calendarAuth
@@ -409,7 +418,7 @@ struct DispatchFeature: Reducer {
                 let reminderDue = state.reminderDue
                 let reminderHasTime = state.reminderHasTime
                 let mailTo = state.mailTo
-                let mailSubject = state.mailSubject.isEmpty ? line : state.mailSubject
+                let mailSubject = state.effectiveMailSubject
 
                 return .run { send in
                     do {

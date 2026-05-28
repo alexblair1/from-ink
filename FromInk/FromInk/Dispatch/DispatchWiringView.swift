@@ -92,37 +92,34 @@ extension DispatchView.Model {
         switch destination {
         case .calendar:
             let date = DispatchView.Model.Field(
+                kind: .date,
                 label: AppStrings.DispatchModal.date,
                 value: Self.dateOnlyDisplay(store.calendarStart, cal: cal),
                 placeholder: "",
-                isInline: false,
-                onTap: isGranted
-                    ? { store.send(.overlayOpened(.calendarDate)) }
-                    : nil,
-                onTextChange: nil
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.calendarDate)) })
+                    : .disabledPicker
             )
             let time = DispatchView.Model.Field(
+                kind: .time,
                 label: AppStrings.DispatchModal.time,
                 value: Self.timeOnlyDisplay(store.calendarStart, cal: cal),
                 placeholder: "",
-                isInline: false,
-                onTap: isGranted
-                    ? { store.send(.overlayOpened(.calendarTime)) }
-                    : nil,
-                onTextChange: nil
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.calendarTime)) })
+                    : .disabledPicker
             )
             let selectedCalendarTitle = store.eventCalendarID.flatMap { id in
                 store.eventCalendars[id: id]?.title
             } ?? store.eventCalendars.first?.title ?? ""
             let calendarField = DispatchView.Model.Field(
+                kind: .eventCalendar,
                 label: AppStrings.DispatchModal.calendar,
                 value: selectedCalendarTitle,
                 placeholder: "",
-                isInline: false,
-                onTap: isGranted && !store.eventCalendars.isEmpty
-                    ? { store.send(.overlayOpened(.eventCalendar)) }
-                    : nil,
-                onTextChange: nil
+                behavior: isGranted && !store.eventCalendars.isEmpty
+                    ? .picker(action: { store.send(.overlayOpened(.eventCalendar)) })
+                    : .disabledPicker
             )
             fields = [.pair(date, time), .full(calendarField)]
 
@@ -131,16 +128,16 @@ extension DispatchView.Model {
                 store.reminderLists[id: id]?.title
             } ?? store.reminderLists.first?.title ?? ""
             let list = DispatchView.Model.Field(
+                kind: .list,
                 label: AppStrings.DispatchModal.list,
                 value: listTitle,
                 placeholder: "",
-                isInline: false,
-                onTap: isGranted && !store.reminderLists.isEmpty
-                    ? { store.send(.overlayOpened(.reminderList)) }
-                    : nil,
-                onTextChange: nil
+                behavior: isGranted && !store.reminderLists.isEmpty
+                    ? .picker(action: { store.send(.overlayOpened(.reminderList)) })
+                    : .disabledPicker
             )
             let due = DispatchView.Model.Field(
+                kind: .due,
                 label: AppStrings.DispatchModal.due,
                 value: Self.dueDisplay(
                     store.reminderDue,
@@ -148,38 +145,26 @@ extension DispatchView.Model {
                     cal: cal
                 ),
                 placeholder: "",
-                isInline: false,
-                onTap: isGranted
-                    ? { store.send(.overlayOpened(.reminderDue)) }
-                    : nil,
-                onTextChange: nil
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.reminderDue)) })
+                    : .disabledPicker
             )
             fields = [.pair(list, due)]
 
         case .mail:
             let to = DispatchView.Model.Field(
+                kind: .to,
                 label: AppStrings.DispatchModal.to,
                 value: store.mailTo,
-                placeholder: NSLocalizedString(
-                    "dispatch.modal.mail.toPlaceholder",
-                    value: "name@example.com",
-                    comment: "Placeholder for the Mail recipient field"
-                ),
-                isInline: true,
-                onTap: nil,
-                onTextChange: { value in store.send(.mailToChanged(value)) }
+                placeholder: AppStrings.DispatchModal.mailToPlaceholder,
+                behavior: .inline(onChange: { value in store.send(.mailToChanged(value)) })
             )
             let subject = DispatchView.Model.Field(
+                kind: .subject,
                 label: AppStrings.DispatchModal.subject,
-                value: store.mailSubject.isEmpty ? store.currentLine : store.mailSubject,
-                placeholder: NSLocalizedString(
-                    "dispatch.modal.mail.subjectPlaceholder",
-                    value: "Subject",
-                    comment: "Placeholder for the Mail subject field"
-                ),
-                isInline: true,
-                onTap: nil,
-                onTextChange: { value in store.send(.mailSubjectChanged(value)) }
+                value: store.effectiveMailSubject,
+                placeholder: AppStrings.DispatchModal.mailSubjectPlaceholder,
+                behavior: .inline(onChange: { value in store.send(.mailSubjectChanged(value)) })
             )
             fields = [.pair(to, subject)]
         }
