@@ -45,13 +45,27 @@ struct CalendarContext: Sendable {
 // MARK: - DependencyKey
 
 extension CalendarContext: DependencyKey {
+    /// `liveValue` reads `Date()` and `Calendar.autoupdatingCurrent` directly,
+    /// NOT via `@Dependency(\.date)` / `@Dependency(\.calendar)`.
+    ///
+    /// This is intentional. `CalendarContext` IS the clock seam for this app —
+    /// it exists so production code stops calling `Date()` ad hoc and starts
+    /// going through one Sendable abstraction. Layering swift-dependencies'
+    /// `\.date` and `\.calendar` underneath CalendarContext adds a second seam
+    /// that the test runtime polices: during a test bundle launch, the host app
+    /// boots, the bootstrap path installs live values, and any live closure that
+    /// touches `@Dependency(\.date)` trips swift-dependencies' "no test
+    /// implementation" XCTFail — even though the failure originated in host-app
+    /// launch, not in a test. (See swift-dependencies "Testing gotchas".)
+    ///
+    /// The CLAUDE.md rule "no bare `Date()`" is about production *call sites* —
+    /// not about the one foundational dependency whose entire job is to wrap
+    /// the system clock. Tests override `CalendarContext` itself via
+    /// `withDependencies { $0.calendarContext = .fixed(now: ...) }`.
     static var liveValue: CalendarContext {
-        @Dependency(\.date) var date
-        @Dependency(\.calendar) var calendar
-
-        return CalendarContext(
-            now: { date.now },
-            userCalendar: { calendar },
+        CalendarContext(
+            now: { Date() },
+            userCalendar: { Calendar.autoupdatingCurrent },
             userTimeZone: { .autoupdatingCurrent },
             userLocale: { .autoupdatingCurrent },
             dayKey: { d in
@@ -65,11 +79,13 @@ extension CalendarContext: DependencyKey {
                 }
                 return String(format: "%04d-%02d-%02d", y, m, day)
             },
-            startOfDay: { d in calendar.startOfDay(for: d) },
-            isSameDay: { a, b in calendar.isDate(a, inSameDayAs: b) },
-            isToday: { d in calendar.isDateInToday(d) },
+            startOfDay: { d in Calendar.autoupdatingCurrent.startOfDay(for: d) },
+            isSameDay: { a, b in Calendar.autoupdatingCurrent.isDate(a, inSameDayAs: b) },
+            isToday: { d in Calendar.autoupdatingCurrent.isDateInToday(d) },
             add: { component, value, d in
-                guard let result = calendar.date(byAdding: component, value: value, to: d) else {
+                guard let result = Calendar.autoupdatingCurrent.date(
+                    byAdding: component, value: value, to: d
+                ) else {
                     preconditionFailure(
                         "Calendar.date(byAdding: \(component), value: \(value)) returned nil."
                     )
