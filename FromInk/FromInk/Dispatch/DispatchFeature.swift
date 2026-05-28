@@ -58,6 +58,16 @@ struct DispatchFeature: Reducer {
         /// Available writable calendars, fetched once after event access grants.
         var eventCalendars: IdentifiedArrayOf<CalendarSnapshot> = []
 
+        /// Optional URL attached to the event (zoom link, doc link, etc.).
+        /// Stored as `String` because the user types free text — whatever
+        /// they type stays in the form. On send we trim whitespace, run
+        /// `URL(string:)`, AND require a scheme — `URL(string:)` is
+        /// surprisingly permissive and accepts schemeless input like
+        /// `"example.com"` as a relative URL, which Calendar.app can't
+        /// render as a tappable link. Requiring a scheme matches what
+        /// users actually want when they paste a URL field.
+        var eventURL: String = ""
+
         /// Reminders — list identifier + optional due moment.
         var reminderListID: String? = nil
         var reminderDue: Date? = nil
@@ -200,6 +210,7 @@ struct DispatchFeature: Reducer {
         case calendarEndTimeChanged(Date)
         case eventCalendarSelected(String)
         case eventCalendarsLoaded([CalendarSnapshot])
+        case eventURLChanged(String)
         case reminderListSelected(String)
         case reminderDueChanged(Date?)
         case reminderHasTimeChanged(Bool)
@@ -295,6 +306,10 @@ struct DispatchFeature: Reducer {
             case .eventCalendarsLoaded(let calendars):
                 state.eventCalendars = IdentifiedArray(uniqueElements: calendars)
                 if state.eventCalendarID == nil { state.eventCalendarID = calendars.first?.id }
+                return .none
+
+            case .eventURLChanged(let url):
+                state.eventURL = url
                 return .none
 
             case .reminderListSelected(let id):
@@ -437,6 +452,14 @@ struct DispatchFeature: Reducer {
                 let reminderHasTime = state.reminderHasTime
                 let mailTo = state.mailTo
                 let mailSubject = state.effectiveMailSubject
+                // Trim → parse → require a scheme. Empty / whitespace-only
+                // input maps to `nil` from URL(string:). Schemeless input
+                // like "example.com" technically parses (as a relative URL)
+                // but Calendar.app can't make it tappable, so we drop it.
+                // Apple Calendar's URL field has the same outward behavior:
+                // accepts free text, only saves what it can render.
+                let trimmedURL = state.eventURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                let eventURL = URL(string: trimmedURL).flatMap { $0.scheme == nil ? nil : $0 }
 
                 return .run { send in
                     do {
@@ -449,6 +472,7 @@ struct DispatchFeature: Reducer {
                                 endDate: calendarEnd,
                                 isAllDay: false,
                                 location: "",
+                                url: eventURL,
                                 calendarID: eventCalendarID,
                                 alarmsMinutesBefore: []
                             )

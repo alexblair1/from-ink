@@ -147,11 +147,28 @@ extension DispatchView.Model {
                     ? .picker(action: { store.send(.overlayOpened(.eventCalendar)) })
                     : .disabledPicker
             )
-            fields = [
+            // URL is a `.inline` TextField. There is no `.disabledInline`
+            // behavior — disabling it via `.disabledPicker` would render
+            // a misleading "tap to pick URL" chevron row that does
+            // nothing. When permission isn't granted the whole form is
+            // overlaid by the permission card anyway, so the user loses
+            // no real capability by us simply omitting the row.
+            var calendarFields: [DispatchView.Model.FieldRow] = [
                 .pair(date, time),
                 .pair(endDate, endTime),
                 .full(calendarField),
             ]
+            if isGranted {
+                let urlField = DispatchView.Model.Field(
+                    kind: .url,
+                    label: AppStrings.DispatchModal.url,
+                    value: store.eventURL,
+                    placeholder: AppStrings.DispatchModal.urlPlaceholder,
+                    behavior: .inline(onChange: { value in store.send(.eventURLChanged(value)) })
+                )
+                calendarFields.append(.full(urlField))
+            }
+            fields = calendarFields
 
         case .reminders:
             let listTitle = store.reminderListID.flatMap { id in

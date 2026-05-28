@@ -85,6 +85,16 @@ extension AppStrings {
             value: "End Time",
             comment: "Calendar field label — end time (separate from end date)"
         )
+        static let url = NSLocalizedString(
+            "dispatch.modal.field.url",
+            value: "URL",
+            comment: "Calendar field label — URL attached to the event (zoom link, doc link, etc.)"
+        )
+        static let urlPlaceholder = NSLocalizedString(
+            "dispatch.modal.field.url.placeholder",
+            value: "https://",
+            comment: "Placeholder text inside the URL inline text field on the Calendar dispatch form"
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

@@ -389,6 +389,114 @@ final class DispatchFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.mailTo, "alex@example.com")
     }
 
+    // MARK: - Event URL field
+
+    func test_eventURLChanged_updatesState() async {
+        let store = makeStore()
+        await store.send(.eventURLChanged("https://example.com")) {
+            $0.eventURL = "https://example.com"
+        }
+    }
+
+    func test_destinationSelected_preservesEventURLAcrossSwitch() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventURLChanged("https://meet.example.com/abc")) {
+            $0.eventURL = "https://meet.example.com/abc"
+        }
+        // calendar → mail → calendar. URL must survive both switches.
+        await store.send(.destinationSelected(.mail)) { $0.destination = .mail }
+        await store.send(.destinationSelected(.calendar)) { $0.destination = .calendar }
+        XCTAssertEqual(store.state.eventURL, "https://meet.example.com/abc")
+    }
+
+    func test_sendTapped_calendar_passesValidURL_toDraftEvent() async {
+        let savedURL = LockIsolated<URL?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedURL.setValue(draft.url)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventURLChanged("https://meet.example.com/abc")) {
+            $0.eventURL = "https://meet.example.com/abc"
+        }
+        await store.send(.sendTapped) {
+            $0.saveState = .saving
+        }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedURL.value, URL(string: "https://meet.example.com/abc"))
+    }
+
+    func test_sendTapped_calendar_dropsWhitespaceOnlyURL() async {
+        // URL(string: "") returns nil. After trimming, whitespace-only
+        // input also lands at empty → nil. Most common "drop me" case.
+        let savedURL = LockIsolated<URL?>(URL(string: "https://placeholder"))
+        let store = makeStore(
+            createEvent: { draft in
+                savedURL.setValue(draft.url)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventURLChanged("   ")) { $0.eventURL = "   " }
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertNil(savedURL.value)
+    }
+
+    func test_sendTapped_calendar_dropsSchemelessURL() async {
+        // "example.com" without a scheme parses as a RELATIVE URL —
+        // URL(string:) returns non-nil — but Calendar.app can't make a
+        // schemeless URL tappable. The send-path scheme guard exists
+        // precisely so input like this doesn't quietly degrade.
+        let savedURL = LockIsolated<URL?>(URL(string: "https://placeholder"))
+        let store = makeStore(
+            createEvent: { draft in
+                savedURL.setValue(draft.url)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventURLChanged("example.com")) { $0.eventURL = "example.com" }
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertNil(savedURL.value)
+    }
+
     // MARK: - Permission gating
 
     func test_canSend_isFalse_whenPermissionUndetermined() async {
