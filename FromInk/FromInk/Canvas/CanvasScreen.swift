@@ -3,12 +3,10 @@ import PencilKit
 import ComposableArchitecture
 
 private enum ActiveSheet: Identifiable {
-    case lasso
     case brief
     case link
     var id: String {
         switch self {
-        case .lasso: return "lasso"
         case .brief: return "brief"
         case .link:  return "link"
         }
@@ -83,8 +81,6 @@ struct CanvasScreen: View {
     @State private var briefSummary: String = ""
     @State private var briefTasks: [InkTask] = []
     @State private var briefOpenQuestion: String? = nil
-    @State private var lassoTask: InkTask? = nil
-    @State private var isRecognizing = false
     @State private var lassoMenuImage: UIImage? = nil
     @State private var lassoMenuRect: CGRect = .zero
     @State private var lassoContentRect: CGRect = .zero
@@ -152,12 +148,19 @@ struct CanvasScreen: View {
     /// task as a single line. The reducer's `.onAppear` seeds
     /// `calendarStart` to `cal.now()` — today, current moment — so this
     /// call site never touches `Date()`. Destination defaults to
-    /// `.calendar` because the user just chose to route to Calendar;
-    /// they can still flip to Reminders or Mail inside the modal.
-    private func presentDispatchFlow(for task: InkTask) {
+    /// `.calendar`; the user can flip to Reminders or Mail inside the
+    /// modal.
+    ///
+    /// `isExtracting: true` opens the modal immediately with an inline
+    /// "Reading your notes…" placeholder in the line section — used by
+    /// the lasso flow so the user gets a responsive modal before OCR
+    /// completes. The caller is then responsible for sending
+    /// `.extractionCompleted(line)` to the store when extraction lands.
+    private func presentDispatchFlow(for task: InkTask, isExtracting: Bool = false) {
         let store = Store(
             initialState: DispatchFeature.State(
-                tasks: [DispatchTask.single(from: task)]
+                tasks: [DispatchTask.single(from: task)],
+                isExtracting: isExtracting
             )
         ) {
             DispatchFeature()
@@ -246,13 +249,20 @@ struct CanvasScreen: View {
             onTaskBrief: {
                 guard let image = lassoMenuImage else { return }
                 showLassoMenu = false
-                lassoTask = nil
-                isRecognizing = true
-                activeSheet = .lasso
+                // Present Dispatch immediately with the line section in
+                // its extracting state — the user sees the modal land
+                // right away rather than a 200–500ms blank wait while
+                // OCR runs. The store reference is captured here so a
+                // dismiss-then-reopen during OCR doesn't redirect this
+                // result to a different (newer) modal.
+                presentDispatchFlow(for: InkTask(title: ""), isExtracting: true)
+                let store = dispatchFlow?.store
                 Task {
-                    defer { isRecognizing = false }
                     let result = await InkTaskExtractor.extract(image: image, scope: .single)
-                    lassoTask = result.tasks.first
+                    let line = result.tasks.first?.title ?? ""
+                    await MainActor.run {
+                        store?.send(.extractionCompleted(line))
+                    }
                 }
             },
             onMarkHeader: {
@@ -352,15 +362,23 @@ struct CanvasScreen: View {
 
                 // Universal Dispatch overlay — shown when a routed task
                 // needs user input. Rendered last in the ZStack so it
-                // covers all other page content while active.
+                // covers all other page content while active. The
+                // `.transition(.opacity)` + sibling animation produces
+                // a subtle fade-in (and fade-out on dismiss); 100ms
+                // linear matches the project animation rule.
                 if let flow = dispatchFlow {
                     DispatchWiringView(store: flow.store)
+                        .transition(.opacity)
                         .onChange(of: flow.store.completion) { _, completion in
                             guard let completion else { return }
                             handleDispatchCompletion(completion, task: flow.task, store: flow.store)
                         }
                 }
             }
+            // Page-level overlay — use `slow` (120ms) for the more
+            // deliberate full-overlay fade. See "Loading-to-content
+            // crossfade" / "Modal overlay fade-in" in CLAUDE.md.
+            .animation(DesignSystem.standard.animation.slow, value: dispatchFlow == nil)
             .onChange(of: currentDrawing.strokes.count) { _, _ in
                 pruneErasedLinks()
             }
@@ -597,19 +615,6 @@ struct CanvasScreen: View {
     @ViewBuilder
     private func sheetContent(for sheet: ActiveSheet) -> some View {
         switch sheet {
-        case .lasso:
-            LassoActionSheet(
-                isLoading: isRecognizing,
-                task: lassoTask ?? InkTask(title: ""),
-                onDismiss: { activeSheet = nil },
-                onSend: { task in
-                    activeSheet = nil
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(600))
-                        await routeTask(task)
-                    }
-                }
-            )
         case .brief:
             BriefSheet(
                 isLoading: isAnalyzing,

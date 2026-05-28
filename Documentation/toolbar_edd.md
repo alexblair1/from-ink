@@ -4,8 +4,8 @@
 |---|---|
 | Status | Proposed |
 | Owner | Solo |
-| Last updated | 2026-05-09 |
-| Implements ticket | F-07 (CanvasFeature) |
+| Last updated | 2026-05-27 |
+| Implements ticket | F-07 (NotebookFeature) |
 | Companion docs | EDD — View Layer, EDD — Data Layer |
 
 ---
@@ -23,7 +23,7 @@
 9. [Panel presentation](#9-panel-presentation)
 10. [Gestures & imperative boundaries](#10-gestures--imperative-boundaries)
 11. [Settings persistence](#11-settings-persistence)
-12. [Integration with CanvasFeature](#12-integration-with-canvasfeature)
+12. [Integration with NotebookFeature](#12-integration-with-notebookfeature)
 13. [Testing](#13-testing)
 14. [Open questions](#14-open-questions)
 15. [Decision log](#15-decision-log)
@@ -32,7 +32,7 @@
 
 ## 1. Summary
 
-The toolbar is a TCA child feature scoped under `CanvasFeature`. It manages tool selection, per-tool settings, panel presentation, toolbar side, and template selection. The view layer follows the three-tier taxonomy: component views for buttons and panels, a feature view for layout, and a wiring view for Store binding. Apple Pencil gestures (double-tap, squeeze) and drag-to-switch-sides flow through the reducer as discrete actions — they do not bypass TCA.
+The toolbar is a TCA child feature scoped under `NotebookFeature` (the toolbar is notebook-wide chrome that lives outside the paged `TabView` — see §3.2 for the render-site invariant). It manages tool selection, per-tool settings, panel presentation, and toolbar side. The view layer follows the three-tier taxonomy: component views for buttons and panels, a feature view for layout, and a wiring view for Store binding. Apple Pencil gestures (double-tap, squeeze, two-finger hold) and drag-to-switch-sides flow through the reducer as discrete actions — they do not bypass TCA.
 
 ---
 
@@ -56,15 +56,17 @@ The toolbar is a TCA child feature scoped under `CanvasFeature`. It manages tool
 ## 3. Architecture
 
 ```
-CanvasFeature (@Reducer)
+NotebookFeature (Reducer — manual conformance, see §3.1)
   └─ Scope(state: \.toolbar, action: \.toolbar)
-       └─ ToolbarFeature (@Reducer)
-            ├─ State: activeToolID, previousToolID, toolSettings, openPanel, side, template
-            ├─ Action: toolSelected, toolDoubleTapped, pencilDoubleTapped, ...
+       └─ ToolbarFeature (Reducer)
+            ├─ State: activeToolID, toolStack, toolSettings, openPanel, side,
+            │         isBoltVisible, isDispatchRequested, customizingSettings
+            ├─ Action: toolTapped, pencilDoubleTapped, twoFingerHoldBegan, …
             └─ Dependencies: @Dependency(\.userPreferences)
 
-CanvasWiringView
-  └─ ToolbarWiringView (Store → Model)
+NotebookScreen (wiring tier — sibling to TabView)
+  ├─ TabView(.page) { CanvasScreen(…, toolbarStore: …) per page }
+  └─ ToolbarWiringView (single instance, scoped store)
        └─ ToolbarView (feature view, no TCA)
             ├─ ToolButtonView (component)
             ├─ ActionButtonView (component)
@@ -75,180 +77,182 @@ CanvasWiringView
 
 | View | Tier | Imports TCA | Accepts |
 |---|---|---|---|
-| `ToolButtonView` | Component | No | `Model` + `Style` |
-| `ActionButtonView` | Component | No | `Model` + `Style` |
-| `DragHandleView` | Component | No | `Model` + `Style` |
+| `ToolButtonView` | Component | No | `let model: Model` |
+| `ActionButtonView` | Component | No | `let model: Model` |
+| `DragHandleView` | Component | No | `let model: Model` |
 | `ToolbarView` | Feature | No | `let model: Model` |
 | `ToolbarWiringView` | Wiring | Yes | `StoreOf<ToolbarFeature>` |
+
+### 3.1 Manual `Reducer` conformance — no `@Reducer` macro
+
+This project is built with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. The `@Reducer` macro resolves `ReducerOf<Self>` during expansion, which creates a circular reference under that build setting that the compiler cannot resolve. Every reducer in this project — `ToolbarFeature` included — uses manual conformance:
+
+```swift
+struct ToolbarFeature: Reducer {
+    @ObservableState struct State: Equatable { … }
+    @CasePathable enum Action: Equatable { … }
+    var body: some Reducer<State, Action> {
+        Reduce { state, action in … }
+    }
+}
+```
+
+`Action: Equatable` is mandatory because the parent (`NotebookFeature.Action`) is `Equatable` and the macro-generated synthesis can't deduce it for non-`Equatable` payloads.
+
+### 3.2 Render-site invariant — toolbar lives at NotebookScreen level
+
+`ToolbarWiringView` MUST be rendered as a sibling of `NotebookScreen`'s `TabView(.page)` — never inside `CanvasScreen` or any per-page view. The reasons are non-negotiable:
+
+1. **Page swipes must not translate the toolbar.** When a view is rendered inside a paged `TabView`, it is mounted per-page and translates with the swipe gesture. The toolbar is canvas chrome, not page content; it has to stand still.
+2. **Tool selection persists across pages.** A single `ToolbarFeature` store backs the rail; per-page stores would mean a tool change on page 3 is invisible on page 4.
+3. **N instances → 1 instance.** A per-page render creates a fresh `ToolbarWiringView` for every visible + preloaded page; lifting reduces to one.
+
+**Hard rule for code review:** `grep -R "ToolbarWiringView" FromInk/Canvas/` must return zero results. If the toolbar appears inside a per-page view, the change is wrong.
+
+**Overlays — pinned vs per-page audit:**
+
+| Overlay | Lifecycle | Render site |
+|---|---|---|
+| `ToolbarWiringView` | Notebook-wide; persists across page swipes | `NotebookScreen` |
+| Toolbar panel (`openPanel`) | Notebook-wide; persists across swipes | `NotebookScreen` |
+| Dismiss / close X | Notebook-wide; persists across swipes | `NotebookScreen` |
+| Page navigator (prev/next pill) | Notebook-wide | `NotebookScreen` |
+| Add-page button | Notebook-wide | `NotebookScreen` |
+| Universal Dispatch modal | Notebook-wide for the active task; cancelled on page swipe by design | `CanvasScreen` (per-page state for v1; transient overlay) |
+| Lasso menu / lasso preview | Page-specific; tied to the active page's drawing | `CanvasScreen` |
+| Header indicators / link indicators | Page-specific; bound to per-page state | `CanvasScreen` |
+| Dispatch side panel (regular size class) | Per-page (headers/links are per-page) | `CanvasScreen` |
+
+If a new overlay's lifecycle is notebook-wide, it goes in `NotebookScreen`. If it's page-specific, it stays in `CanvasScreen`. The wrong placement is observable as either a UI element swiping with the page (when it shouldn't) or per-page UI duplicating across pages.
 
 ---
 
 ## 4. ToolbarFeature reducer
 
+`ToolbarFeature.swift` is the source of truth; this section sketches the State + Action shape and the load-bearing semantic choices that aren't obvious from the type signatures alone.
+
 ```swift
-@Reducer
-struct ToolbarFeature {
+struct ToolbarFeature: Reducer {
+
     @ObservableState
     struct State: Equatable {
         var activeToolID: ToolID = .pen
-        var previousToolID: ToolID = .pen
+        /// Pre-resolved per-tool settings for the active tool. Mirrors
+        /// `toolSettings[id: activeToolID]?.settings` but stored, not
+        /// computed — see "State holds resolved values" in CLAUDE.md.
+        var activeSettings: PenSettings = .default
+
+        /// Restoration stack for transient tool switches. Pushed on
+        /// pencil double-tap (→ eraser) and two-finger hold (→ lasso);
+        /// popped to restore. Multi-level so a hold-during-eraser nests
+        /// correctly: pen → eraser → lasso → eraser → pen.
+        var toolStack: [ToolID] = []
+
+        /// Per-tool persisted settings (thickness, penType, etc.).
         var toolSettings: IdentifiedArrayOf<ToolSettingsEntry> = []
+
         var openPanel: PanelKind? = nil
         var side: ToolbarSide = .left
-        var template: CanvasTemplate = .none
-        var strokeCount: Int = 0
 
-        var isBoltVisible: Bool { strokeCount >= 10 }
+        /// Set explicitly by the canvas when stroke count crosses 10.
+        /// Stored, not computed from a strokeCount field — the toolbar
+        /// only cares about the boolean, so it stores only the boolean.
+        var isBoltVisible: Bool = false
 
-        var activeSettings: PenSettings {
-            toolSettings[id: activeToolID]?.settings ?? .default
-        }
+        /// Forwarded-to-parent flag for the compact-size-class dispatch
+        /// button. Parent observes, presents the dispatch panel, then
+        /// sends `.dispatchAcknowledged` to reset.
+        var isDispatchRequested: Bool = false
+
+        /// Pre-resolved settings for the currently open customization
+        /// panel. Reducer sets this when `.toolTapped` opens the panel
+        /// (and on `.toolSettingsChanged` when the panel is active). The
+        /// view's binding reads it directly — no `?? .default` fallback.
+        /// See §9.1 for the contract.
+        var customizingSettings: PenSettings = .default
     }
 
-    enum Action {
-        // Tool selection
-        case toolSelected(ToolID)
-        case toolDoubleTapped(ToolID)
+    @CasePathable
+    enum Action: Equatable {
+        // Tool interaction — one action per user intent. The reducer
+        // disambiguates "switch tool" vs "toggle the panel for the
+        // already-active tool" internally.
+        case toolTapped(ToolID)
+
+        // Apple Pencil gestures (sent from CanvasView.Coordinator).
         case pencilDoubleTapped
         case pencilSqueezed
         case twoFingerHoldBegan
         case twoFingerHoldEnded
 
-        // Settings
+        // Per-tool settings persistence.
         case toolSettingsChanged(ToolID, PenSettings)
 
-        // Panels
-        case panelToggled(PanelKind)
+        // Panels.
+        case templatePickerToggled
+        case settingsToggled
         case panelDismissed
 
-        // Template
-        case templateSelected(CanvasTemplate)
-
-        // Chrome
+        // Chrome.
         case sideChanged(ToolbarSide)
-        case strokeCountUpdated(Int)
+        case boltVisibilityChanged(Bool)
 
-        // Forwarded to parent (return .none here)
+        // Forwarded to parent — return .none here.
         case undoTapped
         case redoTapped
         case analyzeTapped
+        case dispatchTapped
+        case dispatchAcknowledged
+        case templateSelected(CanvasTemplate)
 
-        // Lifecycle
+        // Lifecycle.
         case onAppear
-        case settingsLoaded(IdentifiedArrayOf<ToolSettingsEntry>, ToolbarSide, ToolID, CanvasTemplate)
+        case settingsLoaded(LoadedSettings)
     }
 
     @Dependency(\.userPreferences) var preferences
 
-    var body: some ReducerOf<Self> {
+    var body: some Reducer<State, Action> {
         Reduce { state, action in
             switch action {
 
-            // MARK: - Tool selection
-
-            case .toolSelected(let id):
-                guard id != state.activeToolID else { return .none }
-                state.previousToolID = state.activeToolID
+            // Switch tool: clear the restoration stack — a deliberate
+            // tool change is the user committing, not a transient.
+            case .toolTapped(let id) where id != state.activeToolID:
+                state.toolStack = []
                 state.activeToolID = id
+                state.activeSettings = state.toolSettings[id: id]?.settings ?? .default
                 state.openPanel = nil
                 return .none
 
-            case .toolDoubleTapped(let id):
-                if state.openPanel == .toolCustomization(id) {
-                    state.openPanel = nil
-                } else {
-                    state.activeToolID = id
-                    state.openPanel = .toolCustomization(id)
+            // Tap on the already-active tool — toggle its customization
+            // panel if the tool supports customization. Also pre-resolve
+            // `customizingSettings` so the view binding has no fallback.
+            case .toolTapped(let id):
+                let canCustomize = ToolDescriptor.descriptor(for: id)?.hasCustomization ?? false
+                guard canCustomize else { return .none }
+                let willOpen = state.openPanel != .toolCustomization(id)
+                state.openPanel = willOpen ? .toolCustomization(id) : nil
+                if willOpen {
+                    state.customizingSettings = state.toolSettings[id: id]?.settings ?? .default
                 }
                 return .none
 
-            case .pencilDoubleTapped:
-                if state.activeToolID == .eraser {
-                    state.activeToolID = state.previousToolID
-                } else {
-                    state.previousToolID = state.activeToolID
-                    state.activeToolID = .eraser
-                }
-                return .none
+            // … remaining cases follow the same single-source-of-truth
+            // pattern: state mutations resolve to stored values; effects
+            // only persist via UserPreferences. See ToolbarFeature.swift.
 
-            case .pencilSqueezed:
-                return .none // reserved
+            // …
 
-            case .twoFingerHoldBegan:
-                state.previousToolID = state.activeToolID
-                state.activeToolID = .lasso
-                return .none
-
-            case .twoFingerHoldEnded:
-                state.activeToolID = state.previousToolID
-                return .none
-
-            // MARK: - Settings
-
-            case .toolSettingsChanged(let id, let settings):
-                state.toolSettings[id: id] = ToolSettingsEntry(id: id, settings: settings)
-                return .run { _ in
-                    await preferences.saveToolSettings(id, settings)
-                }
-
-            // MARK: - Panels
-
-            case .panelToggled(let kind):
-                state.openPanel = state.openPanel == kind ? nil : kind
-                return .none
-
-            case .panelDismissed:
-                state.openPanel = nil
-                return .none
-
-            // MARK: - Template
-
-            case .templateSelected(let template):
-                state.template = template
-                state.openPanel = nil
-                return .run { _ in
-                    await preferences.saveTemplate(template)
-                }
-
-            // MARK: - Chrome
-
-            case .sideChanged(let side):
-                state.side = side
-                return .run { _ in
-                    await preferences.saveToolbarSide(side)
-                }
-
-            case .strokeCountUpdated(let count):
-                state.strokeCount = count
-                return .none
-
-            // MARK: - Forwarded to parent
-
-            case .undoTapped, .redoTapped, .analyzeTapped:
-                return .none
-
-            // MARK: - Lifecycle
-
-            case .onAppear:
-                return .run { send in
-                    let settings = await preferences.loadToolSettings()
-                    let side = await preferences.loadToolbarSide()
-                    let toolID = await preferences.loadActiveToolID()
-                    let template = await preferences.loadTemplate()
-                    await send(.settingsLoaded(settings, side, toolID, template))
-                }
-
-            case .settingsLoaded(let settings, let side, let toolID, let template):
-                state.toolSettings = settings
-                state.side = side
-                state.activeToolID = toolID
-                state.template = template
-                return .none
             }
         }
     }
 }
 ```
+
+**Why the State shape is "resolved values, not computed":** earlier iterations had `activeSettings` computed as `toolSettings[id: activeToolID]?.settings ?? .default`. That works but bakes a fallback into a derived getter — which then leaks into bindings on the view side. Storing `activeSettings` as a plain property, mutated explicitly on every action that affects it, keeps the fallback in exactly one place (the reducer) and makes the view's read site dumb. Same logic for `isBoltVisible` (boolean, not `strokeCount >= 10`) and `customizingSettings`.
+
+**Equatable on Action is required.** `NotebookFeature.Action: Equatable` includes `.toolbar(ToolbarFeature.Action)`, so the child action must conform. All payload types — `ToolID`, `PenSettings`, `ToolbarSide`, `CanvasTemplate`, `LoadedSettings`, `PanelKind` — are also `Equatable`.
 
 ---
 
@@ -530,9 +534,15 @@ extension ActionButtonView {
 }
 ```
 
-### 8.2 Feature view
+### 8.2 Feature view — pinned-top / scrollable-middle / pinned-bottom
 
-`ToolbarView` is a feature view. No TCA imports. Accepts `let model: Model`. Composes component views from zone data.
+`ToolbarView` stretches edge-to-edge vertically and lays out zones in three regions:
+
+- **Pinned top** — `placement == .pinnedTop` zones (currently: drag handle). Hugs the top edge.
+- **Scrollable middle** — `placement == .flexible` zones (currently: bolt, writing tools). Wrapped in a `ScrollView` so the writing-tools zone stays reachable even when the rail's natural height exceeds the screen. `.scrollBounceBehavior(.basedOnSize)` suppresses rubber-banding on tall iPads where everything fits.
+- **Pinned bottom** — `placement == .pinnedBottom` zones (currently: undo, redo, template, settings, optional dispatch on compact). Hugs the bottom edge.
+
+Hairlines separate the three regions only when both sides have content. Within each region, the existing per-zone hairlines still apply.
 
 ```swift
 import SwiftUI
@@ -540,77 +550,65 @@ import SwiftUI
 struct ToolbarView: View {
     let model: Model
 
-    private let ds = DesignSystem.standard
-
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(model.zones.enumerated()), id: \.element.id) { index, zone in
-                if index > 0 {
-                    HairlineRule()
-                }
+            zonesGroup(model.pinnedTopZones)
+            if model.showsTopBoundaryRule { HairlineRule() }
 
-                ForEach(Array(zone.items.enumerated()), id: \.offset) { _, item in
-                    switch item {
-                    case .toolButton(let buttonModel):
-                        ToolButtonView(model: buttonModel)
-                    case .actionButton(let buttonModel):
-                        ActionButtonView(model: buttonModel)
-                    case .bolt(let boltModel):
-                        BoltButton(model: boltModel)
-                    case .dragHandle(let handleModel):
-                        DragHandleView(model: handleModel)
-                    }
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    zonesGroup(model.flexibleZones)
                 }
             }
+            .scrollBounceBehavior(.basedOnSize)
+
+            if model.showsBottomBoundaryRule { HairlineRule() }
+            zonesGroup(model.pinnedBottomZones)
         }
-        .frame(width: model.style.width)
-        .background(model.style.background)
+        .frame(width: model.width)
+        .frame(maxHeight: .infinity)   // edge-to-edge anchor
+        .background(model.background)
         .overlay(alignment: model.borderAlignment) {
             Rectangle()
-                .fill(model.style.borderColor)
-                .frame(width: 1)
+                .fill(model.borderColor)
+                .frame(width: model.borderWidth)
         }
     }
+
+    @ViewBuilder
+    private func zonesGroup(_ zones: [Model.Zone]) -> some View { … }
 }
 
 extension ToolbarView {
-    struct Style {
+    struct Model {
+        let pinnedTopZones: [Zone]
+        let flexibleZones: [Zone]
+        let pinnedBottomZones: [Zone]
+        let showsTopBoundaryRule: Bool
+        let showsBottomBoundaryRule: Bool
+        let borderAlignment: Alignment
         let width: CGFloat
         let background: Color
         let borderColor: Color
-
-        static let standard = Style(
-            width: LayoutTokens.standard.toolbarWidth,
-            background: ColorTokens.standard.surface,
-            borderColor: ColorTokens.standard.rule
-        )
-    }
-
-    struct Model {
-        let zones: [Zone]
-        let borderAlignment: Alignment
-        let style: Style
-
-        init(zones: [Zone], side: ToolbarSide, style: Style = .standard) {
-            self.zones = zones
-            self.borderAlignment = side == .left ? .trailing : .leading
-            self.style = style
-        }
+        let borderWidth: CGFloat
 
         struct Zone: Identifiable {
             let id: String
             let items: [Item]
         }
 
-        enum Item {
+        enum Item: Identifiable {
             case toolButton(ToolButtonView.Model)
             case actionButton(ActionButtonView.Model)
-            case bolt(BoltButton.Model)
             case dragHandle(DragHandleView.Model)
         }
     }
 }
 ```
+
+The adapter (`ToolbarWiringView`) is responsible for bucketing zones by their `ToolbarZoneConfig.Placement` into the three model fields. The view itself never sees the placement enum — it just renders three lists.
+
+**Why this geometry:** the writing-tools zone has 7 items at 54pt each, plus drag handle + bolt + 4 action buttons. The natural rail height is ~700pt — fits on iPad, overflows on iPhone (~667pt usable). The pinned regions guarantee the drag handle stays reachable for side switching and the actions stay reachable for save/template/undo, regardless of how tall the tools list grows. On tall screens nothing scrolls; the layout collapses cleanly.
 
 ### 8.3 Wiring view + adapter
 
@@ -694,7 +692,7 @@ struct ToolbarWiringView: View {
 Features/Canvas/
   CanvasFeature.swift
   Toolbar/
-    ToolbarFeature.swift           # @Reducer
+    ToolbarFeature.swift           # Reducer (manual conformance, see §3.1)
     ToolDescriptor.swift           # ToolDescriptor + ToolID + allWritingTools
     ToolbarZoneConfig.swift        # Zone configuration types
     Views/
@@ -716,7 +714,7 @@ Features/Canvas/
 
 ## 9. Panel presentation
 
-Panels are presented by `CanvasFeature`'s view layer based on `ToolbarFeature.State.openPanel`. They are component views with Model + Style — no TCA imports.
+Panels are presented by `NotebookScreen` (the toolbar's render site — see §3.2) based on `ToolbarFeature.State.openPanel`. They are component views with Model + Style — no TCA imports.
 
 **PenCustomizationPanel** receives a `Binding<PenSettings>` (per View Layer EDD §9 — bindings passed alongside Model, not embedded in it):
 
@@ -724,49 +722,70 @@ Panels are presented by `CanvasFeature`'s view layer based on `ToolbarFeature.St
 struct PenCustomizationPanel: View {
     let model: Model
     @Binding var settings: PenSettings
-
     // ... pen type list, thickness selector, graphite/highlighter options
-}
-
-extension PenCustomizationPanel {
-    struct Model {
-        let toolLabel: String
-        let onDismiss: () -> Void
-        let style: Style
-    }
 }
 ```
 
-The wiring view reads `store.openPanel` and presents the appropriate panel:
+The wiring view reads `store.toolbar.openPanel` and presents the appropriate panel:
 
 ```swift
-// In CanvasWiringView or ToolbarWiringView parent
+// In NotebookScreen
 if let panel = store.toolbar.openPanel {
     switch panel {
     case .toolCustomization(let toolID):
         PenCustomizationPanel(
-            model: .init(
-                toolLabel: descriptor(for: toolID).label,
-                onDismiss: { store.send(.toolbar(.panelDismissed)) }
-            ),
-            settings: /* binding via @Bindable — see §9 below */
+            model: .init(toolLabel: descriptor(for: toolID).label,
+                         onDismiss: { toolbarStore.send(.panelDismissed) }),
+            settings: Binding(
+                get: { store.toolbar.customizingSettings },
+                set: { toolbarStore.send(.toolSettingsChanged(toolID, $0)) }
+            )
         )
-    case .templatePicker:
-        TemplatePickerPanel(...)
-    case .canvasSettings:
-        CanvasSettingsPanel(...)
+    case .templatePicker:  TemplatePickerPanel(…)
+    case .canvasSettings:  CanvasSettingsPanel(…)
     }
 }
 ```
 
-**Binding for PenSettings:** The `PenCustomizationPanel` needs a two-way `Binding<PenSettings>` that writes back to the store. Per View Layer EDD §9, this is passed as a separate parameter. The wiring view constructs it:
+### 9.1 No defaulted bindings in views
+
+The binding's `get` reads `store.toolbar.customizingSettings` directly. It does **not** look up `toolSettings[id: toolID]?.settings ?? .default` — that fallback was a previous shape of this code and is banned. Reason: `?? .default` expresses "what's the default for an unsaved tool" in the view, which is a reducer responsibility. The view is the wrong place for that knowledge — it leaks domain semantics into a binding closure where they're invisible to tests.
+
+The replacement contract: `ToolbarFeature.State` carries `customizingSettings: PenSettings`. The reducer pre-populates it whenever `.toolTapped` opens a customization panel:
 
 ```swift
-Binding(
-    get: { store.toolbar.toolSettings[id: toolID]?.settings ?? .default },
-    set: { store.send(.toolbar(.toolSettingsChanged(toolID, $0))) }
-)
+case .toolTapped(let id):
+    let canCustomize = ToolDescriptor.descriptor(for: id)?.hasCustomization ?? false
+    guard canCustomize else { return .none }
+    let willOpen = state.openPanel != .toolCustomization(id)
+    state.openPanel = willOpen ? .toolCustomization(id) : nil
+    if willOpen {
+        state.customizingSettings = state.toolSettings[id: id]?.settings ?? .default
+    }
+    return .none
 ```
+
+And mirrors edits back into it when the active panel's settings change:
+
+```swift
+case .toolSettingsChanged(let id, let settings):
+    state.toolSettings[id: id] = ToolSettingsEntry(id: id, settings: settings)
+    if id == state.activeToolID {
+        state.activeSettings = settings
+    }
+    if state.openPanel == .toolCustomization(id) {
+        state.customizingSettings = settings
+    }
+    return .run { _ in await preferences.saveToolSettings(id, settings) }
+```
+
+The `?? .default` defaulting lives exactly once, inside the reducer, where state ownership belongs. The view's binding has no fallback because the reducer guarantees `customizingSettings` is meaningful whenever the panel is open.
+
+### 9.2 v1 panel anchor trade-off
+
+With the scrollable middle region (§8.2), the active writing-tool button can be scrolled off-screen. A "panel anchored to the active tool's frame" would chase a moving target.
+
+For v1 the panel is **vertically centered** on the screen regardless of where the active tool button currently sits in the scroll region. Trade-off: the panel doesn't visually point at the active tool. Gain: the panel never disappears or jumps when the tool list scrolls, and the implementation has zero scroll-offset bookkeeping. Revisit if user feedback indicates the disconnect is confusing.
 
 ---
 
@@ -832,69 +851,65 @@ extension DependencyValues {
 
 ---
 
-## 12. Integration with CanvasFeature
+## 12. Integration with NotebookFeature
 
-`ToolbarFeature` is scoped as a child of `CanvasFeature`. The parent intercepts forwarded actions and handles them.
+`ToolbarFeature` is scoped as a child of `NotebookFeature` (the toolbar's render-site parent, per §3.2). The parent intercepts forwarded actions and handles them. Earlier iterations had this scoped under `CanvasFeature`; that was wrong because the toolbar is notebook-wide chrome, not per-page state, and the scoping mismatch was the bug that produced page-swipe-translates-the-toolbar.
 
 ```swift
-@Reducer
-struct CanvasFeature {
+struct NotebookFeature: Reducer {
     @ObservableState
     struct State: Equatable {
-        var toolbar = ToolbarFeature.State()
-        var activePageIndex: Int = 0
-        var pageIDs: [UUID] = []
-        var isOCRRunning: Bool = false
-        // Drawing data is NOT in TCA state — lives in UIKit controller.
+        let notebookID: UUID
+        var notebookTitle: String
+        var pages: [NotePageSnapshot] = []
+        var currentIndex: Int = 0
+
+        /// Toolbar lives at the notebook level (not per-page) so tool
+        /// selection persists across page swipes and `ToolbarWiringView`
+        /// renders once as a sibling of the `TabView`.
+        var toolbar: ToolbarFeature.State = .init()
+
+        /// Notebook-wide template selection. Owned here so the template
+        /// picker panel (rendered at notebook level alongside the
+        /// toolbar) can write it and every page reads the same value.
+        var activeTemplate: CanvasTemplate = .none
     }
 
-    enum Action {
+    @CasePathable
+    enum Action: Equatable {
+        // ... notebook-level actions (pages, navigation) ...
+        case templateSelected(CanvasTemplate)
         case toolbar(ToolbarFeature.Action)
-        case strokeCompleted
-        case drawingDebounced
-        case pageChanged(Int)
-        case ocrCompleted(String)
     }
 
-    var body: some ReducerOf<Self> {
+    var body: some Reducer<State, Action> {
         Scope(state: \.toolbar, action: \.toolbar) {
             ToolbarFeature()
         }
 
         Reduce { state, action in
             switch action {
+            // Notebook-level handlers (page list, current index) ...
 
-            // Parent handles forwarded toolbar actions
-            case .toolbar(.undoTapped):
-                return .run { _ in /* undoManager.undo() via coordinator */ }
+            case .templateSelected(let template):
+                state.activeTemplate = template
+                state.toolbar.openPanel = nil
+                return .none
 
-            case .toolbar(.redoTapped):
-                return .run { _ in /* undoManager.redo() via coordinator */ }
-
-            case .toolbar(.analyzeTapped):
-                return .run { send in /* trigger page analysis */ }
-
-            // Tool changes propagate to the canvas coordinator
-            // via updateUIViewController reading store.toolbar.activeToolID
-            case .toolbar(.toolSelected), .toolbar(.pencilDoubleTapped),
-                 .toolbar(.twoFingerHoldBegan), .toolbar(.twoFingerHoldEnded):
-                return .none // CanvasWrapper.updateUIViewController handles it
+            // Promote the toolbar's forwarded template selection up to
+            // the notebook level so all pages share one active template.
+            case .toolbar(.templateSelected(let template)):
+                return .send(.templateSelected(template))
 
             case .toolbar:
-                return .none
-
-            case .strokeCompleted:
-                state.toolbar.strokeCount += 1
-                return .none
-
-            // ... other canvas actions
-            default:
                 return .none
             }
         }
     }
 }
 ```
+
+Forwarded toolbar actions (`undoTapped`, `redoTapped`, `analyzeTapped`, `dispatchTapped`) are handled by `CanvasScreen` reading `toolbarStore` directly — these affect the current page's drawing, not notebook state. Undo / redo are dispatched into the per-page `UndoManager` via `CanvasView.Coordinator`. Analyze hands the current page's `PKDrawing` to `InkTaskExtractor`. Dispatch flips the per-page dispatch panel store's `isVisible`.
 
 **Tool → PencilKit bridge** happens in `CanvasWrapper.updateUIViewController`:
 
@@ -914,6 +929,15 @@ func updateUIViewController(_ controller: PaperMarkupViewController, context: Co
 ---
 
 ## 13. Testing
+
+> **Source of truth:** `FromInkTests/ToolbarFeatureTests.swift`. The
+> snippets below sketch the intended coverage shape — the **Action
+> names** in this section are out of date relative to the current
+> reducer (e.g. `toolSelected` here is `toolTapped` in code, `previousToolID`
+> here is the `toolStack` array in code, `strokeCountUpdated` is now
+> `boltVisibilityChanged(Bool)`). Read the test file for the current
+> action vocabulary. Plan to refresh these examples when the next
+> testing section pass lands.
 
 ### 13.1 Tool selection
 

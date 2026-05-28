@@ -279,6 +279,14 @@ extension DispatchView.Model {
             doneLabel: AppStrings.DispatchModal.done,
             isEditingLine: store.isEditingLine,
             onEditingChanged: { editing in store.send(.editingChanged(editing)) },
+            isExtracting: store.isExtracting,
+            extractingLabel: AppStrings.DispatchModal.extracting,
+            extractingHeight: 280,
+            // Brief height interpolation between the loading card
+            // (280pt) and the resolved content's intrinsic height.
+            // 120ms linear — within the project's standard motion
+            // range, no special-case duration needed.
+            contentSwapAnimation: ds.animation.slow,
             sendToLabel: AppStrings.DispatchModal.sendTo,
             destinationTabModel: destinationTabModel,
             isPermissionGranted: isGranted,

@@ -55,6 +55,11 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubbedEK
+                // Belt-and-braces — the fixed calendar context doesn't
+                // touch `\.date`, but if `liveValue` ever gets resolved
+                // (e.g. via host-app side effects at test launch) it
+                // reads `@Dependency(\.date)`. Pin the clock here too.
+                $0.date = .constant(Self.fixedNow)
             }
         )
     }
@@ -115,6 +120,7 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubEventKit()
+                $0.date = .constant(Self.fixedNow)
             }
         )
 
@@ -287,6 +293,11 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubbedEK
+                // Belt-and-braces — the fixed calendar context doesn't
+                // touch `\.date`, but if `liveValue` ever gets resolved
+                // (e.g. via host-app side effects at test launch) it
+                // reads `@Dependency(\.date)`. Pin the clock here too.
+                $0.date = .constant(Self.fixedNow)
             }
         )
 
@@ -339,6 +350,11 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubbedEK
+                // Belt-and-braces — the fixed calendar context doesn't
+                // touch `\.date`, but if `liveValue` ever gets resolved
+                // (e.g. via host-app side effects at test launch) it
+                // reads `@Dependency(\.date)`. Pin the clock here too.
+                $0.date = .constant(Self.fixedNow)
             }
         )
 
@@ -463,6 +479,7 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubEventKit()
+                $0.date = .constant(Self.fixedNow)
             }
         )
 
@@ -515,6 +532,7 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubEventKit()
+                $0.date = .constant(Self.fixedNow)
             }
         )
 

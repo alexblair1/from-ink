@@ -21,6 +21,11 @@ extension AppStrings {
             value: "LINE",
             comment: "Section label for the captured line"
         )
+        static let extracting = NSLocalizedString(
+            "dispatch.modal.extracting",
+            value: "Reading your notes…",
+            comment: "Placeholder shown in the line section while OCR / extraction is running"
+        )
         static let edit = NSLocalizedString(
             "dispatch.modal.edit",
             value: "Edit",

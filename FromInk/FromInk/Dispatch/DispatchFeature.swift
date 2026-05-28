@@ -68,6 +68,13 @@ struct DispatchFeature: Reducer {
         /// Line editor on/off — tap the line in read mode to enter edit mode.
         var isEditingLine: Bool = false
 
+        /// True while upstream OCR / extraction is still in flight (set
+        /// by the lasso flow when Dispatch opens before extraction
+        /// completes). The view renders a "Reading…" indicator in place
+        /// of the line + edit button; the reducer keeps Send disabled
+        /// until the extracted text lands via `.extractionCompleted`.
+        var isExtracting: Bool = false
+
         /// Picker presented modally on top of the Dispatch modal. Nil =
         /// no picker. The view renders an overlay with a graphical /
         /// wheel `DatePicker` or list selector when this is set.
@@ -107,6 +114,7 @@ struct DispatchFeature: Reducer {
 
         var canSend: Bool {
             currentAuth == .fullAccess
+                && !isExtracting
                 && !currentLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && saveState != .saving
         }
@@ -149,6 +157,10 @@ struct DispatchFeature: Reducer {
         // Line editor
         case lineChanged(String)
         case editingChanged(Bool)
+        /// Sent by the lasso flow's OCR Task when extraction completes.
+        /// Replaces the placeholder line on the current task and lifts
+        /// the `isExtracting` flag.
+        case extractionCompleted(String)
 
         // Destination + fields
         case destinationSelected(State.Destination)
@@ -211,6 +223,13 @@ struct DispatchFeature: Reducer {
 
             case .editingChanged(let editing):
                 state.isEditingLine = editing
+                return .none
+
+            case .extractionCompleted(let line):
+                state.isExtracting = false
+                if state.tasks.indices.contains(state.currentIndex) {
+                    state.tasks[state.currentIndex].line = line
+                }
                 return .none
 
             // MARK: - Destination + fields

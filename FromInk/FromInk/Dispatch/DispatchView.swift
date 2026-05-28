@@ -27,6 +27,10 @@ struct DispatchView: View {
     @Binding var line: String
     @Binding var note: String
 
+    /// HIG compliance — when the user has enabled "Reduce Motion," the
+    /// reveal transition collapses to a plain opacity fade.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ZStack {
             scrim
@@ -45,6 +49,39 @@ struct DispatchView: View {
     }
 
     private var modalCard: some View {
+        // Loading-to-content swap — content snaps in, only the card
+        // height interpolates. No fade on the branches themselves; the
+        // user found the crossfade janky. The visible animation is
+        // SwiftUI growing the parent from the loading height (280pt) to
+        // the resolved content's intrinsic height; the inner views are
+        // simply present once they exist. Reduce Motion collapses to
+        // an instant resize.
+        ZStack {
+            if model.isExtracting {
+                extractingCard
+            } else {
+                resolvedCard
+            }
+        }
+        .animation(reduceMotion ? nil : model.contentSwapAnimation, value: model.isExtracting)
+        .frame(width: model.cardWidth)
+        .background(model.cardBackground)
+        .overlay(
+            Rectangle().strokeBorder(model.borderColor, lineWidth: model.borderWidth)
+        )
+    }
+
+    /// Extraction-in-flight: card contents are nothing but a centered
+    /// reading indicator. Header chrome, destination grid, fields, and
+    /// footer all stay hidden until the real content lands via
+    /// `.extractionCompleted`. Scrim tap still dismisses (handled in
+    /// the outer ZStack).
+    private var extractingCard: some View {
+        ReadingIndicator(model: .init(label: model.extractingLabel))
+            .frame(height: model.extractingHeight)
+    }
+
+    private var resolvedCard: some View {
         VStack(spacing: 0) {
             header
             Rectangle().fill(model.rule).frame(height: model.borderWidth)
@@ -79,11 +116,6 @@ struct DispatchView: View {
             Rectangle().fill(model.rule).frame(height: model.borderWidth)
             footer
         }
-        .frame(width: model.cardWidth)
-        .background(model.cardBackground)
-        .overlay(
-            Rectangle().strokeBorder(model.borderColor, lineWidth: model.borderWidth)
-        )
     }
 
     // MARK: - Header
@@ -614,6 +646,22 @@ extension DispatchView {
         let doneLabel: String
         let isEditingLine: Bool
         let onEditingChanged: (Bool) -> Void
+        /// True while upstream extraction (OCR) is in flight. View
+        /// replaces the entire card contents (header, line, destinations,
+        /// fields, footer) with a centered loading indicator until the
+        /// reducer dispatches `.extractionCompleted`.
+        let isExtracting: Bool
+        let extractingLabel: String
+        /// Height of the loading-only card. Roughly matches the
+        /// expected height of the resolved card so the modal doesn't
+        /// jump when content swaps in.
+        let extractingHeight: CGFloat
+
+        /// Animation token for the in-card load → content crossfade.
+        /// Sourced from `AnimationTokens.standard` (100ms linear) per
+        /// the project's style guide. Don't hardcode `.linear(duration:)`
+        /// at the call site — use this token.
+        let contentSwapAnimation: Animation
 
         // Destinations — flat InkTabStrip model, fully resolved by adapter.
         let sendToLabel: String
