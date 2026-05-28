@@ -45,7 +45,9 @@ struct ReminderListSnapshot: Sendable, Equatable, Identifiable {
 }
 
 /// Editable draft of an event. Crosses the dependency boundary so the
-/// creation feature never touches `EKEvent` directly.
+/// creation feature never touches `EKEvent` directly. New optional
+/// fields default-initialize so existing callers (the Dispatch send
+/// path) compile without touching them; the UI rolls in incrementally.
 struct DraftEvent: Sendable, Equatable {
     var title: String
     var notes: String
@@ -53,12 +55,52 @@ struct DraftEvent: Sendable, Equatable {
     var endDate: Date
     var isAllDay: Bool
     var location: String
+    /// Optional geo-coordinate paired with `location`. When set, the
+    /// saved event carries an `EKStructuredLocation`, which Calendar.app
+    /// uses to render the inline map preview. Lat/lon stored as plain
+    /// `Double`s so the type stays `Sendable`/`Equatable` without
+    /// importing `CoreLocation` at the snapshot boundary.
+    var locationCoordinate: LocationCoordinate? = nil
+    var url: URL? = nil
     /// `calendarIdentifier` of the target calendar. Nil = use the default
     /// calendar for events.
     var calendarID: String?
     /// Minutes-before-event alarm offsets. `[15]` = one alarm 15 min
     /// before; empty = no alarms.
     var alarmsMinutesBefore: [Int]
+    /// Optional simple recurrence. Maps to a single `EKRecurrenceRule`
+    /// on save. `.never` = no rule attached.
+    var recurrence: EventRecurrence = .never
+    /// True when the source event had a recurrence rule that doesn't
+    /// fit our six quick-pick patterns (custom `byDay`, COUNT/UNTIL,
+    /// non-standard intervals, etc.). Set by `init(event:)`.
+    ///
+    /// `apply(_:to:store:)` honors this flag and *skips* the
+    /// recurrence rewrite — i.e., editing other fields on a complex
+    /// recurring event preserves the original rule. The UI is
+    /// expected to clear this flag explicitly when the user picks a
+    /// new recurrence (deliberately committing to one of our
+    /// quick-picks), at which point apply does rewrite the rules.
+    var hasUnsupportedRecurrence: Bool = false
+}
+
+struct LocationCoordinate: Sendable, Equatable {
+    let latitude: Double
+    let longitude: Double
+}
+
+/// Simple recurrence options for the Dispatch Calendar destination.
+/// Mirrors Apple Calendar's quick-pick rotation; the EKRecurrenceRule
+/// it maps to is constructed on save.
+enum EventRecurrence: String, Sendable, Equatable, CaseIterable, Identifiable {
+    case never
+    case daily
+    case weekly
+    case biweekly
+    case monthly
+    case yearly
+
+    var id: String { rawValue }
 }
 
 struct DraftReminder: Sendable, Equatable {
@@ -456,7 +498,24 @@ private func apply(_ draft: DraftEvent, to event: EKEvent, store: EKEventStore) 
     event.startDate = draft.startDate
     event.endDate = draft.endDate
     event.isAllDay = draft.isAllDay
-    event.location = draft.location.isEmpty ? nil : draft.location
+
+    // Location text + optional structured location for the map preview.
+    // A structured location requires a title — refusing to fabricate
+    // one means the (coordinate-without-text) case skips structured
+    // entirely. The user's text becomes the structured title verbatim
+    // when both are present.
+    let trimmedLocation = draft.location.trimmingCharacters(in: .whitespacesAndNewlines)
+    event.location = trimmedLocation.isEmpty ? nil : trimmedLocation
+    if let coord = draft.locationCoordinate, !trimmedLocation.isEmpty {
+        let structured = EKStructuredLocation(title: trimmedLocation)
+        structured.geoLocation = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        structured.radius = 0
+        event.structuredLocation = structured
+    } else {
+        event.structuredLocation = nil
+    }
+
+    event.url = draft.url
 
     let targetCalendar = draft.calendarID.flatMap(store.calendar(withIdentifier:))
         ?? store.defaultCalendarForNewEvents
@@ -467,6 +526,29 @@ private func apply(_ draft: DraftEvent, to event: EKEvent, store: EKEventStore) 
     if let existing = event.alarms { existing.forEach(event.removeAlarm(_:)) }
     for minutes in draft.alarmsMinutesBefore {
         event.addAlarm(EKAlarm(relativeOffset: TimeInterval(-minutes * 60)))
+    }
+
+    // Recurrence — skip the rewrite when the source event carried a
+    // pattern outside our quick-picks AND the user hasn't deliberately
+    // changed it (the UI is expected to clear `hasUnsupportedRecurrence`
+    // on explicit selection). Otherwise reset any existing rules and
+    // add the chosen one. `.never` means no recurrence; one-shot event.
+    if !draft.hasUnsupportedRecurrence {
+        if let existing = event.recurrenceRules { existing.forEach(event.removeRecurrenceRule(_:)) }
+        if let rule = ekRecurrenceRule(for: draft.recurrence) {
+            event.addRecurrenceRule(rule)
+        }
+    }
+}
+
+private func ekRecurrenceRule(for recurrence: EventRecurrence) -> EKRecurrenceRule? {
+    switch recurrence {
+    case .never:    return nil
+    case .daily:    return EKRecurrenceRule(recurrenceWith: .daily, interval: 1, end: nil)
+    case .weekly:   return EKRecurrenceRule(recurrenceWith: .weekly, interval: 1, end: nil)
+    case .biweekly: return EKRecurrenceRule(recurrenceWith: .weekly, interval: 2, end: nil)
+    case .monthly:  return EKRecurrenceRule(recurrenceWith: .monthly, interval: 1, end: nil)
+    case .yearly:   return EKRecurrenceRule(recurrenceWith: .yearly, interval: 1, end: nil)
     }
 }
 
@@ -515,22 +597,72 @@ private extension ReminderListSnapshot {
 
 extension DraftEvent {
     init(event: EKEvent) {
+        // Round-trip location: prefer the structured form (carries the
+        // coordinate Calendar.app uses for the map preview), fall back
+        // to plain text when no structured location is attached.
+        let locationText: String
+        let locationCoord: LocationCoordinate?
+        if let structured = event.structuredLocation {
+            locationText = structured.title ?? event.location ?? ""
+            if let geo = structured.geoLocation {
+                locationCoord = LocationCoordinate(
+                    latitude: geo.coordinate.latitude,
+                    longitude: geo.coordinate.longitude
+                )
+            } else {
+                locationCoord = nil
+            }
+        } else {
+            locationText = event.location ?? ""
+            locationCoord = nil
+        }
+
+        // Recurrence: read the first rule and decide whether it fits
+        // one of our quick-picks. Anything else is preserved as
+        // "unsupported" so `apply(_:to:store:)` can skip the rewrite
+        // and leave the original rule intact.
+        let firstRule = event.recurrenceRules?.first
+        let recognized = EventRecurrence(rule: firstRule)
+        let unsupported = firstRule != nil && recognized == .never
+
         self.init(
             title: event.title ?? "",
             notes: event.notes ?? "",
             startDate: event.startDate,
             endDate: event.endDate,
             isAllDay: event.isAllDay,
-            location: event.location ?? "",
+            location: locationText,
+            locationCoordinate: locationCoord,
+            url: event.url,
             calendarID: event.calendar?.calendarIdentifier,
             alarmsMinutesBefore: (event.alarms ?? []).compactMap { alarm in
                 let offset = alarm.relativeOffset
                 guard offset < 0 else { return nil }
                 return Int((-offset / 60).rounded())
-            }
+            },
+            recurrence: recognized,
+            hasUnsupportedRecurrence: unsupported
         )
     }
+}
 
+extension EventRecurrence {
+    /// Maps an `EKRecurrenceRule` back to our simplified enum. Anything
+    /// outside the six quick-pick patterns returns `.never` —
+    /// `DraftEvent.init(event:)` pairs this with `hasUnsupportedRecurrence`
+    /// so apply can decide whether to preserve the original rule or
+    /// rewrite it to the user's selection.
+    init(rule: EKRecurrenceRule?) {
+        guard let rule else { self = .never; return }
+        switch (rule.frequency, rule.interval) {
+        case (.daily, 1):    self = .daily
+        case (.weekly, 1):   self = .weekly
+        case (.weekly, 2):   self = .biweekly
+        case (.monthly, 1):  self = .monthly
+        case (.yearly, 1):   self = .yearly
+        default:             self = .never
+        }
+    }
 }
 
 extension DraftReminder {

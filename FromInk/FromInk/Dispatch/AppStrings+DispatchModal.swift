@@ -26,6 +26,11 @@ extension AppStrings {
             value: "Reading your notes…",
             comment: "Placeholder shown in the line section while OCR / extraction is running"
         )
+        static let locationSearchFailed = NSLocalizedString(
+            "dispatch.modal.location.searchFailed",
+            value: "We couldn't resolve that place. Try another search.",
+            comment: "Error message when MKLocalSearch returns no map items for a tapped suggestion"
+        )
         static let edit = NSLocalizedString(
             "dispatch.modal.edit",
             value: "Edit",
