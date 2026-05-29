@@ -182,6 +182,18 @@ extension AppStrings {
             value: "1 day before",
             comment: "Alert picker option — alarm 1 day before event start"
         )
+        /// Format string for non-preset alarm offsets loaded from an
+        /// existing EKEvent (e.g. a 7-minute alarm set outside our
+        /// quick-pick list). The terse "min" abbreviation sidesteps
+        /// the English singular/plural issue ("1 minute" vs "5
+        /// minutes") that a `.stringsdict` would otherwise be needed
+        /// to handle. Translators still rearrange word order
+        /// naturally within the format string at translation time.
+        static let alertCustomMinutes = NSLocalizedString(
+            "dispatch.modal.alert.customMinutes",
+            value: "%d min before",
+            comment: "Alert picker option for a non-preset minutes-before-event value loaded from an existing event. %d is replaced with the minutes count."
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

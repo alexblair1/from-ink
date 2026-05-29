@@ -283,11 +283,18 @@ extension DispatchView.Model {
             }
             pickerOverlay = .recurrence(choices, selected: store.eventRecurrence.rawValue)
         case .eventAlarm:
-            let choices = AlarmPreset.allCases.map {
+            let current = AlarmPreset.from(minutesBefore: store.eventAlarmMinutesBefore)
+            var choices = AlarmPreset.allPresets.map {
                 DispatchView.Model.PickerChoice(id: $0.id, title: $0.label)
             }
-            let selected = AlarmPreset.from(minutesBefore: store.eventAlarmMinutesBefore).id
-            pickerOverlay = .alarm(choices, selected: selected)
+            // If state holds a non-preset value, append it as an extra
+            // row at the end so the user can keep it (tap = no-op),
+            // replace it (tap a preset), or clear it (tap None) without
+            // us silently destroying the value.
+            if case .custom = current {
+                choices.append(.init(id: current.id, title: current.label))
+            }
+            pickerOverlay = .alarm(choices, selected: current.id)
         case .reminderDue:
             pickerOverlay = .reminderDue(store.reminderDue, hasTime: store.reminderHasTime)
         case .reminderList:
@@ -543,14 +550,26 @@ extension DispatchView.Model {
 
 // MARK: - Alarm presets (presentation only)
 
-/// Fixed list of alarm offsets surfaced in the Alert picker. The
-/// reducer stores the raw `Int?` from `eventAlarmMinutesBefore`;
-/// this type only exists in the wiring to bridge between picker IDs
-/// (`String`), localized labels, and the underlying minutes value.
-/// Declaration order is load-bearing — the picker renders in this
-/// order, matching Apple Calendar's quick-pick list (None → at-time
-/// → ascending offsets).
-fileprivate enum AlarmPreset: CaseIterable {
+/// Bridge between the reducer's raw `Int?` (`eventAlarmMinutesBefore`)
+/// and the picker's `String` IDs + localized labels. The reducer
+/// itself never sees this type — it only stores the underlying
+/// minutes value.
+///
+/// The seven preset cases (`none` … `oneDay`) match Apple Calendar's
+/// quick-pick rotation; declaration order in `allPresets` is
+/// load-bearing for the picker render order.
+///
+/// `.custom(Int)` preserves an alarm offset that doesn't match any
+/// preset — currently only triggerable by round-tripping an existing
+/// `EKEvent` whose alarm was set outside our preset list. The picker
+/// surfaces it as an extra appended row labeled e.g. "7 min before"
+/// so the user can keep, replace, or clear it without us silently
+/// destroying the value (the bug documented in Stage 4b's review,
+/// now fixed by this case existing).
+///
+/// `internal` (not `fileprivate`) so the test target can verify the
+/// round-trip without going through TestStore.
+enum AlarmPreset: Equatable {
     case none
     case atTime
     case fiveMin
@@ -558,76 +577,102 @@ fileprivate enum AlarmPreset: CaseIterable {
     case thirtyMin
     case oneHour
     case oneDay
+    /// Non-preset offset loaded from an external source (an existing
+    /// `EKEvent` with a custom alarm). Carries the raw minutes count.
+    case custom(Int)
+
+    /// The seven fixed picker rows, in render order. Declaration
+    /// order matches Apple Calendar's list (None → at-time → ascending
+    /// offsets). The custom row is NOT in this list — it gets
+    /// appended dynamically by the wiring when state holds a value
+    /// that doesn't match any preset.
+    static let allPresets: [AlarmPreset] = [
+        .none, .atTime, .fiveMin, .fifteenMin, .thirtyMin, .oneHour, .oneDay,
+    ]
 
     /// Minutes-before-start offset. `nil` for `.none`; `0` for "at
     /// the moment the event starts."
     var minutesBefore: Int? {
         switch self {
-        case .none:       return nil
-        case .atTime:     return 0
-        case .fiveMin:    return 5
-        case .fifteenMin: return 15
-        case .thirtyMin:  return 30
-        case .oneHour:    return 60
-        case .oneDay:     return 1440
+        case .none:           return nil
+        case .atTime:         return 0
+        case .fiveMin:        return 5
+        case .fifteenMin:     return 15
+        case .thirtyMin:      return 30
+        case .oneHour:        return 60
+        case .oneDay:         return 1440
+        case .custom(let m):  return m
         }
     }
 
     /// Stable string ID for the picker. Uses `"none"` for nil and the
-    /// stringified minutes for everything else — uniqueness across
-    /// the preset list is guaranteed by minutesBefore being distinct.
+    /// stringified minutes for everything else.
+    ///
+    /// **Uniqueness invariant (by convention, not by type):** every
+    /// active value has a distinct `id` AS LONG AS callers route
+    /// `.custom` construction through `from(minutesBefore:)` — the
+    /// only invariant-preserving constructor, which routes preset
+    /// minutes to their own cases. Writing `.custom(5)` directly
+    /// would produce a value with `id == "5"`, colliding with
+    /// `.fiveMin`'s `id == "5"` and tripping SwiftUI's duplicate-id
+    /// warning in `ForEach(choices, id: \.id)`. The type system
+    /// doesn't enforce this — don't bypass `from(minutesBefore:)`.
     var id: String {
         minutesBefore.map(String.init) ?? "none"
     }
 
     var label: String {
         switch self {
-        case .none:       return AppStrings.DispatchModal.alertNone
-        case .atTime:     return AppStrings.DispatchModal.alertAtTime
-        case .fiveMin:    return AppStrings.DispatchModal.alertFiveMin
-        case .fifteenMin: return AppStrings.DispatchModal.alertFifteenMin
-        case .thirtyMin:  return AppStrings.DispatchModal.alertThirtyMin
-        case .oneHour:    return AppStrings.DispatchModal.alertOneHour
-        case .oneDay:     return AppStrings.DispatchModal.alertOneDay
+        case .none:           return AppStrings.DispatchModal.alertNone
+        case .atTime:         return AppStrings.DispatchModal.alertAtTime
+        case .fiveMin:        return AppStrings.DispatchModal.alertFiveMin
+        case .fifteenMin:     return AppStrings.DispatchModal.alertFifteenMin
+        case .thirtyMin:      return AppStrings.DispatchModal.alertThirtyMin
+        case .oneHour:        return AppStrings.DispatchModal.alertOneHour
+        case .oneDay:         return AppStrings.DispatchModal.alertOneDay
+        case .custom(let m):
+            return String.localizedStringWithFormat(
+                AppStrings.DispatchModal.alertCustomMinutes, m
+            )
         }
     }
 
-    /// Map state's `Int?` back to a preset for picker selection.
-    ///
-    /// **v1 invariant:** `state.eventAlarmMinutesBefore` only ever
-    /// holds preset values (`nil`, 0, 5, 15, 30, 60, 1440) because
-    /// the only writer is the picker itself — which only emits
-    /// presets. The `default:` arm is dead code today.
-    ///
-    /// **TODO when EKEvent round-trip lands** (loading an existing
-    /// event whose alarm offset is, say, 7 minutes): the `default:`
-    /// collapse here will quietly map that 7-minute value to
-    /// `.none`, the field will display "None" while state still
-    /// holds `7`, and the user's next interaction with the picker —
-    /// even tapping the (misleadingly highlighted) "None" row to
-    /// dismiss — will overwrite state with `nil` and destroy the
-    /// original value. Fix at that time by either extending
-    /// `AlarmPreset` with a `.custom(Int)` case, or surfacing the
-    /// non-preset minutes in the field label and excluding it from
-    /// the picker dropdown rather than masquerading as `.none`.
+    /// Map state's `Int?` back to a preset (or `.custom`) for the
+    /// picker. A non-preset value is preserved via `.custom(m)` so
+    /// the field display, picker row, and underlying state all agree
+    /// — no masquerade-as-`.none` destroy-on-tap bug.
     static func from(minutesBefore minutes: Int?) -> AlarmPreset {
         switch minutes {
-        case nil:          return .none
-        case .some(0):     return .atTime
-        case .some(5):     return .fiveMin
-        case .some(15):    return .fifteenMin
-        case .some(30):    return .thirtyMin
-        case .some(60):    return .oneHour
-        case .some(1440):  return .oneDay
-        default:           return .none
+        case nil:             return .none
+        case .some(0):        return .atTime
+        case .some(5):        return .fiveMin
+        case .some(15):       return .fifteenMin
+        case .some(30):       return .thirtyMin
+        case .some(60):       return .oneHour
+        case .some(1440):     return .oneDay
+        case .some(let m):    return .custom(m)
         }
     }
 
-    /// Decode the picker ID emitted by `onAlarmSelected`. The IDs
-    /// come from `AlarmPreset.allCases.map(\.id)` two frames ago, so
-    /// a missing match is only possible if the case list shrinks
-    /// mid-render — `.none` is the harmless fallback.
+    /// Decode the picker ID emitted by `onAlarmSelected`. Tries the
+    /// fixed presets first; falls back to parsing the ID as a positive
+    /// minutes count so a custom row added dynamically by the wiring
+    /// round-trips correctly.
+    ///
+    /// The `> 0` guard belts-and-braces against negative or zero
+    /// minutes — neither is reachable from our own picker output
+    /// (preset zero already routes to `.atTime` above; the picker
+    /// never emits negative IDs), but a future path that pipes raw
+    /// EKEvent TimeIntervals through here without normalizing sign
+    /// would otherwise produce semantically incoherent `.custom(-5)`
+    /// values that EKAlarm interprets as "after the event starts."
     static func from(id: String) -> AlarmPreset {
-        allCases.first(where: { $0.id == id }) ?? .none
+        if let preset = allPresets.first(where: { $0.id == id }) {
+            return preset
+        }
+        if let minutes = Int(id), minutes > 0 {
+            return .custom(minutes)
+        }
+        return .none
     }
 }
