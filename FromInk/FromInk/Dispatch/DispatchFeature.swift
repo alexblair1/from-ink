@@ -133,7 +133,7 @@ struct DispatchFeature: Reducer {
             case calendarEndDate
             case calendarEndTime
             case eventCalendar
-            case recurrence
+            case eventRecurrence
             case reminderDue
             case reminderList
         }

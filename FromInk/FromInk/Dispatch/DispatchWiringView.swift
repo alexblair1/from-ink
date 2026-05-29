@@ -178,7 +178,7 @@ extension DispatchView.Model {
                 value: Self.recurrenceLabel(store.eventRecurrence),
                 placeholder: "",
                 behavior: isGranted
-                    ? .picker(action: { store.send(.overlayOpened(.recurrence)) })
+                    ? .picker(action: { store.send(.overlayOpened(.eventRecurrence)) })
                     : .disabledPicker
             )
             calendarFields.append(contentsOf: [
@@ -261,7 +261,7 @@ extension DispatchView.Model {
                 DispatchView.Model.PickerChoice(id: $0.id, title: $0.title)
             }
             pickerOverlay = .eventCalendar(choices, selected: store.eventCalendarID)
-        case .recurrence:
+        case .eventRecurrence:
             let choices = EventRecurrence.allCases.map {
                 DispatchView.Model.PickerChoice(id: $0.rawValue, title: Self.recurrenceLabel($0))
             }
@@ -392,15 +392,7 @@ extension DispatchView.Model {
                 store.send(.overlayDismissed)
             },
             onRecurrenceSelected: { rawValue in
-                // Defensive Optional — `rawValue` originated as
-                // `EventRecurrence.rawValue` two frames ago, so the
-                // round-trip can't fail unless the picker fires after
-                // an enum case is renamed. If that ever happens the
-                // dismiss still runs, which is the safer of "ignore"
-                // vs "crash the modal."
-                if let recurrence = EventRecurrence(rawValue: rawValue) {
-                    store.send(.eventRecurrenceSelected(recurrence))
-                }
+                store.send(.eventRecurrenceSelected(EventRecurrence(rawValue: rawValue) ?? .never))
                 store.send(.overlayDismissed)
             },
             onReminderDueChanged: { date in store.send(.reminderDueChanged(date)) },
