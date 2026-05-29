@@ -172,14 +172,26 @@ struct CanvasScreen: View {
     /// pipeline. The chosen destination at completion time decides
     /// which `Integration` the resulting `NoteHistoryDraft` records —
     /// the user may have switched from Calendar to Reminders mid-modal.
+    ///
+    /// Edit mode (`store.mode.isEditing`) is a different completion
+    /// shape: the routed item ALREADY exists in history (that's what
+    /// the user tapped to get here), so we don't write a new
+    /// `NoteHistoryDraft`. Instead we refresh the panel so any
+    /// title / date changes the user saved propagate up to the
+    /// visible list.
     private func handleDispatchCompletion(
         _ completion: DispatchFeature.State.Completion,
         task: InkTask,
         store: StoreOf<DispatchFeature>
     ) {
         switch completion {
+        case .finished where store.mode.isEditing:
+            // Edit mode — the row already exists. Pull fresh data so
+            // any title / date edits the user committed show up in
+            // the panel without us re-recording the routing.
+            syncDispatchPanelData()
         case .finished:
-            // Record any tasks that were sent (single or stack mode).
+            // Create mode — record any tasks that were sent.
             for dispatchTask in store.tasks {
                 guard store.resolved[dispatchTask.id] == .sent else { continue }
                 let integration = integrationAtCompletion(store: store)
@@ -194,6 +206,27 @@ struct CanvasScreen: View {
             break
         }
         dispatchFlow = nil
+    }
+
+    /// Presents the universal Dispatch modal in edit mode for an
+    /// existing routed calendar item. The reducer's
+    /// `openForEditingEvent` action fetches the live `EKEvent` via
+    /// `EventKitService.fetchEventDraft` and populates state on the
+    /// `editingEventLoaded` follow-up. If the fetch fails (event
+    /// deleted out of band, permission revoked), the modal stays
+    /// open showing the error banner; the user can cancel to dismiss.
+    private func presentDispatchEditFlow(for item: DispatchRoutedItem) {
+        guard let identifier = item.eventKitIdentifier else { return }
+        let placeholder = InkTask(title: item.title)
+        let store = Store(
+            initialState: DispatchFeature.State(
+                tasks: [DispatchTask(line: item.title, originatingTask: placeholder)]
+            )
+        ) {
+            DispatchFeature()
+        }
+        store.send(.openForEditingEvent(identifier))
+        dispatchFlow = DispatchFlow(task: placeholder, store: store)
     }
 
     private func integrationAtCompletion(store: StoreOf<DispatchFeature>) -> Integration {
@@ -437,6 +470,22 @@ struct CanvasScreen: View {
             guard let url else { return }
             activeLinkURL = url
             dispatchPanelStore.send(.dismissed)
+        }
+        .onChange(of: dispatchPanelStore.openRoutedItem) { _, item in
+            // Edit-existing-event flow. Calendar items with a live EK
+            // identifier and not-yet-deleted state can round-trip; the
+            // rest just dismiss the panel without opening the modal
+            // (no edit affordance for reminders/mail yet).
+            guard let item else { return }
+            defer {
+                dispatchPanelStore.send(.dismissed)
+                dispatchPanelStore.send(.routedItemOpenHandled)
+            }
+            guard item.destination == "calendar",
+                  item.eventKitIdentifier != nil,
+                  !item.isDeleted
+            else { return }
+            presentDispatchEditFlow(for: item)
         }
         .onChange(of: toolbarStore.isDispatchRequested) { _, requested in
             // Toolbar store is shared across pages. Only the currently

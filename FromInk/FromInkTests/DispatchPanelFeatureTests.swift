@@ -172,24 +172,37 @@ final class DispatchPanelFeatureTests: XCTestCase {
     }
 
     // MARK: - Forwarded Actions
+    //
+    // These three actions set "open something for the parent to act on"
+    // fields. Each test asserts the mutation, then the matching consume
+    // action (when applicable) clears it back to nil — the consume is
+    // load-bearing because SwiftUI `.onChange` deduplicates by equality,
+    // so re-tapping the same item without a clear in between would no-op
+    // silently.
 
-    func test_headerTapped_noStateChange() async {
+    func test_headerTapped_setsNavigateToHeaderID() async {
         let store = TestStore(
             initialState: DispatchPanelFeature.State(),
             reducer: { DispatchPanelFeature() }
         )
-        await store.send(.headerTapped(UUID()))
+        let headerID = UUID()
+        await store.send(.headerTapped(headerID)) {
+            $0.navigateToHeaderID = headerID
+        }
     }
 
-    func test_linkTapped_noStateChange() async {
+    func test_linkTapped_setsOpenLinkURL() async {
         let store = TestStore(
             initialState: DispatchPanelFeature.State(),
             reducer: { DispatchPanelFeature() }
         )
-        await store.send(.linkTapped(URL(string: "https://example.com")!))
+        let url = URL(string: "https://example.com")!
+        await store.send(.linkTapped(url)) {
+            $0.openLinkURL = url
+        }
     }
 
-    func test_routedItemTapped_noStateChange() async {
+    func test_routedItemTapped_setsOpenRoutedItem() async {
         let store = TestStore(
             initialState: DispatchPanelFeature.State(),
             reducer: { DispatchPanelFeature() }
@@ -200,11 +213,57 @@ final class DispatchPanelFeatureTests: XCTestCase {
             title: "Test",
             destination: "calendar",
             destinationURL: "",
-            eventKitIdentifier: nil,
+            eventKitIdentifier: "ek-1",
             routedAt: Date(),
             isDeleted: false
         )
 
-        await store.send(.routedItemTapped(item))
+        await store.send(.routedItemTapped(item)) {
+            $0.openRoutedItem = item
+        }
+    }
+
+    func test_routedItemOpenHandled_clearsOpenRoutedItem() async {
+        var state = DispatchPanelFeature.State()
+        state.openRoutedItem = DispatchRoutedItem(
+            id: UUID(),
+            title: "Test",
+            destination: "calendar",
+            destinationURL: "",
+            eventKitIdentifier: "ek-1",
+            routedAt: Date(),
+            isDeleted: false
+        )
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchPanelFeature() }
+        )
+        await store.send(.routedItemOpenHandled) {
+            $0.openRoutedItem = nil
+        }
+    }
+
+    func test_routedItemTapped_thenHandled_allowsSameItemReTap() async {
+        // The whole reason `.routedItemOpenHandled` exists: SwiftUI
+        // `.onChange(of:)` deduplicates by equality. If the parent
+        // observes `openRoutedItem` and never clears it, the next tap
+        // on the same item produces the same value → observer is silent
+        // → modal doesn't re-open. The clear restores the trigger.
+        let store = TestStore(
+            initialState: DispatchPanelFeature.State(),
+            reducer: { DispatchPanelFeature() }
+        )
+        let item = DispatchRoutedItem(
+            id: UUID(),
+            title: "Test",
+            destination: "calendar",
+            destinationURL: "",
+            eventKitIdentifier: "ek-1",
+            routedAt: Date(),
+            isDeleted: false
+        )
+        await store.send(.routedItemTapped(item)) { $0.openRoutedItem = item }
+        await store.send(.routedItemOpenHandled) { $0.openRoutedItem = nil }
+        await store.send(.routedItemTapped(item)) { $0.openRoutedItem = item }
     }
 }
