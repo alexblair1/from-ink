@@ -215,6 +215,16 @@ struct CanvasScreen: View {
     /// `editingEventLoaded` follow-up. If the fetch fails (event
     /// deleted out of band, permission revoked), the modal stays
     /// open showing the error banner; the user can cancel to dismiss.
+    ///
+    /// **Placeholder InkTask:** edit mode has no originating capture,
+    /// but `DispatchFlow.task` and `DispatchTask.originatingTask` are
+    /// non-optional today (the create path always has one). We
+    /// synthesize a placeholder so the types line up. It's unused —
+    /// `handleDispatchCompletion`'s edit branch never reads `task`
+    /// because the routed item already exists. A future refactor
+    /// could split `DispatchFlow` into `.create(task, store)` /
+    /// `.edit(store)` variants; for v1 a placeholder + the comment
+    /// that names it is the lower-churn choice.
     private func presentDispatchEditFlow(for item: DispatchRoutedItem) {
         guard let identifier = item.eventKitIdentifier else { return }
         let placeholder = InkTask(title: item.title)
@@ -465,11 +475,13 @@ struct CanvasScreen: View {
                 canvasScrollTarget = CGPoint(x: 0, y: y)
             }
             dispatchPanelStore.send(.dismissed)
+            dispatchPanelStore.send(.headerNavigationHandled)
         }
         .onChange(of: dispatchPanelStore.openLinkURL) { _, url in
             guard let url else { return }
             activeLinkURL = url
             dispatchPanelStore.send(.dismissed)
+            dispatchPanelStore.send(.linkOpenHandled)
         }
         .onChange(of: dispatchPanelStore.openRoutedItem) { _, item in
             // Edit-existing-event flow. Calendar items with a live EK
@@ -477,15 +489,13 @@ struct CanvasScreen: View {
             // rest just dismiss the panel without opening the modal
             // (no edit affordance for reminders/mail yet).
             guard let item else { return }
-            defer {
-                dispatchPanelStore.send(.dismissed)
-                dispatchPanelStore.send(.routedItemOpenHandled)
+            if item.destinationKind == .calendar,
+               item.eventKitIdentifier != nil,
+               !item.isDeleted {
+                presentDispatchEditFlow(for: item)
             }
-            guard item.destination == "calendar",
-                  item.eventKitIdentifier != nil,
-                  !item.isDeleted
-            else { return }
-            presentDispatchEditFlow(for: item)
+            dispatchPanelStore.send(.dismissed)
+            dispatchPanelStore.send(.routedItemOpenHandled)
         }
         .onChange(of: toolbarStore.isDispatchRequested) { _, requested in
             // Toolbar store is shared across pages. Only the currently

@@ -28,11 +28,13 @@ struct DispatchPanelFeature: Reducer {
         case headerTapped(UUID)
         case linkTapped(URL)
         case routedItemTapped(DispatchRoutedItem)
-        /// Consumed by the parent after it has acted on
-        /// `state.openRoutedItem` (e.g. opened the edit modal). Clears
-        /// the field so the next tap on the same item re-fires the
-        /// observer instead of being deduplicated by SwiftUI's
-        /// `.onChange` equality check.
+        /// Consume signals — the parent dispatches these after acting
+        /// on the matching `open…` / `navigateTo…` field. Without
+        /// them, SwiftUI's `.onChange(of:)` equality-dedupes a
+        /// repeat tap on the SAME header/link/item and the observer
+        /// silently no-ops. Clearing back to nil restores the trigger.
+        case headerNavigationHandled
+        case linkOpenHandled
         case routedItemOpenHandled
 
         // Lifecycle
@@ -71,6 +73,14 @@ struct DispatchPanelFeature: Reducer {
 
             case .routedItemTapped(let item):
                 state.openRoutedItem = item
+                return .none
+
+            case .headerNavigationHandled:
+                state.navigateToHeaderID = nil
+                return .none
+
+            case .linkOpenHandled:
+                state.openLinkURL = nil
                 return .none
 
             case .routedItemOpenHandled:

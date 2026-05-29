@@ -732,11 +732,20 @@ struct DispatchFeature: Reducer {
                 // calendarEnd defaults to start + defaultEventDuration
                 // and follows start unless the user explicitly edits
                 // the end fields.
-                if state.calendarStart == nil {
-                    state.calendarStart = cal.now()
-                }
-                if state.calendarEnd == nil, let start = state.calendarStart {
-                    state.calendarEnd = start.addingTimeInterval(State.defaultEventDuration)
+                //
+                // Edit mode skips the seed entirely: `editingEventLoaded`
+                // is the authoritative writer of calendarStart/End for
+                // an existing event. Seeding here and then overwriting
+                // on the fetch round-trip would flash "today's date"
+                // before the loaded date lands — perceptible on slow
+                // fetches (permission prompt, remote calendars).
+                if !state.mode.isEditing {
+                    if state.calendarStart == nil {
+                        state.calendarStart = cal.now()
+                    }
+                    if state.calendarEnd == nil, let start = state.calendarStart {
+                        state.calendarEnd = start.addingTimeInterval(State.defaultEventDuration)
+                    }
                 }
                 return .run { send in
                     // Snapshot current statuses without prompting; the

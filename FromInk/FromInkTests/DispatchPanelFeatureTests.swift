@@ -223,6 +223,30 @@ final class DispatchPanelFeatureTests: XCTestCase {
         }
     }
 
+    func test_headerNavigationHandled_clearsNavigateToHeaderID() async {
+        var state = DispatchPanelFeature.State()
+        state.navigateToHeaderID = UUID()
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchPanelFeature() }
+        )
+        await store.send(.headerNavigationHandled) {
+            $0.navigateToHeaderID = nil
+        }
+    }
+
+    func test_linkOpenHandled_clearsOpenLinkURL() async {
+        var state = DispatchPanelFeature.State()
+        state.openLinkURL = URL(string: "https://example.com")!
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchPanelFeature() }
+        )
+        await store.send(.linkOpenHandled) {
+            $0.openLinkURL = nil
+        }
+    }
+
     func test_routedItemOpenHandled_clearsOpenRoutedItem() async {
         var state = DispatchPanelFeature.State()
         state.openRoutedItem = DispatchRoutedItem(

@@ -944,6 +944,43 @@ final class DispatchFeatureTests: XCTestCase {
         recurrence: .weekly
     )
 
+    func test_onAppear_inEditMode_doesNotSeedCalendarDates() async {
+        // In edit mode the seed would flash today's date over the
+        // about-to-land loaded date — visible to the user on slow
+        // fetches. `editingEventLoaded` is the sole writer.
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.mode = .edit("ek-1")
+        // calendarStart / calendarEnd remain nil — confirming the seed
+        // skip is the assertion.
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = stubEventKit()
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: { _ in AsyncStream { $0.finish() } },
+                    resolve: { _ in throw LocationSearchError.notFound }
+                )
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        await store.send(.onAppear)
+        // Auth statuses still seed in edit mode — the calendar picker
+        // needs them so the user can move the event to another calendar.
+        await store.receive(.authStatusesResolved(
+            calendar: .fullAccess, reminder: .fullAccess
+        )) {
+            $0.calendarAuth = .fullAccess
+            $0.reminderAuth = .fullAccess
+        }
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.calendarStart)
+        XCTAssertNil(store.state.calendarEnd)
+    }
+
     func test_openForEditingEvent_loadsAndPopulatesAllFields() async {
         let draft = Self.editFixtureDraft
         let store = makeStore(fetchEventDraft: { _ in draft })
