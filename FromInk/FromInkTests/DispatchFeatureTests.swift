@@ -26,6 +26,10 @@ final class DispatchFeatureTests: XCTestCase {
         ],
         createEvent: @escaping @Sendable (DraftEvent) async throws -> EventKitIdentifier
             = { _ in "event-id" },
+        updateEvent: @escaping @Sendable (EventKitIdentifier, DraftEvent) async throws -> Void
+            = { _, _ in },
+        fetchEventDraft: @escaping @Sendable (EventKitIdentifier) async throws -> DraftEvent?
+            = { _ in nil },
         createReminder: @escaping @Sendable (DraftReminder) async throws -> EventKitIdentifier
             = { _ in "reminder-id" },
         locationSuggestions: @escaping @Sendable (String) -> AsyncStream<[LocationSuggestion]>
@@ -49,10 +53,10 @@ final class DispatchFeatureTests: XCTestCase {
             listCalendars: { calendars },
             listReminderLists: { reminderLists },
             createEvent: createEvent,
-            updateEvent: { _, _ in },
+            updateEvent: updateEvent,
             createReminder: createReminder,
             updateReminder: { _, _ in },
-            fetchEventDraft: { _ in nil },
+            fetchEventDraft: fetchEventDraft,
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
             deleteReminder: { _ in }
@@ -919,6 +923,192 @@ final class DispatchFeatureTests: XCTestCase {
         await store.send(.destinationSelected(.mail)) { $0.destination = .mail }
         await store.send(.destinationSelected(.calendar)) { $0.destination = .calendar }
         XCTAssertEqual(store.state.eventAlarmMinutesBefore, 30)
+    }
+
+    // MARK: - Edit existing event
+
+    /// Reusable fixture for the loaded draft. Carries every field
+    /// `editingEventLoaded` populates so each test can assert the
+    /// whole pour, not just a subset.
+    private static let editFixtureDraft = DraftEvent(
+        title: "Quarterly review",
+        notes: "OKR check-in agenda",
+        startDate: Date(timeIntervalSince1970: 1_779_710_400),  // 2026-05-28 14:00 UTC
+        endDate: Date(timeIntervalSince1970: 1_779_714_000),    // 2026-05-28 15:00 UTC
+        isAllDay: false,
+        location: "Apple Park",
+        locationCoordinate: LocationCoordinate(latitude: 37.3349, longitude: -122.0090),
+        url: URL(string: "https://meet.example.com/q-review"),
+        calendarID: "cal-1",
+        alarmsMinutesBefore: [15],
+        recurrence: .weekly
+    )
+
+    func test_openForEditingEvent_loadsAndPopulatesAllFields() async {
+        let draft = Self.editFixtureDraft
+        let store = makeStore(fetchEventDraft: { _ in draft })
+
+        await store.send(.openForEditingEvent("ek-id-1")) {
+            $0.mode = .edit("ek-id-1")
+            // Lock destination — an existing event is always calendar.
+        }
+        await store.receive(.editingEventLoaded(draft)) { state in
+            state.tasks[0].line = "Quarterly review"
+            state.note = "OKR check-in agenda"
+            state.calendarStart = draft.startDate
+            state.calendarEnd = draft.endDate
+            state.eventLocation = "Apple Park"
+            state.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+            state.eventURL = "https://meet.example.com/q-review"
+            state.eventCalendarID = "cal-1"
+            state.eventRecurrence = .weekly
+            state.eventAlarmMinutesBefore = 15
+        }
+    }
+
+    func test_openForEditingEvent_fetchReturnsNil_surfacesNotFoundError() async {
+        let store = makeStore(fetchEventDraft: { _ in nil })
+
+        await store.send(.openForEditingEvent("ek-id-deleted")) {
+            $0.mode = .edit("ek-id-deleted")
+        }
+        await store.receive(.editingEventLoadFailed(AppStrings.DispatchModal.editLoadEventNotFound)) {
+            $0.saveState = .failed(AppStrings.DispatchModal.editLoadEventNotFound)
+        }
+    }
+
+    func test_openForEditingEvent_fetchThrows_surfacesErrorDescription() async {
+        struct TestError: LocalizedError {
+            var errorDescription: String? { "permission revoked" }
+        }
+        let store = makeStore(fetchEventDraft: { _ in throw TestError() })
+
+        await store.send(.openForEditingEvent("ek-id-1")) {
+            $0.mode = .edit("ek-id-1")
+        }
+        await store.receive(.editingEventLoadFailed("permission revoked")) {
+            $0.saveState = .failed("permission revoked")
+        }
+    }
+
+    func test_openForEditingEvent_fromMailDestination_locksToCalendar() async {
+        // User had switched to Mail destination, then triggered an
+        // edit. The reducer must snap destination back to .calendar so
+        // the send path takes the calendar update route.
+        let draft = Self.editFixtureDraft
+        let store = makeStore(fetchEventDraft: { _ in draft })
+
+        await store.send(.destinationSelected(.mail)) {
+            $0.destination = .mail
+        }
+        await store.send(.openForEditingEvent("ek-id-1")) {
+            $0.mode = .edit("ek-id-1")
+            $0.destination = .calendar
+        }
+        await store.skipReceivedActions()
+    }
+
+    func test_sendTapped_editMode_callsUpdateEvent_notCreate() async {
+        // The bug this guards against: send path silently calling
+        // createEvent in edit mode, producing a duplicate event with
+        // the same data instead of mutating the original in place.
+        let createCalls = LockIsolated<Int>(0)
+        let updateCalls = LockIsolated<[(EventKitIdentifier, DraftEvent)]>([])
+
+        let draft = Self.editFixtureDraft
+        let store = makeStore(
+            createEvent: { _ in
+                createCalls.withValue { $0 += 1 }
+                return "should-not-be-called"
+            },
+            updateEvent: { id, d in
+                updateCalls.withValue { $0.append((id, d)) }
+            },
+            fetchEventDraft: { _ in draft }
+        )
+
+        await store.send(.openForEditingEvent("ek-existing")) {
+            $0.mode = .edit("ek-existing")
+        }
+        await store.receive(.editingEventLoaded(draft)) { state in
+            state.tasks[0].line = "Quarterly review"
+            state.note = "OKR check-in agenda"
+            state.calendarStart = draft.startDate
+            state.calendarEnd = draft.endDate
+            state.eventLocation = "Apple Park"
+            state.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+            state.eventURL = "https://meet.example.com/q-review"
+            state.eventCalendarID = "cal-1"
+            state.eventRecurrence = .weekly
+            state.eventAlarmMinutesBefore = 15
+        }
+        // Seed auth via onAppear so canSend passes (auth + non-empty line).
+        await store.send(.onAppear)
+        await store.receive(.authStatusesResolved(
+            calendar: .fullAccess,
+            reminder: .fullAccess
+        )) {
+            $0.calendarAuth = .fullAccess
+            $0.reminderAuth = .fullAccess
+        }
+        await store.receive(.reminderListsLoaded([
+            .init(id: "list-1", title: "Inbox", colorHex: "#000000FF", isWritable: true)
+        ])) {
+            $0.reminderLists = [.init(id: "list-1", title: "Inbox", colorHex: "#000000FF", isWritable: true)]
+            $0.reminderListID = "list-1"
+        }
+        await store.receive(.eventCalendarsLoaded([
+            .init(id: "cal-1", title: "Work", colorHex: "#000000FF", isWritable: true, sourceTitle: "iCloud")
+        ])) {
+            $0.eventCalendars = [.init(id: "cal-1", title: "Work", colorHex: "#000000FF", isWritable: true, sourceTitle: "iCloud")]
+            // eventCalendarID was set by the load — onAppear's loader
+            // sees it non-nil and doesn't overwrite.
+        }
+
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("ek-existing")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+
+        XCTAssertEqual(createCalls.value, 0, "createEvent must not be called in edit mode")
+        XCTAssertEqual(updateCalls.value.count, 1, "updateEvent must be called exactly once")
+        XCTAssertEqual(updateCalls.value.first?.0, "ek-existing")
+        XCTAssertEqual(updateCalls.value.first?.1.title, "Quarterly review")
+    }
+
+    func test_sendTapped_createMode_stillCallsCreate_notUpdate() async {
+        // Symmetric guard — the new edit-mode branch must not steal
+        // the create path. Default mode = .create; createEvent fires,
+        // updateEvent does not.
+        let createCalls = LockIsolated<Int>(0)
+        let updateCalls = LockIsolated<Int>(0)
+        let store = makeStore(
+            createEvent: { _ in
+                createCalls.withValue { $0 += 1 }
+                return "event-new"
+            },
+            updateEvent: { _, _ in
+                updateCalls.withValue { $0 += 1 }
+            }
+        )
+
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-new")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+
+        XCTAssertEqual(createCalls.value, 1)
+        XCTAssertEqual(updateCalls.value, 0)
     }
 
     func test_sendTapped_calendar_dropsSchemelessURL() async {

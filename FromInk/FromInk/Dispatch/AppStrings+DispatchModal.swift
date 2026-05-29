@@ -194,6 +194,11 @@ extension AppStrings {
             value: "%d min before",
             comment: "Alert picker option for a non-preset minutes-before-event value loaded from an existing event. %d is replaced with the minutes count."
         )
+        static let editLoadEventNotFound = NSLocalizedString(
+            "dispatch.modal.edit.loadFailed.notFound",
+            value: "Event not found.",
+            comment: "Error message shown when opening an existing event for editing but it can no longer be fetched from the calendar database (e.g. deleted out of band)."
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

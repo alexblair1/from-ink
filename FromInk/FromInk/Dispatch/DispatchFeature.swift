@@ -100,6 +100,25 @@ struct DispatchFeature: Reducer {
         /// cares about which Int values are "presets" vs arbitrary.
         var eventAlarmMinutesBefore: Int? = nil
 
+        /// Whether the modal is creating a new event or editing an
+        /// existing one. `.edit(id)` is set by `openForEditingEvent`,
+        /// which also triggers `fetchEventDraft` to populate state
+        /// fields from the loaded event via `editingEventLoaded`. The
+        /// send path branches on this: `.edit` → `updateEvent` (in
+        /// place), `.create` → `createEvent` (returns a new id).
+        var mode: Mode = .create
+
+        enum Mode: Equatable {
+            case create
+            case edit(EventKitIdentifier)
+
+            /// Convenience for the wiring — true iff editing an existing event.
+            var isEditing: Bool {
+                if case .edit = self { return true }
+                return false
+            }
+        }
+
         /// Reminders — list identifier + optional due moment.
         var reminderListID: String? = nil
         var reminderDue: Date? = nil
@@ -247,6 +266,9 @@ struct DispatchFeature: Reducer {
         case eventURLChanged(String)
         case eventRecurrenceSelected(EventRecurrence)
         case eventAlarmSelected(Int?)
+        case openForEditingEvent(EventKitIdentifier)
+        case editingEventLoaded(DraftEvent)
+        case editingEventLoadFailed(String)
         case eventLocationChanged(String)
         case locationSuggestionsUpdated([LocationSuggestion])
         case locationSuggestionTapped(LocationSuggestion)
@@ -360,6 +382,60 @@ struct DispatchFeature: Reducer {
 
             case .eventAlarmSelected(let minutes):
                 state.eventAlarmMinutesBefore = minutes
+                return .none
+
+            // MARK: - Edit existing event
+
+            case .openForEditingEvent(let id):
+                state.mode = .edit(id)
+                // An existing event is always a calendar event; lock
+                // the destination so the user can't accidentally
+                // dispatch a calendar event to mail or reminders.
+                // (Stage C will hide the tab strip in edit mode; for
+                // now the lock is just state-level.)
+                state.destination = .calendar
+                return .run { send in
+                    do {
+                        guard let draft = try await eventKit.fetchEventDraft(id) else {
+                            await send(.editingEventLoadFailed(
+                                AppStrings.DispatchModal.editLoadEventNotFound
+                            ))
+                            return
+                        }
+                        await send(.editingEventLoaded(draft))
+                    } catch {
+                        await send(.editingEventLoadFailed(error.localizedDescription))
+                    }
+                }
+                .cancellable(id: "dispatchLoadEditingEvent", cancelInFlight: true)
+
+            case .editingEventLoaded(let draft):
+                // Pour the draft into state. The view re-renders from
+                // these flat fields without caring that they arrived
+                // from a fetch vs. user typing.
+                if state.tasks.indices.contains(state.currentIndex) {
+                    state.tasks[state.currentIndex].line = draft.title
+                }
+                state.note = draft.notes
+                state.calendarStart = draft.startDate
+                state.calendarEnd = draft.endDate
+                state.eventLocation = draft.location
+                state.eventLocationCoordinate = draft.locationCoordinate
+                state.eventURL = draft.url?.absoluteString ?? ""
+                state.eventCalendarID = draft.calendarID
+                state.eventRecurrence = draft.recurrence
+                // v1 surfaces a single alarm. If the saved event had
+                // multiple, we show the first and silently drop the
+                // rest on save — same trade-off Apple Calendar's
+                // quick-edit makes.
+                state.eventAlarmMinutesBefore = draft.alarmsMinutesBefore.first
+                return .none
+
+            case .editingEventLoadFailed(let message):
+                // Reuse the existing failure UI (banner from `saveState
+                // == .failed`). The user can cancel and retry; for
+                // v1 we don't surface a separate "load failed" state.
+                state.saveState = .failed(message)
                 return .none
 
             case .eventLocationChanged(let text):
@@ -573,6 +649,7 @@ struct DispatchFeature: Reducer {
                 let eventLocationCoordinate = state.eventLocationCoordinate
                 let eventRecurrence = state.eventRecurrence
                 let alarms: [Int] = state.eventAlarmMinutesBefore.map { [$0] } ?? []
+                let mode = state.mode
 
                 return .run { send in
                     do {
@@ -591,7 +668,14 @@ struct DispatchFeature: Reducer {
                                 alarmsMinutesBefore: alarms,
                                 recurrence: eventRecurrence
                             )
-                            let id = try await eventKit.createEvent(draft)
+                            let id: EventKitIdentifier
+                            switch mode {
+                            case .edit(let existingID):
+                                try await eventKit.updateEvent(existingID, draft)
+                                id = existingID
+                            case .create:
+                                id = try await eventKit.createEvent(draft)
+                            }
                             await send(.sendCompleted(id))
                         case .reminders:
                             let draft = DraftReminder(
