@@ -94,7 +94,13 @@ struct DispatchView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     lineSection
-                    destinationTabs
+                    // Destination ("Send to:") strip only makes sense
+                    // for new captures. An existing event already has
+                    // a destination — calendar — and the user can't
+                    // re-target it from this modal.
+                    if !model.isEditing {
+                        destinationTabs
+                    }
                     if model.isPermissionGranted {
                         fieldsSection
                         noteSection
@@ -123,22 +129,28 @@ struct DispatchView: View {
     private var header: some View {
         HStack(spacing: model.innerSpacing) {
             HStack(spacing: model.tightSpacing) {
-                Image(systemName: "sparkles")
-                    .font(model.eyebrowFont)
-                    .foregroundStyle(model.ink)
+                // Sparkles signal "AI-extracted" — only meaningful for
+                // new captures, hidden when editing existing events.
+                if !model.isEditing {
+                    Image(systemName: "sparkles")
+                        .font(model.eyebrowFont)
+                        .foregroundStyle(model.ink)
+                }
                 Text(model.eyebrowTitle)
                     .font(model.eyebrowFont)
                     .tracking(1.8)
                     .textCase(.uppercase)
                     .foregroundStyle(model.ink)
-                Text("·")
-                    .font(model.eyebrowFont)
-                    .foregroundStyle(model.ink3)
-                Text(model.eyebrowSubtitle)
-                    .font(model.eyebrowFont)
-                    .tracking(1.8)
-                    .textCase(.uppercase)
-                    .foregroundStyle(model.ink2)
+                if let subtitle = model.eyebrowSubtitle {
+                    Text("·")
+                        .font(model.eyebrowFont)
+                        .foregroundStyle(model.ink3)
+                    Text(subtitle)
+                        .font(model.eyebrowFont)
+                        .tracking(1.8)
+                        .textCase(.uppercase)
+                        .foregroundStyle(model.ink2)
+                }
             }
             Spacer(minLength: 0)
             if model.isStack {
@@ -719,7 +731,19 @@ extension DispatchView {
     struct Model {
         // Header
         let eyebrowTitle: String
-        let eyebrowSubtitle: String
+        /// `nil` means the eyebrow renders just the title (no "·" or
+        /// trailing subtitle). The wiring passes `nil` in edit mode;
+        /// keying the view's render decision off nil-ness rather than
+        /// off the semantic `isEditing` flag means any other "no
+        /// subtitle" case (a future minimal-header modal, etc.) drops
+        /// in without needing a different discriminator.
+        let eyebrowSubtitle: String?
+        /// True when the modal is editing an existing calendar event.
+        /// Hides the sparkle "AI-extracted" badge and the destination
+        /// tab strip — the user isn't choosing a destination, just
+        /// editing one that's already targeted. Subtitle absence is
+        /// keyed off `eyebrowSubtitle == nil` independently.
+        let isEditing: Bool
         let isStack: Bool
         let canGoPrevious: Bool
         let canGoNext: Bool

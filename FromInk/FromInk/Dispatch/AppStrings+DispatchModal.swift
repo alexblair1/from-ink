@@ -199,6 +199,33 @@ extension AppStrings {
             value: "Event not found.",
             comment: "Error message shown when opening an existing event for editing but it can no longer be fetched from the calendar database (e.g. deleted out of band)."
         )
+        static let editEventTitle = NSLocalizedString(
+            "dispatch.modal.edit.title",
+            value: "Edit Event",
+            comment: "Header eyebrow shown when the dispatch modal is editing an existing calendar event (replacing the 'Dispatch' label used for new captures)."
+        )
+        static let saveChanges = NSLocalizedString(
+            "dispatch.modal.edit.saveChanges",
+            value: "Save Changes",
+            comment: "Send-button label shown in the dispatch modal when editing an existing calendar event (replacing the 'Send to Calendar' label used for new captures)."
+        )
+        /// Eyebrow subtitle when the modal is in single-capture mode
+        /// (one line being dispatched). Renders after the "DISPATCH · "
+        /// prefix — e.g., "DISPATCH · 1 LINE."
+        static let eyebrowSingleLine = NSLocalizedString(
+            "dispatch.modal.eyebrow.singleLine",
+            value: "1 line",
+            comment: "Eyebrow subtitle when the dispatch modal is handling a single captured line (as opposed to a stack of multiple)."
+        )
+        /// Eyebrow subtitle when the modal is in stack mode — current
+        /// index over total. `%1$d` is the 1-based index, `%2$d` is
+        /// the total count. Positional args so translators can flip
+        /// order or wrap with locale-natural separators.
+        static let eyebrowStackProgressFormat = NSLocalizedString(
+            "dispatch.modal.eyebrow.stackProgress",
+            value: "%1$d / %2$d",
+            comment: "Eyebrow subtitle in stack mode showing 'current / total' progress. %1$d is the 1-based current task index, %2$d is the total count."
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

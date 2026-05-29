@@ -73,14 +73,29 @@ extension DispatchView.Model {
             }
         )
 
-        // Eyebrow text — switches between single-mode "DISPATCH · 1 LINE"
-        // and stack-mode "TASKS · 2 / 4".
-        let eyebrowTitle = store.isStack
-            ? AppStrings.DispatchModal.titleTasks
-            : AppStrings.DispatchModal.titleDispatch
-        let eyebrowSubtitle = store.isStack
-            ? "\(store.currentIndex + 1) / \(store.tasks.count)"
-            : "1 line"
+        let isEditing = store.mode.isEditing
+
+        // Eyebrow text — switches between single-mode "DISPATCH · 1 LINE",
+        // stack-mode "TASKS · 2 / 4", and edit-mode "EDIT EVENT". The
+        // `nil` subtitle in edit mode is the type-level signal that
+        // there's no subtitle to render — the view keys off that, not
+        // off the semantic isEditing flag.
+        let eyebrowTitle: String
+        let eyebrowSubtitle: String?
+        if isEditing {
+            eyebrowTitle = AppStrings.DispatchModal.editEventTitle
+            eyebrowSubtitle = nil
+        } else if store.isStack {
+            eyebrowTitle = AppStrings.DispatchModal.titleTasks
+            eyebrowSubtitle = String.localizedStringWithFormat(
+                AppStrings.DispatchModal.eyebrowStackProgressFormat,
+                store.currentIndex + 1,
+                store.tasks.count
+            )
+        } else {
+            eyebrowTitle = AppStrings.DispatchModal.titleDispatch
+            eyebrowSubtitle = AppStrings.DispatchModal.eyebrowSingleLine
+        }
 
         // Stack-mode progress marks.
         let progress: [DispatchView.Model.ProgressMark] = store.tasks.map { task in
@@ -363,12 +378,15 @@ extension DispatchView.Model {
         case .saving:
             sendButtonLabel = AppStrings.DispatchModal.sending
         case .idle, .failed:
-            sendButtonLabel = AppStrings.DispatchModal.sendToButton(destination: destinationLabel)
+            sendButtonLabel = isEditing
+                ? AppStrings.DispatchModal.saveChanges
+                : AppStrings.DispatchModal.sendToButton(destination: destinationLabel)
         }
 
         self.init(
             eyebrowTitle: eyebrowTitle,
             eyebrowSubtitle: eyebrowSubtitle,
+            isEditing: isEditing,
             isStack: store.isStack,
             canGoPrevious: store.currentIndex > 0,
             canGoNext: store.currentIndex < store.tasks.count - 1,
