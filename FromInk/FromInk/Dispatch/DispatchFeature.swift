@@ -85,6 +85,13 @@ struct DispatchFeature: Reducer {
         /// trip through the completer).
         var locationSuggestions: IdentifiedArrayOf<LocationSuggestion> = []
 
+        /// Recurrence preset. `.never` (default) maps to a single-shot
+        /// event with no `EKRecurrenceRule`. Picking any other value
+        /// adds the corresponding rule on save via `DraftEvent.apply`.
+        /// We don't expose custom (byDay / interval / endCount) rules
+        /// — the six presets match Apple Calendar's quick-pick rotation.
+        var eventRecurrence: EventRecurrence = .never
+
         /// Reminders — list identifier + optional due moment.
         var reminderListID: String? = nil
         var reminderDue: Date? = nil
@@ -126,6 +133,7 @@ struct DispatchFeature: Reducer {
             case calendarEndDate
             case calendarEndTime
             case eventCalendar
+            case recurrence
             case reminderDue
             case reminderList
         }
@@ -228,6 +236,7 @@ struct DispatchFeature: Reducer {
         case eventCalendarSelected(String)
         case eventCalendarsLoaded([CalendarSnapshot])
         case eventURLChanged(String)
+        case eventRecurrenceSelected(EventRecurrence)
         case eventLocationChanged(String)
         case locationSuggestionsUpdated([LocationSuggestion])
         case locationSuggestionTapped(LocationSuggestion)
@@ -333,6 +342,10 @@ struct DispatchFeature: Reducer {
 
             case .eventURLChanged(let url):
                 state.eventURL = url
+                return .none
+
+            case .eventRecurrenceSelected(let recurrence):
+                state.eventRecurrence = recurrence
                 return .none
 
             case .eventLocationChanged(let text):
@@ -544,6 +557,7 @@ struct DispatchFeature: Reducer {
                 let eventURL = URL(string: trimmedURL).flatMap { $0.scheme == nil ? nil : $0 }
                 let eventLocation = state.eventLocation
                 let eventLocationCoordinate = state.eventLocationCoordinate
+                let eventRecurrence = state.eventRecurrence
 
                 return .run { send in
                     do {
@@ -559,7 +573,8 @@ struct DispatchFeature: Reducer {
                                 locationCoordinate: eventLocationCoordinate,
                                 url: eventURL,
                                 calendarID: eventCalendarID,
-                                alarmsMinutesBefore: []
+                                alarmsMinutesBefore: [],
+                                recurrence: eventRecurrence
                             )
                             let id = try await eventKit.createEvent(draft)
                             await send(.sendCompleted(id))

@@ -611,6 +611,11 @@ struct DispatchView: View {
             singleSelectList(calendars, selected: selected, onTap: { id in
                 model.onEventCalendarSelected?(id)
             })
+
+        case .recurrence(let choices, let selected):
+            singleSelectList(choices, selected: selected, onTap: { id in
+                model.onRecurrenceSelected?(id)
+            })
         }
     }
 
@@ -773,6 +778,7 @@ extension DispatchView {
         let onPickerDismiss: () -> Void
         let onCalendarPickerChanged: ((PickerOverlay.CalendarPickerKind, Date) -> Void)?
         let onEventCalendarSelected: ((String) -> Void)?
+        let onRecurrenceSelected: ((String) -> Void)?
         let onReminderDueChanged: ((Date?) -> Void)?
         let onReminderHasTimeChanged: ((Bool) -> Void)?
         let onReminderListSelected: ((String) -> Void)?
@@ -929,6 +935,7 @@ extension DispatchView {
             /// instead of four.
             case calendarPicker(CalendarPickerKind, Date)
             case eventCalendar([PickerChoice], selected: String?)
+            case recurrence([PickerChoice], selected: String)
             case reminderDue(Date?, hasTime: Bool)
             case reminderList([PickerChoice], selected: String?)
 
@@ -957,6 +964,7 @@ extension DispatchView {
                 switch self {
                 case .calendarPicker(let kind, _): return kind.title
                 case .eventCalendar:               return AppStrings.DispatchModal.calendar
+                case .recurrence:                  return AppStrings.DispatchModal.repeatLabel
                 case .reminderDue:                 return AppStrings.DispatchModal.due
                 case .reminderList:                return AppStrings.DispatchModal.list
                 }

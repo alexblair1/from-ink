@@ -742,6 +742,82 @@ final class DispatchFeatureTests: XCTestCase {
         )
     }
 
+    // MARK: - Event recurrence picker
+
+    func test_eventRecurrenceSelected_updatesState() async {
+        let store = makeStore()
+        await store.send(.eventRecurrenceSelected(.weekly)) {
+            $0.eventRecurrence = .weekly
+        }
+    }
+
+    func test_sendTapped_calendar_passesRecurrence_toDraftEvent() async {
+        let savedRecurrence = LockIsolated<EventRecurrence?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedRecurrence.setValue(draft.recurrence)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventRecurrenceSelected(.monthly)) {
+            $0.eventRecurrence = .monthly
+        }
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedRecurrence.value, .monthly)
+    }
+
+    func test_sendTapped_calendar_defaultsToNeverRecurrence() async {
+        // No explicit recurrence pick — default `.never` should flow
+        // through to DraftEvent, NOT something stale or undefined.
+        let savedRecurrence = LockIsolated<EventRecurrence?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedRecurrence.setValue(draft.recurrence)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedRecurrence.value, .never)
+    }
+
+    func test_destinationSelected_preservesRecurrenceAcrossSwitch() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventRecurrenceSelected(.biweekly)) {
+            $0.eventRecurrence = .biweekly
+        }
+        await store.send(.destinationSelected(.mail)) { $0.destination = .mail }
+        await store.send(.destinationSelected(.calendar)) { $0.destination = .calendar }
+        XCTAssertEqual(store.state.eventRecurrence, .biweekly)
+    }
+
     func test_sendTapped_calendar_dropsSchemelessURL() async {
         // "example.com" without a scheme parses as a RELATIVE URL —
         // URL(string:) returns non-nil — but Calendar.app can't make a

@@ -172,9 +172,19 @@ extension DispatchView.Model {
                 )
                 calendarFields.append(.full(locationField))
             }
+            let recurrenceField = DispatchView.Model.Field(
+                kind: .recurrence,
+                label: AppStrings.DispatchModal.repeatLabel,
+                value: Self.recurrenceLabel(store.eventRecurrence),
+                placeholder: "",
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.recurrence)) })
+                    : .disabledPicker
+            )
             calendarFields.append(contentsOf: [
                 .pair(date, time),
                 .pair(endDate, endTime),
+                .full(recurrenceField),
                 .full(calendarField),
             ])
             if isGranted {
@@ -251,6 +261,11 @@ extension DispatchView.Model {
                 DispatchView.Model.PickerChoice(id: $0.id, title: $0.title)
             }
             pickerOverlay = .eventCalendar(choices, selected: store.eventCalendarID)
+        case .recurrence:
+            let choices = EventRecurrence.allCases.map {
+                DispatchView.Model.PickerChoice(id: $0.rawValue, title: Self.recurrenceLabel($0))
+            }
+            pickerOverlay = .recurrence(choices, selected: store.eventRecurrence.rawValue)
         case .reminderDue:
             pickerOverlay = .reminderDue(store.reminderDue, hasTime: store.reminderHasTime)
         case .reminderList:
@@ -376,6 +391,18 @@ extension DispatchView.Model {
                 store.send(.eventCalendarSelected(id))
                 store.send(.overlayDismissed)
             },
+            onRecurrenceSelected: { rawValue in
+                // Defensive Optional — `rawValue` originated as
+                // `EventRecurrence.rawValue` two frames ago, so the
+                // round-trip can't fail unless the picker fires after
+                // an enum case is renamed. If that ever happens the
+                // dismiss still runs, which is the safer of "ignore"
+                // vs "crash the modal."
+                if let recurrence = EventRecurrence(rawValue: rawValue) {
+                    store.send(.eventRecurrenceSelected(recurrence))
+                }
+                store.send(.overlayDismissed)
+            },
             onReminderDueChanged: { date in store.send(.reminderDueChanged(date)) },
             onReminderHasTimeChanged: { hasTime in store.send(.reminderHasTimeChanged(hasTime)) },
             onReminderListSelected: { id in
@@ -470,6 +497,20 @@ extension DispatchView.Model {
                 .dateTime.weekday(.abbreviated).month(.abbreviated).day()
                     .locale(cal.userLocale())
             )
+        }
+    }
+
+    /// Maps an `EventRecurrence` to its localized picker label.
+    /// Kept in the wiring because the enum lives in EventKitService
+    /// (a dependency layer that shouldn't import AppStrings).
+    private static func recurrenceLabel(_ r: EventRecurrence) -> String {
+        switch r {
+        case .never:    return AppStrings.DispatchModal.repeatNever
+        case .daily:    return AppStrings.DispatchModal.repeatDaily
+        case .weekly:   return AppStrings.DispatchModal.repeatWeekly
+        case .biweekly: return AppStrings.DispatchModal.repeatBiweekly
+        case .monthly:  return AppStrings.DispatchModal.repeatMonthly
+        case .yearly:   return AppStrings.DispatchModal.repeatYearly
         }
     }
 

@@ -105,6 +105,43 @@ extension AppStrings {
             value: "Search or type a place",
             comment: "Placeholder inside the Location field when empty"
         )
+        /// `repeat` is a Swift reserved word, so the property is named
+        /// `repeatLabel`. The localized key stays `dispatch.modal.field.repeat`.
+        static let repeatLabel = NSLocalizedString(
+            "dispatch.modal.field.repeat",
+            value: "Repeat",
+            comment: "Calendar field label — event recurrence (Never, Daily, Weekly, etc.)"
+        )
+        static let repeatNever = NSLocalizedString(
+            "dispatch.modal.repeat.never",
+            value: "Never",
+            comment: "Recurrence picker option — no repeat (single-shot event)"
+        )
+        static let repeatDaily = NSLocalizedString(
+            "dispatch.modal.repeat.daily",
+            value: "Every Day",
+            comment: "Recurrence picker option — repeat daily"
+        )
+        static let repeatWeekly = NSLocalizedString(
+            "dispatch.modal.repeat.weekly",
+            value: "Every Week",
+            comment: "Recurrence picker option — repeat weekly"
+        )
+        static let repeatBiweekly = NSLocalizedString(
+            "dispatch.modal.repeat.biweekly",
+            value: "Every 2 Weeks",
+            comment: "Recurrence picker option — repeat every two weeks"
+        )
+        static let repeatMonthly = NSLocalizedString(
+            "dispatch.modal.repeat.monthly",
+            value: "Every Month",
+            comment: "Recurrence picker option — repeat monthly"
+        )
+        static let repeatYearly = NSLocalizedString(
+            "dispatch.modal.repeat.yearly",
+            value: "Every Year",
+            comment: "Recurrence picker option — repeat yearly"
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",
