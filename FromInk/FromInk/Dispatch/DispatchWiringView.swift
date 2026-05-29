@@ -203,7 +203,10 @@ extension DispatchView.Model {
                     label: AppStrings.DispatchModal.url,
                     value: store.eventURL,
                     placeholder: AppStrings.DispatchModal.urlPlaceholder,
-                    behavior: .inline(onChange: { value in store.send(.eventURLChanged(value)) })
+                    behavior: .inline(
+                        keyboard: .url,
+                        onChange: { value in store.send(.eventURLChanged(value)) }
+                    )
                 )
                 calendarFields.append(.full(urlField))
             }
@@ -243,7 +246,10 @@ extension DispatchView.Model {
                 label: AppStrings.DispatchModal.to,
                 value: store.mailTo,
                 placeholder: AppStrings.DispatchModal.mailToPlaceholder,
-                behavior: .inline(onChange: { value in store.send(.mailToChanged(value)) })
+                behavior: .inline(
+                    keyboard: .email,
+                    onChange: { value in store.send(.mailToChanged(value)) }
+                )
             )
             let subject = DispatchView.Model.Field(
                 kind: .subject,

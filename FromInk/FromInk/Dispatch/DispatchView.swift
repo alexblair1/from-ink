@@ -283,11 +283,17 @@ struct DispatchView: View {
                 pickerCell(value: field.value, isEnabled: true, action: action)
             case .disabledPicker:
                 pickerCell(value: field.value, isEnabled: false, action: {})
-            case .inline(let onChange):
-                inlineTextField(field: field, onChange: onChange)
+            case .inline(let keyboard, let onChange):
+                inlineTextField(field: field, keyboard: keyboard, onChange: onChange)
             case .inlineWithSuggestions(let onChange, let suggestions, let onTap):
                 VStack(spacing: model.tightSpacing) {
-                    inlineTextField(field: field, onChange: onChange)
+                    // Location field — `.placeName` keyboard profile
+                    // matches Apple Calendar: autocorrect off so place
+                    // names don't get mangled, `.words` autocaps so
+                    // "Apple Park" / "Conference Room A" capitalize
+                    // naturally. MapKit autocomplete drives the real
+                    // entry below.
+                    inlineTextField(field: field, keyboard: .placeName, onChange: onChange)
                     if !suggestions.isEmpty {
                         suggestionsList(suggestions: suggestions, onTap: onTap)
                     }
@@ -299,6 +305,7 @@ struct DispatchView: View {
 
     private func inlineTextField(
         field: Model.Field,
+        keyboard: Model.Field.InlineKeyboard,
         onChange: @escaping (String) -> Void
     ) -> some View {
         TextField(field.placeholder, text: Binding(
@@ -313,6 +320,7 @@ struct DispatchView: View {
         .overlay(
             Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
         )
+        .modifier(InlineKeyboardModifier(keyboard: keyboard))
     }
 
     @ViewBuilder
@@ -879,7 +887,11 @@ extension DispatchView {
                 /// picker when the user has no writable lists).
                 case disabledPicker
                 /// Inline `TextField`. The closure receives every keystroke.
-                case inline(onChange: (String) -> Void)
+                /// `keyboard` picks the right iOS soft-keyboard layout +
+                /// content type + autocorrect/autocaps profile for the
+                /// field — `.url` for URL input, `.email` for email
+                /// addresses, `.standard` for everything else.
+                case inline(keyboard: InlineKeyboard = .standard, onChange: (String) -> Void)
                 /// Inline `TextField` plus a live autocomplete list
                 /// rendered directly below. Used by the location field —
                 /// each keystroke flows out via `onChange`, and tapping
@@ -891,6 +903,24 @@ extension DispatchView {
                     suggestions: [LocationSuggestion],
                     onSuggestionTap: (LocationSuggestion) -> Void
                 )
+            }
+
+            /// iOS soft-keyboard profile for an `.inline` TextField. The
+            /// view applies the matching `.keyboardType`, `.textContentType`,
+            /// `.autocorrectionDisabled`, and `.textInputAutocapitalization`
+            /// modifiers; macOS / Catalyst ignore these and fall back to a
+            /// plain text field.
+            ///
+            /// `.placeName` matches Apple Calendar's location field —
+            /// autocorrect off (so "5th Ave" doesn't become "5th Avenue",
+            /// "WeWork" doesn't become "We work"), `.words` autocaps so
+            /// place names like "Apple Park" or "Conference Room A"
+            /// still capitalize naturally as the user types.
+            enum InlineKeyboard {
+                case standard
+                case email
+                case url
+                case placeName
             }
         }
 
@@ -993,6 +1023,49 @@ extension DispatchView {
             let body: String
             let hint: String
             let cta: String
+        }
+    }
+}
+
+// MARK: - Inline keyboard modifier
+
+/// Applies the right iOS soft-keyboard layout + content-type +
+/// autocorrect / autocaps profile for an `.inline` TextField.
+///
+/// `.autocorrectionDisabled()` is cross-platform and lives outside
+/// the `#if`. The iOS-only soft-keyboard, content-type, and
+/// autocapitalization modifiers live inside it — macOS / Catalyst
+/// hit the `#else` and fall through with just autocorrect off.
+private struct InlineKeyboardModifier: ViewModifier {
+    let keyboard: DispatchView.Model.Field.InlineKeyboard
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch keyboard {
+        case .standard:
+            content
+        case .email:
+            content
+                .autocorrectionDisabled()
+                #if canImport(UIKit)
+                .keyboardType(.emailAddress)
+                .textContentType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                #endif
+        case .url:
+            content
+                .autocorrectionDisabled()
+                #if canImport(UIKit)
+                .keyboardType(.URL)
+                .textContentType(.URL)
+                .textInputAutocapitalization(.never)
+                #endif
+        case .placeName:
+            content
+                .autocorrectionDisabled()
+                #if canImport(UIKit)
+                .textInputAutocapitalization(.words)
+                #endif
         }
     }
 }
