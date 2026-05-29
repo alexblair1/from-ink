@@ -147,17 +147,36 @@ extension DispatchView.Model {
                     ? .picker(action: { store.send(.overlayOpened(.eventCalendar)) })
                     : .disabledPicker
             )
-            // URL is a `.inline` TextField. There is no `.disabledInline`
-            // behavior — disabling it via `.disabledPicker` would render
-            // a misleading "tap to pick URL" chevron row that does
-            // nothing. When permission isn't granted the whole form is
-            // overlaid by the permission card anyway, so the user loses
-            // no real capability by us simply omitting the row.
-            var calendarFields: [DispatchView.Model.FieldRow] = [
+            // URL + Location are `.inline` / `.inlineWithSuggestions`
+            // TextFields. There is no `.disabledInline` behavior —
+            // disabling them via `.disabledPicker` would render a
+            // misleading "tap to pick" chevron row that does nothing.
+            // When permission isn't granted the whole form is overlaid
+            // by the permission card anyway, so omitting these rows
+            // costs the user no real capability.
+            var calendarFields: [DispatchView.Model.FieldRow] = []
+            if isGranted {
+                // Apple Calendar order: Title, Location, Starts, Ends,
+                // Calendar, URL. Location sits right under the captured
+                // line at the top of the form.
+                let locationField = DispatchView.Model.Field(
+                    kind: .location,
+                    label: AppStrings.DispatchModal.location,
+                    value: store.eventLocation,
+                    placeholder: AppStrings.DispatchModal.locationPlaceholder,
+                    behavior: .inlineWithSuggestions(
+                        onChange: { value in store.send(.eventLocationChanged(value)) },
+                        suggestions: Array(store.locationSuggestions),
+                        onSuggestionTap: { s in store.send(.locationSuggestionTapped(s)) }
+                    )
+                )
+                calendarFields.append(.full(locationField))
+            }
+            calendarFields.append(contentsOf: [
                 .pair(date, time),
                 .pair(endDate, endTime),
                 .full(calendarField),
-            ]
+            ])
             if isGranted {
                 let urlField = DispatchView.Model.Field(
                     kind: .url,

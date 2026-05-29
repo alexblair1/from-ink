@@ -95,6 +95,16 @@ extension AppStrings {
             value: "https://",
             comment: "Placeholder text inside the URL inline text field on the Calendar dispatch form"
         )
+        static let location = NSLocalizedString(
+            "dispatch.modal.field.location",
+            value: "Location",
+            comment: "Calendar field label — event location (free text or MapKit autocomplete pick)"
+        )
+        static let locationPlaceholder = NSLocalizedString(
+            "dispatch.modal.field.location.placeholder",
+            value: "Search or type a place",
+            comment: "Placeholder inside the Location field when empty"
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

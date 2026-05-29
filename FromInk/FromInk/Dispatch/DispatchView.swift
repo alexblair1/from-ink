@@ -284,21 +284,71 @@ struct DispatchView: View {
             case .disabledPicker:
                 pickerCell(value: field.value, isEnabled: false, action: {})
             case .inline(let onChange):
-                TextField(field.placeholder, text: Binding(
-                    get: { field.value },
-                    set: { onChange($0) }
-                ))
-                .textFieldStyle(.plain)
-                .font(model.bodyFont)
-                .foregroundStyle(model.ink)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .overlay(
-                    Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
-                )
+                inlineTextField(field: field, onChange: onChange)
+            case .inlineWithSuggestions(let onChange, let suggestions, let onTap):
+                VStack(spacing: model.tightSpacing) {
+                    inlineTextField(field: field, onChange: onChange)
+                    if !suggestions.isEmpty {
+                        suggestionsList(suggestions: suggestions, onTap: onTap)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func inlineTextField(
+        field: Model.Field,
+        onChange: @escaping (String) -> Void
+    ) -> some View {
+        TextField(field.placeholder, text: Binding(
+            get: { field.value },
+            set: { onChange($0) }
+        ))
+        .textFieldStyle(.plain)
+        .font(model.bodyFont)
+        .foregroundStyle(model.ink)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .overlay(
+            Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth)
+        )
+    }
+
+    @ViewBuilder
+    private func suggestionsList(
+        suggestions: [LocationSuggestion],
+        onTap: @escaping (LocationSuggestion) -> Void
+    ) -> some View {
+        VStack(spacing: 0) {
+            ForEach(suggestions) { suggestion in
+                Button(action: { onTap(suggestion) }) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(suggestion.title)
+                            .font(model.bodyFont)
+                            .foregroundStyle(model.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if !suggestion.subtitle.isEmpty {
+                            Text(suggestion.subtitle)
+                                .font(model.smallFont)
+                                .foregroundStyle(model.ink2)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if suggestion.id != suggestions.last?.id {
+                    Rectangle().fill(model.rule).frame(height: model.borderWidth)
+                }
+            }
+        }
+        .overlay(Rectangle().strokeBorder(model.rule, lineWidth: model.borderWidth))
     }
 
     /// Shared picker-cell chrome (value text + chevron + bordered row).
@@ -818,6 +868,17 @@ extension DispatchView {
                 case disabledPicker
                 /// Inline `TextField`. The closure receives every keystroke.
                 case inline(onChange: (String) -> Void)
+                /// Inline `TextField` plus a live autocomplete list
+                /// rendered directly below. Used by the location field —
+                /// each keystroke flows out via `onChange`, and tapping
+                /// a row flows out via `onSuggestionTap`. The view does
+                /// not own the search lifecycle; the reducer drives the
+                /// autocomplete stream and feeds `suggestions` back in.
+                case inlineWithSuggestions(
+                    onChange: (String) -> Void,
+                    suggestions: [LocationSuggestion],
+                    onSuggestionTap: (LocationSuggestion) -> Void
+                )
             }
         }
 

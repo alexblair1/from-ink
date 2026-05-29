@@ -27,7 +27,15 @@ final class DispatchFeatureTests: XCTestCase {
         createEvent: @escaping @Sendable (DraftEvent) async throws -> EventKitIdentifier
             = { _ in "event-id" },
         createReminder: @escaping @Sendable (DraftReminder) async throws -> EventKitIdentifier
-            = { _ in "reminder-id" }
+            = { _ in "reminder-id" },
+        locationSuggestions: @escaping @Sendable (String) -> AsyncStream<[LocationSuggestion]>
+            = { _ in AsyncStream { $0.finish() } },
+        locationResolve: @escaping @Sendable (LocationSuggestion) async throws -> ResolvedLocation
+            = { _ in ResolvedLocation(
+                title: "Apple Park",
+                address: "1 Apple Park Way, Cupertino, CA",
+                latitude: 37.3349, longitude: -122.0090
+            ) }
     ) -> TestStore<DispatchFeature.State, DispatchFeature.Action> {
         let stubbedEK = EventKitService(
             fetchTodayEvents: { [] },
@@ -56,6 +64,10 @@ final class DispatchFeatureTests: XCTestCase {
             withDependencies: {
                 $0.calendarContext = .fixed(now: Self.fixedNow)
                 $0.eventKitService = stubbedEK
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: locationSuggestions,
+                    resolve: locationResolve
+                )
                 // Belt-and-braces — the fixed calendar context doesn't
                 // touch `\.date`, but if `liveValue` ever gets resolved
                 // (e.g. via host-app side effects at test launch) it
@@ -467,6 +479,267 @@ final class DispatchFeatureTests: XCTestCase {
             $0.completion = .finished
         }
         XCTAssertNil(savedURL.value)
+    }
+
+    // MARK: - Event location field
+
+    func test_eventLocationChanged_empty_clearsSuggestionsAndDoesNotStartSearch() async {
+        // Seed state with a stale suggestion, then send empty text.
+        // Reducer must clear the list synchronously and not start a
+        // stream (the cancel doesn't produce a follow-up action).
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.eventLocation = "Apple"
+        state.eventLocationCoordinate = LocationCoordinate(latitude: 37, longitude: -122)
+        state.locationSuggestions = [LocationSuggestion(id: "1", title: "Apple Park", subtitle: "Cupertino")]
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = EventKitService(
+                    fetchTodayEvents: { [] }, fetchDueReminders: { [] },
+                    fetchEvents: { _ in [] }, fetchReminders: { _ in [] },
+                    eventAuthStatus: { .fullAccess }, reminderAuthStatus: { .fullAccess },
+                    requestEventAccess: { .fullAccess }, requestReminderAccess: { .fullAccess },
+                    listCalendars: { [] }, listReminderLists: { [] },
+                    createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
+                    createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
+                    fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
+                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                )
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: { _ in AsyncStream { $0.finish() } },
+                    resolve: { _ in throw LocationSearchError.notFound }
+                )
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        await store.send(.eventLocationChanged("")) {
+            $0.eventLocation = ""
+            $0.eventLocationCoordinate = nil
+            $0.locationSuggestions = []
+        }
+    }
+
+    func test_eventLocationChanged_nonEmpty_streamsSuggestionsBack() async {
+        let park = LocationSuggestion(id: "park", title: "Apple Park", subtitle: "Cupertino, CA")
+        let store = makeStore(
+            locationSuggestions: { _ in
+                AsyncStream { continuation in
+                    continuation.yield([park])
+                    continuation.finish()
+                }
+            }
+        )
+
+        await store.send(.eventLocationChanged("Apple")) {
+            $0.eventLocation = "Apple"
+            $0.eventLocationCoordinate = nil
+        }
+        await store.receive(.locationSuggestionsUpdated([park])) {
+            $0.locationSuggestions = [park]
+        }
+    }
+
+    func test_eventLocationChanged_clearsCoordinate_whenTypingAfterPick() async {
+        // The user had previously picked a suggestion (coord set); they
+        // start typing again. The coord must clear because it no longer
+        // matches the now-edited text.
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.eventLocation = "Apple Park"
+        state.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = EventKitService(
+                    fetchTodayEvents: { [] }, fetchDueReminders: { [] },
+                    fetchEvents: { _ in [] }, fetchReminders: { _ in [] },
+                    eventAuthStatus: { .fullAccess }, reminderAuthStatus: { .fullAccess },
+                    requestEventAccess: { .fullAccess }, requestReminderAccess: { .fullAccess },
+                    listCalendars: { [] }, listReminderLists: { [] },
+                    createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
+                    createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
+                    fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
+                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                )
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: { _ in AsyncStream { $0.finish() } },
+                    resolve: { _ in throw LocationSearchError.notFound }
+                )
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        await store.send(.eventLocationChanged("Apple Park2")) {
+            $0.eventLocation = "Apple Park2"
+            $0.eventLocationCoordinate = nil
+        }
+    }
+
+    func test_locationSuggestionTapped_setsTextAndResolvesCoordinate() async {
+        let park = LocationSuggestion(id: "park", title: "Apple Park", subtitle: "Cupertino, CA")
+        let resolved = ResolvedLocation(
+            title: "Apple Park",
+            address: "1 Apple Park Way, Cupertino, CA",
+            latitude: 37.3349, longitude: -122.0090
+        )
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.locationSuggestions = [park]
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = EventKitService(
+                    fetchTodayEvents: { [] }, fetchDueReminders: { [] },
+                    fetchEvents: { _ in [] }, fetchReminders: { _ in [] },
+                    eventAuthStatus: { .fullAccess }, reminderAuthStatus: { .fullAccess },
+                    requestEventAccess: { .fullAccess }, requestReminderAccess: { .fullAccess },
+                    listCalendars: { [] }, listReminderLists: { [] },
+                    createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
+                    createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
+                    fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
+                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                )
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: { _ in AsyncStream { $0.finish() } },
+                    resolve: { _ in resolved }
+                )
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        // Optimistic text update happens inline; suggestion list clears.
+        await store.send(.locationSuggestionTapped(park)) {
+            $0.eventLocation = "Apple Park"
+            $0.locationSuggestions = []
+        }
+        // Resolve completes → coordinate lands; text untouched.
+        await store.receive(.locationResolved(resolved)) {
+            $0.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+        }
+    }
+
+    func test_locationSuggestionTapped_resolveFailure_keepsTextWithNoCoordinate() async {
+        let park = LocationSuggestion(id: "park", title: "Apple Park", subtitle: "Cupertino, CA")
+        var state = DispatchFeature.State(tasks: [.init(line: "x")])
+        state.locationSuggestions = [park]
+
+        let store = TestStore(
+            initialState: state,
+            reducer: { DispatchFeature() },
+            withDependencies: {
+                $0.calendarContext = .fixed(now: Self.fixedNow)
+                $0.eventKitService = EventKitService(
+                    fetchTodayEvents: { [] }, fetchDueReminders: { [] },
+                    fetchEvents: { _ in [] }, fetchReminders: { _ in [] },
+                    eventAuthStatus: { .fullAccess }, reminderAuthStatus: { .fullAccess },
+                    requestEventAccess: { .fullAccess }, requestReminderAccess: { .fullAccess },
+                    listCalendars: { [] }, listReminderLists: { [] },
+                    createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
+                    createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
+                    fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
+                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                )
+                $0.locationSearchService = LocationSearchService(
+                    suggestions: { _ in AsyncStream { $0.finish() } },
+                    resolve: { _ in throw LocationSearchError.notFound }
+                )
+                $0.date = .constant(Self.fixedNow)
+            }
+        )
+
+        await store.send(.locationSuggestionTapped(park)) {
+            $0.eventLocation = "Apple Park"
+            $0.locationSuggestions = []
+        }
+        // Failure → no coordinate. Text stays.
+        await store.receive(.locationResolveFailed)
+        XCTAssertNil(store.state.eventLocationCoordinate)
+        XCTAssertEqual(store.state.eventLocation, "Apple Park")
+    }
+
+    func test_sendTapped_calendar_passesLocation_andCoordinate_toDraftEvent() async {
+        let savedLocation = LockIsolated<String?>(nil)
+        let savedCoord = LockIsolated<LocationCoordinate?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedLocation.setValue(draft.location)
+                savedCoord.setValue(draft.locationCoordinate)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        // Type "Apple" → stream yields nothing (default stub) → no
+        // follow-up action; no skipReceivedActions needed.
+        await store.send(.eventLocationChanged("Apple")) {
+            $0.eventLocation = "Apple"
+            $0.eventLocationCoordinate = nil
+        }
+        let park = LocationSuggestion(id: "park", title: "Apple Park", subtitle: "Cupertino, CA")
+        // Tap optimistically swaps "Apple" → "Apple Park" (observable
+        // mutation), then resolve fills in the coordinate.
+        await store.send(.locationSuggestionTapped(park)) {
+            $0.eventLocation = "Apple Park"
+        }
+        await store.receive(.locationResolved(ResolvedLocation(
+            title: "Apple Park",
+            address: "1 Apple Park Way, Cupertino, CA",
+            latitude: 37.3349, longitude: -122.0090
+        ))) {
+            $0.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+        }
+
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedLocation.value, "Apple Park")
+        XCTAssertEqual(savedCoord.value, LocationCoordinate(latitude: 37.3349, longitude: -122.0090))
+    }
+
+    func test_destinationSelected_preservesLocationAndCoordinateAcrossSwitch() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        let park = LocationSuggestion(id: "park", title: "Apple Park", subtitle: "Cupertino, CA")
+        await store.send(.locationSuggestionTapped(park)) {
+            $0.eventLocation = "Apple Park"
+            $0.locationSuggestions = []
+        }
+        await store.receive(.locationResolved(ResolvedLocation(
+            title: "Apple Park",
+            address: "1 Apple Park Way, Cupertino, CA",
+            latitude: 37.3349, longitude: -122.0090
+        ))) {
+            $0.eventLocationCoordinate = LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+        }
+
+        // calendar → mail → calendar. Both fields survive.
+        await store.send(.destinationSelected(.mail)) { $0.destination = .mail }
+        await store.send(.destinationSelected(.calendar)) { $0.destination = .calendar }
+        XCTAssertEqual(store.state.eventLocation, "Apple Park")
+        XCTAssertEqual(
+            store.state.eventLocationCoordinate,
+            LocationCoordinate(latitude: 37.3349, longitude: -122.0090)
+        )
     }
 
     func test_sendTapped_calendar_dropsSchemelessURL() async {

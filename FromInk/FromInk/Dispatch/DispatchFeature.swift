@@ -68,6 +68,23 @@ struct DispatchFeature: Reducer {
         /// users actually want when they paste a URL field.
         var eventURL: String = ""
 
+        /// Event location — free text (e.g. "Conference Room A") OR a
+        /// MapKit autocomplete pick. When the user taps a suggestion we
+        /// also store the resolved coordinate so the saved event carries
+        /// an `EKStructuredLocation`, which Calendar.app uses to render
+        /// the inline map preview. Hand-typed locations have no
+        /// coordinate and save as a plain string — same as typing in
+        /// Apple Calendar without picking a suggestion.
+        var eventLocation: String = ""
+        var eventLocationCoordinate: LocationCoordinate? = nil
+
+        /// Live MapKit autocomplete results for the current location
+        /// query. Empty when the user hasn't typed yet, when their
+        /// query is empty, or when they just picked a suggestion (we
+        /// clear on tap so the list collapses without an extra round
+        /// trip through the completer).
+        var locationSuggestions: IdentifiedArrayOf<LocationSuggestion> = []
+
         /// Reminders — list identifier + optional due moment.
         var reminderListID: String? = nil
         var reminderDue: Date? = nil
@@ -211,6 +228,11 @@ struct DispatchFeature: Reducer {
         case eventCalendarSelected(String)
         case eventCalendarsLoaded([CalendarSnapshot])
         case eventURLChanged(String)
+        case eventLocationChanged(String)
+        case locationSuggestionsUpdated([LocationSuggestion])
+        case locationSuggestionTapped(LocationSuggestion)
+        case locationResolved(ResolvedLocation)
+        case locationResolveFailed
         case reminderListSelected(String)
         case reminderDueChanged(Date?)
         case reminderHasTimeChanged(Bool)
@@ -246,6 +268,7 @@ struct DispatchFeature: Reducer {
 
     @Dependency(\.eventKitService) var eventKit
     @Dependency(\.calendarContext) var cal
+    @Dependency(\.locationSearchService) var locationSearch
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -310,6 +333,65 @@ struct DispatchFeature: Reducer {
 
             case .eventURLChanged(let url):
                 state.eventURL = url
+                return .none
+
+            case .eventLocationChanged(let text):
+                state.eventLocation = text
+                // Typing invalidates any previously-resolved coordinate
+                // — the suggestion the user tapped no longer matches
+                // what's in the field.
+                state.eventLocationCoordinate = nil
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    state.locationSuggestions = []
+                    // Tear down any in-flight stream so a late yield
+                    // can't repopulate the list after the user cleared.
+                    return .cancel(id: "locationSuggestionsStream")
+                }
+                return .run { send in
+                    for await suggestions in locationSearch.suggestions(trimmed) {
+                        await send(.locationSuggestionsUpdated(suggestions))
+                    }
+                }
+                .cancellable(id: "locationSuggestionsStream", cancelInFlight: true)
+
+            case .locationSuggestionsUpdated(let suggestions):
+                state.locationSuggestions = IdentifiedArray(uniqueElements: suggestions)
+                return .none
+
+            case .locationSuggestionTapped(let suggestion):
+                // Optimistic: the tapped title fills the field
+                // immediately so the user doesn't see an empty input
+                // while we resolve to a coordinate. We don't overwrite
+                // with `resolved.title` later — that's usually the same
+                // string anyway, and overwriting would briefly flash
+                // the text if MapKit returns a slight variant.
+                state.eventLocation = suggestion.title
+                state.locationSuggestions = []
+                return .run { send in
+                    do {
+                        let resolved = try await locationSearch.resolve(suggestion)
+                        await send(.locationResolved(resolved))
+                    } catch {
+                        await send(.locationResolveFailed)
+                    }
+                }
+                .cancellable(id: "locationResolve", cancelInFlight: true)
+
+            case .locationResolved(let resolved):
+                state.eventLocationCoordinate = LocationCoordinate(
+                    latitude: resolved.latitude,
+                    longitude: resolved.longitude
+                )
+                return .none
+
+            case .locationResolveFailed:
+                // Keep the optimistic text but no coordinate. The event
+                // saves as a string-only location — same outcome as
+                // hand-typing into Apple Calendar without picking a
+                // suggestion. No error UI: a failure here means
+                // "Calendar.app won't show a map preview", which is
+                // recoverable and not worth interrupting the user for.
                 return .none
 
             case .reminderListSelected(let id):
@@ -460,6 +542,8 @@ struct DispatchFeature: Reducer {
                 // accepts free text, only saves what it can render.
                 let trimmedURL = state.eventURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 let eventURL = URL(string: trimmedURL).flatMap { $0.scheme == nil ? nil : $0 }
+                let eventLocation = state.eventLocation
+                let eventLocationCoordinate = state.eventLocationCoordinate
 
                 return .run { send in
                     do {
@@ -471,7 +555,8 @@ struct DispatchFeature: Reducer {
                                 startDate: calendarStart,
                                 endDate: calendarEnd,
                                 isAllDay: false,
-                                location: "",
+                                location: eventLocation,
+                                locationCoordinate: eventLocationCoordinate,
                                 url: eventURL,
                                 calendarID: eventCalendarID,
                                 alarmsMinutesBefore: []
