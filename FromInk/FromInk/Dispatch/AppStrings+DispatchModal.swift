@@ -142,6 +142,46 @@ extension AppStrings {
             value: "Every Year",
             comment: "Recurrence picker option — repeat yearly"
         )
+        static let alertLabel = NSLocalizedString(
+            "dispatch.modal.field.alert",
+            value: "Alert",
+            comment: "Calendar field label — single-alarm offset before the event starts"
+        )
+        static let alertNone = NSLocalizedString(
+            "dispatch.modal.alert.none",
+            value: "None",
+            comment: "Alert picker option — no alarm"
+        )
+        static let alertAtTime = NSLocalizedString(
+            "dispatch.modal.alert.atTime",
+            value: "At time of event",
+            comment: "Alert picker option — alarm fires at the start of the event"
+        )
+        static let alertFiveMin = NSLocalizedString(
+            "dispatch.modal.alert.fiveMin",
+            value: "5 minutes before",
+            comment: "Alert picker option — alarm 5 minutes before event start"
+        )
+        static let alertFifteenMin = NSLocalizedString(
+            "dispatch.modal.alert.fifteenMin",
+            value: "15 minutes before",
+            comment: "Alert picker option — alarm 15 minutes before event start"
+        )
+        static let alertThirtyMin = NSLocalizedString(
+            "dispatch.modal.alert.thirtyMin",
+            value: "30 minutes before",
+            comment: "Alert picker option — alarm 30 minutes before event start"
+        )
+        static let alertOneHour = NSLocalizedString(
+            "dispatch.modal.alert.oneHour",
+            value: "1 hour before",
+            comment: "Alert picker option — alarm 1 hour before event start"
+        )
+        static let alertOneDay = NSLocalizedString(
+            "dispatch.modal.alert.oneDay",
+            value: "1 day before",
+            comment: "Alert picker option — alarm 1 day before event start"
+        )
         static let when = NSLocalizedString(
             "dispatch.modal.field.when",
             value: "When",

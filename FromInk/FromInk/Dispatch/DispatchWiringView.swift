@@ -181,11 +181,21 @@ extension DispatchView.Model {
                     ? .picker(action: { store.send(.overlayOpened(.eventRecurrence)) })
                     : .disabledPicker
             )
+            let alarmField = DispatchView.Model.Field(
+                kind: .alarm,
+                label: AppStrings.DispatchModal.alertLabel,
+                value: AlarmPreset.from(minutesBefore: store.eventAlarmMinutesBefore).label,
+                placeholder: "",
+                behavior: isGranted
+                    ? .picker(action: { store.send(.overlayOpened(.eventAlarm)) })
+                    : .disabledPicker
+            )
             calendarFields.append(contentsOf: [
                 .pair(date, time),
                 .pair(endDate, endTime),
                 .full(recurrenceField),
                 .full(calendarField),
+                .full(alarmField),
             ])
             if isGranted {
                 let urlField = DispatchView.Model.Field(
@@ -266,6 +276,12 @@ extension DispatchView.Model {
                 DispatchView.Model.PickerChoice(id: $0.rawValue, title: Self.recurrenceLabel($0))
             }
             pickerOverlay = .recurrence(choices, selected: store.eventRecurrence.rawValue)
+        case .eventAlarm:
+            let choices = AlarmPreset.allCases.map {
+                DispatchView.Model.PickerChoice(id: $0.id, title: $0.label)
+            }
+            let selected = AlarmPreset.from(minutesBefore: store.eventAlarmMinutesBefore).id
+            pickerOverlay = .alarm(choices, selected: selected)
         case .reminderDue:
             pickerOverlay = .reminderDue(store.reminderDue, hasTime: store.reminderHasTime)
         case .reminderList:
@@ -395,6 +411,10 @@ extension DispatchView.Model {
                 store.send(.eventRecurrenceSelected(EventRecurrence(rawValue: rawValue) ?? .never))
                 store.send(.overlayDismissed)
             },
+            onAlarmSelected: { id in
+                store.send(.eventAlarmSelected(AlarmPreset.from(id: id).minutesBefore))
+                store.send(.overlayDismissed)
+            },
             onReminderDueChanged: { date in store.send(.reminderDueChanged(date)) },
             onReminderHasTimeChanged: { hasTime in store.send(.reminderHasTimeChanged(hasTime)) },
             onReminderListSelected: { id in
@@ -512,5 +532,96 @@ extension DispatchView.Model {
         case .reminders: return AppStrings.DispatchModal.permRemindersVerb
         case .mail:      return ""
         }
+    }
+}
+
+// MARK: - Alarm presets (presentation only)
+
+/// Fixed list of alarm offsets surfaced in the Alert picker. The
+/// reducer stores the raw `Int?` from `eventAlarmMinutesBefore`;
+/// this type only exists in the wiring to bridge between picker IDs
+/// (`String`), localized labels, and the underlying minutes value.
+/// Declaration order is load-bearing — the picker renders in this
+/// order, matching Apple Calendar's quick-pick list (None → at-time
+/// → ascending offsets).
+fileprivate enum AlarmPreset: CaseIterable {
+    case none
+    case atTime
+    case fiveMin
+    case fifteenMin
+    case thirtyMin
+    case oneHour
+    case oneDay
+
+    /// Minutes-before-start offset. `nil` for `.none`; `0` for "at
+    /// the moment the event starts."
+    var minutesBefore: Int? {
+        switch self {
+        case .none:       return nil
+        case .atTime:     return 0
+        case .fiveMin:    return 5
+        case .fifteenMin: return 15
+        case .thirtyMin:  return 30
+        case .oneHour:    return 60
+        case .oneDay:     return 1440
+        }
+    }
+
+    /// Stable string ID for the picker. Uses `"none"` for nil and the
+    /// stringified minutes for everything else — uniqueness across
+    /// the preset list is guaranteed by minutesBefore being distinct.
+    var id: String {
+        minutesBefore.map(String.init) ?? "none"
+    }
+
+    var label: String {
+        switch self {
+        case .none:       return AppStrings.DispatchModal.alertNone
+        case .atTime:     return AppStrings.DispatchModal.alertAtTime
+        case .fiveMin:    return AppStrings.DispatchModal.alertFiveMin
+        case .fifteenMin: return AppStrings.DispatchModal.alertFifteenMin
+        case .thirtyMin:  return AppStrings.DispatchModal.alertThirtyMin
+        case .oneHour:    return AppStrings.DispatchModal.alertOneHour
+        case .oneDay:     return AppStrings.DispatchModal.alertOneDay
+        }
+    }
+
+    /// Map state's `Int?` back to a preset for picker selection.
+    ///
+    /// **v1 invariant:** `state.eventAlarmMinutesBefore` only ever
+    /// holds preset values (`nil`, 0, 5, 15, 30, 60, 1440) because
+    /// the only writer is the picker itself — which only emits
+    /// presets. The `default:` arm is dead code today.
+    ///
+    /// **TODO when EKEvent round-trip lands** (loading an existing
+    /// event whose alarm offset is, say, 7 minutes): the `default:`
+    /// collapse here will quietly map that 7-minute value to
+    /// `.none`, the field will display "None" while state still
+    /// holds `7`, and the user's next interaction with the picker —
+    /// even tapping the (misleadingly highlighted) "None" row to
+    /// dismiss — will overwrite state with `nil` and destroy the
+    /// original value. Fix at that time by either extending
+    /// `AlarmPreset` with a `.custom(Int)` case, or surfacing the
+    /// non-preset minutes in the field label and excluding it from
+    /// the picker dropdown rather than masquerading as `.none`.
+    static func from(minutesBefore minutes: Int?) -> AlarmPreset {
+        switch minutes {
+        case nil:          return .none
+        case .some(0):     return .atTime
+        case .some(5):     return .fiveMin
+        case .some(15):    return .fifteenMin
+        case .some(30):    return .thirtyMin
+        case .some(60):    return .oneHour
+        case .some(1440):  return .oneDay
+        default:           return .none
+        }
+    }
+
+    /// Decode the picker ID emitted by `onAlarmSelected`. The IDs
+    /// come from `AlarmPreset.allCases.map(\.id)` two frames ago, so
+    /// a missing match is only possible if the case list shrinks
+    /// mid-render — `.none` is the harmless fallback.
+    static func from(id: String) -> AlarmPreset {
+        allCases.first(where: { $0.id == id }) ?? .none
     }
 }

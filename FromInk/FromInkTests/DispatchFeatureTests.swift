@@ -818,6 +818,109 @@ final class DispatchFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.eventRecurrence, .biweekly)
     }
 
+    // MARK: - Event alarm picker
+
+    func test_eventAlarmSelected_setsAndClearsState() async {
+        let store = makeStore()
+        await store.send(.eventAlarmSelected(15)) {
+            $0.eventAlarmMinutesBefore = 15
+        }
+        // Picking "None" clears.
+        await store.send(.eventAlarmSelected(nil)) {
+            $0.eventAlarmMinutesBefore = nil
+        }
+    }
+
+    func test_sendTapped_calendar_passesSingleAlarm_toDraftEvent() async {
+        let savedAlarms = LockIsolated<[Int]?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedAlarms.setValue(draft.alarmsMinutesBefore)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventAlarmSelected(15)) { $0.eventAlarmMinutesBefore = 15 }
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        // Single-Int? wraps to a singleton [Int] for EventKit.
+        XCTAssertEqual(savedAlarms.value, [15])
+    }
+
+    func test_sendTapped_calendar_defaultsToNoAlarm() async {
+        // No explicit alarm pick → DraftEvent.alarmsMinutesBefore must
+        // be empty, not nil or [0]. Pins the state-default invariant.
+        let savedAlarms = LockIsolated<[Int]?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedAlarms.setValue(draft.alarmsMinutesBefore)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedAlarms.value, [])
+    }
+
+    func test_sendTapped_calendar_passesAtTimeAlarm_asZeroMinutes() async {
+        // "At time of event" is the 0-minutes preset — distinct from
+        // nil (no alarm). Make sure 0 flows through as `[0]`, not `[]`.
+        let savedAlarms = LockIsolated<[Int]?>(nil)
+        let store = makeStore(
+            createEvent: { draft in
+                savedAlarms.setValue(draft.alarmsMinutesBefore)
+                return "event-1"
+            }
+        )
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventAlarmSelected(0)) { $0.eventAlarmMinutesBefore = 0 }
+        await store.send(.sendTapped) { $0.saveState = .saving }
+        await store.receive(.sendCompleted("event-1")) {
+            $0.saveState = .idle
+            $0.resolved[$0.tasks[0].id] = .sent
+            $0.completion = .finished
+        }
+        XCTAssertEqual(savedAlarms.value, [0])
+    }
+
+    func test_destinationSelected_preservesAlarmAcrossSwitch() async {
+        let store = makeStore()
+        await store.send(.onAppear) {
+            $0.calendarStart = Self.fixedNow
+            $0.calendarEnd = Self.fixedNow.addingTimeInterval(DispatchFeature.State.defaultEventDuration)
+        }
+        await store.skipReceivedActions()
+
+        await store.send(.eventAlarmSelected(30)) { $0.eventAlarmMinutesBefore = 30 }
+        await store.send(.destinationSelected(.mail)) { $0.destination = .mail }
+        await store.send(.destinationSelected(.calendar)) { $0.destination = .calendar }
+        XCTAssertEqual(store.state.eventAlarmMinutesBefore, 30)
+    }
+
     func test_sendTapped_calendar_dropsSchemelessURL() async {
         // "example.com" without a scheme parses as a RELATIVE URL —
         // URL(string:) returns non-nil — but Calendar.app can't make a

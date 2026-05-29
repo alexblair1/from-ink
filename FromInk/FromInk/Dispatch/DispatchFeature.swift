@@ -92,6 +92,14 @@ struct DispatchFeature: Reducer {
         /// — the six presets match Apple Calendar's quick-pick rotation.
         var eventRecurrence: EventRecurrence = .never
 
+        /// Single-alarm offset, in minutes before event start. `nil`
+        /// (default) means no alarm. v1 exposes exactly one preset
+        /// alarm at a time; the send path wraps the Int into the
+        /// `[Int]` shape `DraftEvent.alarmsMinutesBefore` expects. The
+        /// preset list lives in the wiring layer — only the picker
+        /// cares about which Int values are "presets" vs arbitrary.
+        var eventAlarmMinutesBefore: Int? = nil
+
         /// Reminders — list identifier + optional due moment.
         var reminderListID: String? = nil
         var reminderDue: Date? = nil
@@ -134,6 +142,7 @@ struct DispatchFeature: Reducer {
             case calendarEndTime
             case eventCalendar
             case eventRecurrence
+            case eventAlarm
             case reminderDue
             case reminderList
         }
@@ -237,6 +246,7 @@ struct DispatchFeature: Reducer {
         case eventCalendarsLoaded([CalendarSnapshot])
         case eventURLChanged(String)
         case eventRecurrenceSelected(EventRecurrence)
+        case eventAlarmSelected(Int?)
         case eventLocationChanged(String)
         case locationSuggestionsUpdated([LocationSuggestion])
         case locationSuggestionTapped(LocationSuggestion)
@@ -346,6 +356,10 @@ struct DispatchFeature: Reducer {
 
             case .eventRecurrenceSelected(let recurrence):
                 state.eventRecurrence = recurrence
+                return .none
+
+            case .eventAlarmSelected(let minutes):
+                state.eventAlarmMinutesBefore = minutes
                 return .none
 
             case .eventLocationChanged(let text):
@@ -558,6 +572,7 @@ struct DispatchFeature: Reducer {
                 let eventLocation = state.eventLocation
                 let eventLocationCoordinate = state.eventLocationCoordinate
                 let eventRecurrence = state.eventRecurrence
+                let alarms: [Int] = state.eventAlarmMinutesBefore.map { [$0] } ?? []
 
                 return .run { send in
                     do {
@@ -573,7 +588,7 @@ struct DispatchFeature: Reducer {
                                 locationCoordinate: eventLocationCoordinate,
                                 url: eventURL,
                                 calendarID: eventCalendarID,
-                                alarmsMinutesBefore: [],
+                                alarmsMinutesBefore: alarms,
                                 recurrence: eventRecurrence
                             )
                             let id = try await eventKit.createEvent(draft)

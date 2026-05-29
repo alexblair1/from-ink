@@ -616,6 +616,11 @@ struct DispatchView: View {
             singleSelectList(choices, selected: selected, onTap: { id in
                 model.onRecurrenceSelected?(id)
             })
+
+        case .alarm(let choices, let selected):
+            singleSelectList(choices, selected: selected, onTap: { id in
+                model.onAlarmSelected?(id)
+            })
         }
     }
 
@@ -779,6 +784,7 @@ extension DispatchView {
         let onCalendarPickerChanged: ((PickerOverlay.CalendarPickerKind, Date) -> Void)?
         let onEventCalendarSelected: ((String) -> Void)?
         let onRecurrenceSelected: ((String) -> Void)?
+        let onAlarmSelected: ((String) -> Void)?
         let onReminderDueChanged: ((Date?) -> Void)?
         let onReminderHasTimeChanged: ((Bool) -> Void)?
         let onReminderListSelected: ((String) -> Void)?
@@ -936,6 +942,7 @@ extension DispatchView {
             case calendarPicker(CalendarPickerKind, Date)
             case eventCalendar([PickerChoice], selected: String?)
             case recurrence([PickerChoice], selected: String)
+            case alarm([PickerChoice], selected: String)
             case reminderDue(Date?, hasTime: Bool)
             case reminderList([PickerChoice], selected: String?)
 
@@ -965,6 +972,7 @@ extension DispatchView {
                 case .calendarPicker(let kind, _): return kind.title
                 case .eventCalendar:               return AppStrings.DispatchModal.calendar
                 case .recurrence:                  return AppStrings.DispatchModal.repeatLabel
+                case .alarm:                       return AppStrings.DispatchModal.alertLabel
                 case .reminderDue:                 return AppStrings.DispatchModal.due
                 case .reminderList:                return AppStrings.DispatchModal.list
                 }
