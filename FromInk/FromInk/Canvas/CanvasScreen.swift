@@ -503,8 +503,12 @@ struct CanvasScreen: View {
             // preloaded adjacent CanvasScreens would all present their
             // dispatch panel.
             guard requested, isCurrentPage else { return }
-            syncDispatchPanelData()
-            dispatchPanelStore.send(.presented)
+            if dispatchPanelStore.isVisible {
+                dispatchPanelStore.send(.dismissed)
+            } else {
+                syncDispatchPanelData()
+                dispatchPanelStore.send(.presented)
+            }
             toolbarStore.send(.dispatchAcknowledged)
         }
         .task(id: pageID) { await loadPageOnAppear() }
@@ -662,12 +666,7 @@ struct CanvasScreen: View {
                 DispatchQueue.main.async { scrollOffset = offset }
             },
             onScrolledAwayFromBottom: onAwayFromBottom,
-            scrollTo: $canvasScrollTarget,
-            headerStripOnRight: toolbarSide == .left,
-            onHeaderPanelRequested: {
-                syncDispatchPanelData()
-                dispatchPanelStore.send(.presented)
-            }
+            scrollTo: $canvasScrollTarget
         )
     }
 

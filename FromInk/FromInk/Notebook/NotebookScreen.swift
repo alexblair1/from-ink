@@ -15,7 +15,6 @@ struct NotebookScreen: View {
 
     @State private var showAddButton = false
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var toolbarStore: StoreOf<ToolbarFeature> {
         store.scope(state: \.toolbar, action: \.toolbar)
@@ -139,7 +138,7 @@ struct NotebookScreen: View {
             // translate horizontally with page swipes.
             ToolbarWiringView(
                 store: toolbarStore,
-                zones: ToolbarZoneConfig.standard(isCompact: sizeClass == .compact)
+                zones: ToolbarZoneConfig.standard()
             )
             .frame(maxHeight: .infinity)
             .frame(

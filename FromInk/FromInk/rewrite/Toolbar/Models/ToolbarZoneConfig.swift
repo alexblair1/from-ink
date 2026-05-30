@@ -31,17 +31,14 @@ enum ToolbarZoneItem: Equatable, Sendable {
 // MARK: - Default configuration
 
 extension ToolbarZoneConfig {
-    static func standard(isCompact: Bool = false) -> [ToolbarZoneConfig] {
-        var actionItems: [ToolbarZoneItem] = [
+    static func standard() -> [ToolbarZoneConfig] {
+        let actionItems: [ToolbarZoneItem] = [
             .action(.undo, icon: "arrow.uturn.backward"),
             .action(.redo, icon: "arrow.uturn.forward"),
             .action(.template, icon: "square.grid.3x3"),
             .action(.settings, icon: "gearshape"),
+            .action(.dispatch, icon: "tray"),
         ]
-
-        if isCompact {
-            actionItems.append(.action(.dispatch, icon: "tray"))
-        }
 
         return [
             ToolbarZoneConfig(id: "handle", placement: .pinnedTop, items: [.dragHandle]),
