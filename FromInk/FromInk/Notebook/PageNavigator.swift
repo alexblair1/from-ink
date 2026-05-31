@@ -13,16 +13,16 @@ struct PageNavigator: View {
         HStack(spacing: 0) {
             Button(action: onPrevious) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .regular))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 17, weight: .regular))
+                    .frame(width: 52, height: 52)
                     .contentShape(Rectangle())
             }
             .disabled(current <= 1)
 
             Text("\(current) / \(total)")
-                .font(.system(size: 13, weight: .regular, design: .rounded))
+                .font(.system(size: 15, weight: .regular, design: .rounded))
                 .monospacedDigit()
-                .frame(minWidth: 48)
+                .frame(minWidth: 56)
 
             // At the last page the forward affordance becomes "add a new
             // page" — a bold `plus` in `inkPure` so it reads as the
@@ -31,11 +31,11 @@ struct PageNavigator: View {
             // icon in place so it reads as a state change.
             Button(action: isAtLastPage ? onAddPage : onNext) {
                 Image(systemName: isAtLastPage ? "plus" : "chevron.right")
-                    .font(.system(size: 14, weight: isAtLastPage ? .bold : .regular))
+                    .font(.system(size: 17, weight: isAtLastPage ? .bold : .regular))
                     .foregroundStyle(isAtLastPage
                         ? DesignSystem.standard.colors.inkPure
                         : Color.inkSecondary)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 52, height: 52)
                     .contentShape(Rectangle())
                     .contentTransition(.symbolEffect(.replace))
             }
