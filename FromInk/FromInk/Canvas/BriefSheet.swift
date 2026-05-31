@@ -5,6 +5,10 @@ struct BriefSheet: View {
     var summary: String = ""
     @Binding var tasks: [ExtractedTask]
     var openQuestion: String? = nil
+    /// When the brief was generated. Resolved by the caller via
+    /// `CalendarContext` so the sheet never reaches for a bare
+    /// `Date()` / `Date.now`. `nil` hides the GENERATED label.
+    var generatedAt: Date? = nil
     var onDismiss: () -> Void = {}
     var onSendAll: () -> Void = {}
 
@@ -56,25 +60,21 @@ struct BriefSheet: View {
             )
         }
         .background(Color.surface)
-        .presentationBackground(Color.surface)
-        .presentationCornerRadius(0)
-        .presentationDragIndicator(.hidden)
-        .presentationDetents([.large])
     }
 
     // MARK: - Header
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
-            Image(systemName: "bolt.fill")
+            Image(systemName: "sparkles.rectangle.stack")
                 .font(.system(size: 13))
                 .foregroundStyle(Color.bolt)
             Text("Page Brief")
                 .font(.canvasTitle)
                 .foregroundStyle(Color.ink)
             Spacer()
-            if !isLoading {
-                Text(Date.now.formatted(date: .abbreviated, time: .omitted).uppercased() + " · GENERATED")
+            if !isLoading, let generatedAt {
+                Text(generatedAt.formatted(date: .abbreviated, time: .omitted).uppercased() + " · GENERATED")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.inkSecondary)
                     .kerning(0.3)

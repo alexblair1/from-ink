@@ -18,19 +18,14 @@ struct DispatchPanelWiringView: View {
 extension DispatchPanelView.Model {
     init(store: StoreOf<DispatchPanelFeature>) {
         let ds = DesignSystem.standard
-
         let tabs = DispatchTab.allCases.map { tab in
             let isSelected = store.selectedTab == tab
             return DispatchTabButton.Model(
                 id: tab.rawValue,
                 icon: tab.icon,
                 onTap: { store.send(.tabSelected(tab)) },
-                foreground: isSelected ? ds.colors.ink : ds.colors.ink3,
-                background: isSelected ? ds.colors.highlight : .clear,
-                indicatorColor: isSelected ? ds.colors.ink : .clear,
-                indicatorHeight: isSelected
-                    ? ds.layout.toolbarActiveIndicatorWidth
-                    : 0
+                foreground: isSelected ? ds.colors.paperPure : ds.colors.inkPure,
+                background: isSelected ? ds.colors.inkPure : .clear
             )
         }
 

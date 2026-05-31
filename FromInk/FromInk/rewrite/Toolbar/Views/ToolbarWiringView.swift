@@ -64,10 +64,8 @@ extension ToolbarView.Model {
                     id: descriptor.id.rawValue,
                     icon: icon,
                     onTap: { store.send(.toolTapped(descriptor.id)) },
-                    foreground: isActive ? ds.colors.ink : ds.colors.ink2,
-                    background: isActive ? ds.colors.highlight : .clear,
-                    indicatorColor: isActive ? ds.colors.ink : .clear,
-                    indicatorWidth: ds.layout.toolbarActiveIndicatorWidth
+                    foreground: isActive ? ds.colors.paperPure : ds.colors.inkPure,
+                    background: isActive ? ds.colors.inkPure : .clear
                 )
             )
 
@@ -93,7 +91,7 @@ extension ToolbarView.Model {
             return .actionButton(
                 ActionButtonView.Model(
                     id: "bolt",
-                    icon: "bolt.fill",
+                    icon: "sparkles.rectangle.stack",
                     onTap: { store.send(.analyzeTapped) }
                 )
             )

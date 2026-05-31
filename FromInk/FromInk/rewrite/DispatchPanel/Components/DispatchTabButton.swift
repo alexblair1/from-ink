@@ -14,11 +14,7 @@ struct DispatchTabButton: View {
                 .foregroundStyle(model.foreground)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(model.background)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(model.indicatorColor)
-                        .frame(height: model.indicatorHeight)
-                }
+                .animation(model.animation, value: model.foreground)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -35,8 +31,7 @@ extension DispatchTabButton {
         let iconSize: CGFloat
         let foreground: Color
         let background: Color
-        let indicatorColor: Color
-        let indicatorHeight: CGFloat
+        let animation: Animation
     }
 }
 
@@ -49,8 +44,6 @@ extension DispatchTabButton.Model {
         onTap: @escaping () -> Void,
         foreground: Color,
         background: Color,
-        indicatorColor: Color,
-        indicatorHeight: CGFloat,
         ds: DesignSystem = .standard
     ) {
         self.id = id
@@ -59,7 +52,6 @@ extension DispatchTabButton.Model {
         self.iconSize = ds.layout.tabIconSize
         self.foreground = foreground
         self.background = background
-        self.indicatorColor = indicatorColor
-        self.indicatorHeight = indicatorHeight
+        self.animation = ds.animation.fast
     }
 }

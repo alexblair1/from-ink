@@ -1,6 +1,48 @@
 import ComposableArchitecture
 import SwiftUI
 
+/// Hoisted state for the page brief overlay. Lives at NotebookScreen
+/// level so the overlay can render above the toolbar and the close
+/// button (siblings of the TabView), covering them visually and
+/// blocking interaction while a brief is open.
+///
+/// The originating CanvasScreen captures its per-page routing path in
+/// `onSendAll` so NotebookScreen can present without inheriting the
+/// per-page `notebookClient` + `pageID` coupling. `generatedAt` is
+/// resolved through `CalendarContext` at the call site — no bare
+/// `Date()` reaches the overlay.
+struct BriefRequest {
+    var isLoading: Bool
+    var summary: String
+    var tasks: [InkTask]
+    var openQuestion: String?
+    var generatedAt: Date?
+    var onSendAll: ([InkTask]) -> Void
+}
+
+/// Active dispatch flow. Holds the originating task (needed to build
+/// the `NoteHistoryDraft` after a successful send) alongside the
+/// TCA store that backs the universal Dispatch modal and the
+/// per-page completion callback. The flow lives at NotebookScreen so
+/// the modal renders above the toolbar + close button. The completion
+/// callback is captured by the originating CanvasScreen, so per-page
+/// state (notebookClient, pageID, dispatch panel sync) stays local
+/// to the page even though the rendering is hoisted.
+///
+/// Per-page lifecycle by design — swiping pages dismisses an
+/// in-progress edit.
+///
+/// **Sendable trap:** `onCompletion` captures the originating
+/// CanvasScreen's MainActor-isolated methods. Do not add a
+/// `Sendable` conformance to `DispatchFlow` without first reworking
+/// the completion delivery (e.g. via a TCA action) — the closure
+/// would then need to be `@Sendable`, which the capture isn't.
+struct DispatchFlow {
+    let task: InkTask
+    let store: StoreOf<DispatchFeature>
+    let onCompletion: (DispatchFeature.State.Completion) -> Void
+}
+
 /// Wiring view for a single open notebook. Reads page snapshots from
 /// `NotebookFeature`, binds the TabView page index to the reducer, and
 /// renders the toolbar plus its panel overlays at this level so they
@@ -14,6 +56,8 @@ struct NotebookScreen: View {
     @Bindable var store: StoreOf<NotebookFeature>
 
     @State private var showAddButton = false
+    @State private var briefRequest: BriefRequest? = nil
+    @State private var dispatchFlow: DispatchFlow? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var toolbarStore: StoreOf<ToolbarFeature> {
@@ -48,7 +92,9 @@ struct NotebookScreen: View {
                         },
                         onAwayFromBottom: {
                             if store.currentIndex == i { showAddButton = false }
-                        }
+                        },
+                        dispatchFlow: $dispatchFlow,
+                        briefRequest: $briefRequest
                     )
                     .tag(i)
                 }
@@ -160,11 +206,69 @@ struct NotebookScreen: View {
             if let panel = store.toolbar.openPanel {
                 toolbarPanel(panel)
             }
+
+            // Page Brief overlay — rendered LAST in the ZStack so it
+            // covers the toolbar and close button visually and blocks
+            // their interaction. Slides in from the edge opposite the
+            // toolbar, matching the dispatch panel motion language.
+            // Animation scoped to this Group so the brief / dispatch
+            // overlays don't share one .animation modifier on the ZStack.
+            Group {
+                if briefRequest != nil {
+                    briefOverlay
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.move(edge: toolbarIsLeft ? .trailing : .leading))
+                        .ignoresSafeArea()
+                }
+            }
+            .animation(DesignSystem.standard.animation.standard, value: briefRequest != nil)
+
+            // Universal Dispatch modal — also at notebook level so its
+            // dim backdrop covers the toolbar + close button. Hosting
+            // CanvasScreen captures per-page completion logic in
+            // `flow.onCompletion`; we own the lifecycle (clear on
+            // completion + page swipe).
+            Group {
+                if let flow = dispatchFlow {
+                    DispatchWiringView(store: flow.store)
+                        .transition(.opacity)
+                        .onChange(of: flow.store.completion) { _, completion in
+                            guard let completion else { return }
+                            flow.onCompletion(completion)
+                            dispatchFlow = nil
+                        }
+                }
+            }
+            .animation(DesignSystem.standard.animation.slow, value: dispatchFlow == nil)
         }
         .task { store.send(.onAppear) }
         .onChange(of: store.currentIndex) { _, _ in
             showAddButton = false
+            // Per-page overlays — dismiss on page swipe so a flow from
+            // page N doesn't linger over page N+1 with the wrong data.
+            briefRequest = nil
+            dispatchFlow = nil
         }
+    }
+
+    @ViewBuilder
+    private var briefOverlay: some View {
+        BriefSheet(
+            isLoading: briefRequest?.isLoading ?? false,
+            summary: briefRequest?.summary ?? "",
+            tasks: Binding(
+                get: { briefRequest?.tasks ?? [] },
+                set: { briefRequest?.tasks = $0 }
+            ),
+            openQuestion: briefRequest?.openQuestion,
+            generatedAt: briefRequest?.generatedAt,
+            onDismiss: { briefRequest = nil },
+            onSendAll: {
+                guard let request = briefRequest else { return }
+                request.onSendAll(request.tasks)
+                briefRequest = nil
+            }
+        )
     }
 
     /// Toolbar customization / template / settings panel. Vertically

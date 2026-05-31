@@ -10,7 +10,7 @@ struct LassoMenuBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            menuButton(icon: "bolt.fill", tint: Color.bolt, action: onTaskBrief)
+            menuButton(icon: "sparkles.rectangle.stack", tint: Color.bolt, action: onTaskBrief)
             divider
             menuButton(icon: "bookmark", action: onMarkHeader)
             divider

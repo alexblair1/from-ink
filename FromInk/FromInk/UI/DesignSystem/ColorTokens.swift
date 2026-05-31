@@ -17,6 +17,14 @@ struct ColorTokens: Sendable {
     let ink3: Color
     let rule: Color
     let paperOnInk: Color
+    /// Pure black (light) / pure white (dark). Reserved for the
+    /// inverted-pill selection state where the warm-tinted `ink`
+    /// token reads as too muted against `paper`. Use sparingly —
+    /// most surfaces should still use `ink`.
+    let inkPure: Color
+    /// Pure white (light) / pure black (dark). Pairs with `inkPure`
+    /// as the icon color on an inverted-pill background.
+    let paperPure: Color
 
     /// Editorial alert / needs-attention color. Reserved for explicit
     /// user-actionable callouts — "Re-authenticate", "No connection",
@@ -42,6 +50,8 @@ struct ColorTokens: Sendable {
         ink3:       Color("ink/Ink3"),
         rule:       Color("ink/Rule"),
         paperOnInk: Color("ink/Paper"),
+        inkPure:    Color("ink/InkPure"),
+        paperPure:  Color("ink/PaperPure"),
         flagRed:    Color("ink/FlagRed")
     )
 }

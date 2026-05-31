@@ -19,11 +19,10 @@ extension Color {
 // MARK: - Design Tokens
 
 extension Color {
-    /// Warm off-white paper surface
-    static let canvas = Color(
-        light: Color(red: 0.98, green: 0.97, blue: 0.95),
-        dark:  Color(red: 0.09, green: 0.09, blue: 0.09)
-    )
+    /// Notebook writing surface. Matches the home screen via the
+    /// shared `ink/Paper` asset so the open-notebook background is
+    /// continuous with where the user opened it from.
+    static let canvas = Color("ink/Paper")
     /// UI surface — toolbar, top bar
     static let surface = Color(
         light: Color(red: 0.99, green: 0.99, blue: 0.98),

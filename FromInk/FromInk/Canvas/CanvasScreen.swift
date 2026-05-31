@@ -2,26 +2,6 @@ import SwiftUI
 import PencilKit
 import ComposableArchitecture
 
-private enum ActiveSheet: Identifiable {
-    case brief
-    case link
-    var id: String {
-        switch self {
-        case .brief: return "brief"
-        case .link:  return "link"
-        }
-    }
-}
-
-/// Active dispatch flow. Holds the originating task (needed to build
-/// the `NoteHistoryDraft` after a successful send) alongside the
-/// TCA store that backs the universal Dispatch modal. Per-page
-/// lifecycle by design — swiping pages dismisses an in-progress edit.
-private struct DispatchFlow {
-    let task: InkTask
-    let store: StoreOf<DispatchFeature>
-}
-
 struct CanvasScreen: View {
     var notebookID: UUID = UUID()
     /// Stable UUID for the persisted `NotePage` this canvas backs. Drives
@@ -76,11 +56,7 @@ struct CanvasScreen: View {
     #endif
 
     // Sheets
-    @State private var activeSheet: ActiveSheet? = nil
-    @State private var isAnalyzing = false
-    @State private var briefSummary: String = ""
-    @State private var briefTasks: [InkTask] = []
-    @State private var briefOpenQuestion: String? = nil
+    @State private var isLinkSheetVisible: Bool = false
     @State private var lassoMenuImage: UIImage? = nil
     @State private var lassoMenuRect: CGRect = .zero
     @State private var lassoContentRect: CGRect = .zero
@@ -102,9 +78,14 @@ struct CanvasScreen: View {
 
     // Routing
     @State private var routingPermissionError: String? = nil
-    /// Non-nil while the universal Dispatch modal is showing for a task
-    /// that needed user input (calendar route without a due date).
-    @State private var dispatchFlow: DispatchFlow? = nil
+    /// Hoisted to NotebookScreen so the modal renders above the toolbar
+    /// and close button. Bound here so this page can present and read
+    /// back the active store while OCR / extraction tasks complete.
+    @Binding var dispatchFlow: DispatchFlow?
+    /// Hoisted to NotebookScreen for the same reason as `dispatchFlow`.
+    /// The page builds a `BriefRequest` whose `onSendAll` captures
+    /// `routeTask` so per-page routing still works after the hoist.
+    @Binding var briefRequest: BriefRequest?
 
     // Links (persisted via NotebookClient; UI cache of NoteLinkSnapshot)
     @State private var links: [NoteLinkSnapshot] = []
@@ -165,7 +146,13 @@ struct CanvasScreen: View {
         ) {
             DispatchFeature()
         }
-        dispatchFlow = DispatchFlow(task: task, store: store)
+        dispatchFlow = DispatchFlow(
+            task: task,
+            store: store,
+            onCompletion: { completion in
+                handleDispatchCompletion(completion, task: task, store: store)
+            }
+        )
     }
 
     /// Bridges the Dispatch completion signal back to the routing
@@ -205,7 +192,8 @@ struct CanvasScreen: View {
         case .cancelled:
             break
         }
-        dispatchFlow = nil
+        // Lifecycle (dispatchFlow = nil) is owned by NotebookScreen,
+        // which clears the binding when the store reports a completion.
     }
 
     /// Presents the universal Dispatch modal in edit mode for an
@@ -225,6 +213,10 @@ struct CanvasScreen: View {
     /// could split `DispatchFlow` into `.create(task, store)` /
     /// `.edit(store)` variants; for v1 a placeholder + the comment
     /// that names it is the lower-churn choice.
+    ///
+    /// `onCompletion` captures `placeholder` and `store` so the
+    /// hoisted NotebookScreen-level renderer can invoke this page's
+    /// completion logic without needing per-page wiring.
     private func presentDispatchEditFlow(for item: DispatchRoutedItem) {
         guard let identifier = item.eventKitIdentifier else { return }
         let placeholder = InkTask(title: item.title)
@@ -236,7 +228,13 @@ struct CanvasScreen: View {
             DispatchFeature()
         }
         store.send(.openForEditingEvent(identifier))
-        dispatchFlow = DispatchFlow(task: placeholder, store: store)
+        dispatchFlow = DispatchFlow(
+            task: placeholder,
+            store: store,
+            onCompletion: { completion in
+                handleDispatchCompletion(completion, task: placeholder, store: store)
+            }
+        )
     }
 
     private func integrationAtCompletion(store: StoreOf<DispatchFeature>) -> Integration {
@@ -332,7 +330,7 @@ struct CanvasScreen: View {
                 pendingLinkContentRect = lassoContentRect
                 pendingLinkOCRText = ""
                 isRecognizingLink = true
-                activeSheet = .link
+                isLinkSheetVisible = true
                 Task {
                     defer { isRecognizingLink = false }
                     pendingLinkOCRText = await LassoOCR.recognize(image: image, correct: true)
@@ -402,26 +400,10 @@ struct CanvasScreen: View {
                 }
 
                 dispatchSidePanelLayer
-
-                // Universal Dispatch overlay — shown when a routed task
-                // needs user input. Rendered last in the ZStack so it
-                // covers all other page content while active. The
-                // `.transition(.opacity)` + sibling animation produces
-                // a subtle fade-in (and fade-out on dismiss); 100ms
-                // linear matches the project animation rule.
-                if let flow = dispatchFlow {
-                    DispatchWiringView(store: flow.store)
-                        .transition(.opacity)
-                        .onChange(of: flow.store.completion) { _, completion in
-                            guard let completion else { return }
-                            handleDispatchCompletion(completion, task: flow.task, store: flow.store)
-                        }
-                }
             }
-            // Page-level overlay — use `slow` (120ms) for the more
-            // deliberate full-overlay fade. See "Loading-to-content
-            // crossfade" / "Modal overlay fade-in" in CLAUDE.md.
-            .animation(DesignSystem.standard.animation.slow, value: dispatchFlow == nil)
+            // Page-level dispatch modal is rendered at NotebookScreen so
+            // it covers the toolbar; the page only animates side panels
+            // it still owns.
             .onChange(of: currentDrawing.strokes.count) { _, _ in
                 pruneErasedLinks()
             }
@@ -461,8 +443,18 @@ struct CanvasScreen: View {
         } message: {
             if let msg = routingPermissionError { Text(msg) }
         }
-        .sheet(item: $activeSheet) { sheet in
-            sheetContent(for: sheet)
+        .sheet(isPresented: $isLinkSheetVisible) {
+            LinkInputSheet(
+                isLoading: isRecognizingLink,
+                recognizedText: pendingLinkOCRText,
+                initialURL: editingLinkInitialURL,
+                isEditing: editingLink != nil,
+                onConfirm: { url in confirmLinkInput(url: url) },
+                onDismiss: {
+                    editingLink = nil
+                    isLinkSheetVisible = false
+                }
+            )
         }
         .onChange(of: dispatchPanelStore.isVisible) { _, visible in
             guard visible else { return }
@@ -578,7 +570,7 @@ struct CanvasScreen: View {
         } else {
             createNewLink(url: url)
         }
-        activeSheet = nil
+        isLinkSheetVisible = false
     }
 
     private func updateExistingLink(_ existing: NoteLinkSnapshot, url: URL) {
@@ -671,42 +663,6 @@ struct CanvasScreen: View {
     }
 
     @ViewBuilder
-    private func sheetContent(for sheet: ActiveSheet) -> some View {
-        switch sheet {
-        case .brief:
-            BriefSheet(
-                isLoading: isAnalyzing,
-                summary: briefSummary,
-                tasks: $briefTasks,
-                openQuestion: briefOpenQuestion,
-                onDismiss: { activeSheet = nil },
-                onSendAll: {
-                    let tasksToRoute = briefTasks
-                    activeSheet = nil
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(600))
-                        for task in tasksToRoute {
-                            await routeTask(task)
-                        }
-                    }
-                }
-            )
-        case .link:
-            LinkInputSheet(
-                isLoading: isRecognizingLink,
-                recognizedText: pendingLinkOCRText,
-                initialURL: editingLinkInitialURL,
-                isEditing: editingLink != nil,
-                onConfirm: { url in confirmLinkInput(url: url) },
-                onDismiss: {
-                    editingLink = nil
-                    activeSheet = nil
-                }
-            )
-        }
-    }
-
-    @ViewBuilder
     private var headerIndicators: some View {
         ForEach(headers) { header in
             let viewX = header.rect.midX - scrollOffset.x
@@ -741,7 +697,7 @@ struct CanvasScreen: View {
         editingLink = link
         pendingLinkOCRText = link.ocrText
         isRecognizingLink = false
-        activeSheet = .link
+        isLinkSheetVisible = true
     }
 
     /// FIFO cache insert with soft cap. When the cache is full we drop
@@ -875,6 +831,8 @@ private extension DispatchRoutedItem {
     CanvasScreen(
         toolbarStore: Store(initialState: ToolbarFeature.State()) {
             ToolbarFeature()
-        }
+        },
+        dispatchFlow: .constant(nil),
+        briefRequest: .constant(nil)
     )
 }

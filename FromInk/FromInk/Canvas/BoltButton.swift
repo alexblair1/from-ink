@@ -12,7 +12,7 @@ struct BoltButton: View {
                 Rectangle()
                     .fill(Color.bolt.opacity(0.1))
 
-                Image(systemName: "bolt.fill")
+                Image(systemName: "sparkles.rectangle.stack")
                     .font(.system(size: 22, weight: .regular))
                     .foregroundStyle(Color.bolt)
                     .scaleEffect(isPulsing ? 1.24 : 1.0)
