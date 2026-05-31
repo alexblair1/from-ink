@@ -42,6 +42,12 @@ struct PageNavigator: View {
         }
         .foregroundStyle(Color.inkSecondary)
         .buttonStyle(.plain)
+        // Canvas-matched fill so handwriting / template lines behind the
+        // navigator are masked out. Same `ink/Paper` token the notebook
+        // background uses, so the rectangle reads as a "cleared" area
+        // of the page rather than a separate UI element. Rectangle
+        // (not capsule) per CLAUDE.md: `cornerRadius: 0` globally.
+        .background(Color.canvas)
     }
 }
 
