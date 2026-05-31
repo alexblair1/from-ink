@@ -503,6 +503,18 @@ struct CanvasScreen: View {
             }
             toolbarStore.send(.dispatchAcknowledged)
         }
+        .onChange(of: toolbarStore.isUndoRequested) { _, requested in
+            // Same shared-toolbar guard as dispatch: only the current
+            // page's PKCanvasView should consume + acknowledge.
+            guard requested, isCurrentPage else { return }
+            canvasBridge.undo()
+            toolbarStore.send(.undoAcknowledged)
+        }
+        .onChange(of: toolbarStore.isRedoRequested) { _, requested in
+            guard requested, isCurrentPage else { return }
+            canvasBridge.redo()
+            toolbarStore.send(.redoAcknowledged)
+        }
         .task(id: pageID) { await loadPageOnAppear() }
         .onDisappear {
             // Save-on-navigate: capture the current drawing SYNCHRONOUSLY

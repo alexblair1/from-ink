@@ -5,6 +5,9 @@ struct PageNavigator: View {
     let total: Int
     let onPrevious: () -> Void
     let onNext: () -> Void
+    let onAddPage: () -> Void
+
+    private var isAtLastPage: Bool { current >= total }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -21,13 +24,21 @@ struct PageNavigator: View {
                 .monospacedDigit()
                 .frame(minWidth: 48)
 
-            Button(action: onNext) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .regular))
+            // At the last page the forward affordance becomes "add a new
+            // page" — a bold `plus` in `inkPure` so it reads as the
+            // primary action rather than another navigation chevron.
+            // `.contentTransition(.symbolEffect(.replace))` morphs the
+            // icon in place so it reads as a state change.
+            Button(action: isAtLastPage ? onAddPage : onNext) {
+                Image(systemName: isAtLastPage ? "plus" : "chevron.right")
+                    .font(.system(size: 14, weight: isAtLastPage ? .bold : .regular))
+                    .foregroundStyle(isAtLastPage
+                        ? DesignSystem.standard.colors.inkPure
+                        : Color.inkSecondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
+                    .contentTransition(.symbolEffect(.replace))
             }
-            .disabled(current >= total)
         }
         .foregroundStyle(Color.inkSecondary)
         .buttonStyle(.plain)
@@ -37,6 +48,6 @@ struct PageNavigator: View {
 #Preview {
     Color.gray.opacity(0.2).ignoresSafeArea()
         .overlay {
-            PageNavigator(current: 2, total: 5, onPrevious: {}, onNext: {})
+            PageNavigator(current: 2, total: 5, onPrevious: {}, onNext: {}, onAddPage: {})
         }
 }

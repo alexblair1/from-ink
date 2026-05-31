@@ -102,34 +102,7 @@ struct NotebookScreen: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
 
-            // Page navigator — opposite side from toolbar, only when more than one page
-            if pages.count > 1 {
-                VStack {
-                    Spacer()
-                    HStack {
-                        if !toolbarIsLeft { Spacer() }
-
-                        PageNavigator(
-                            current: store.currentIndex + 1,
-                            total: pages.count,
-                            onPrevious: {
-                                let new = max(0, store.currentIndex - 1)
-                                withAnimation { store.send(.currentIndexChanged(new)) }
-                            },
-                            onNext: {
-                                let new = min(pages.count - 1, store.currentIndex + 1)
-                                withAnimation { store.send(.currentIndexChanged(new)) }
-                            }
-                        )
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, showAddButton ? 100 : 24)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showAddButton)
-
-                        if toolbarIsLeft { Spacer() }
-                    }
-                }
-                .ignoresSafeArea()
-            }
+            pageNavigatorLayer
 
             // Add page button — appears when scrolled near bottom
             if showAddButton {
@@ -158,7 +131,11 @@ struct NotebookScreen: View {
                 }
                 .ignoresSafeArea()
             }
-            // Dismiss button — top-right corner, opposite side from toolbar
+            // Dismiss button — top corner opposite the toolbar. Honors
+            // the safe area so it never tucks under the status bar /
+            // camera notch. The 44×44 outer frame wraps the 32×32
+            // visual circle to meet the HIG minimum tap-target size
+            // without enlarging the chrome.
             VStack {
                 HStack {
                     if toolbarIsLeft { Spacer() }
@@ -169,15 +146,16 @@ struct NotebookScreen: View {
                             .frame(width: 32, height: 32)
                             .background(Color.surface.opacity(0.85))
                             .clipShape(Circle())
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.top, 16)
-                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.horizontal, 12)
                     if !toolbarIsLeft { Spacer() }
                 }
                 Spacer()
             }
-            .ignoresSafeArea()
 
             // Toolbar — stretched edge-to-edge on the chosen side. Lives
             // at notebook level (sibling of the TabView) so it doesn't
@@ -248,6 +226,46 @@ struct NotebookScreen: View {
             // page N doesn't linger over page N+1 with the wrong data.
             briefRequest = nil
             dispatchFlow = nil
+        }
+    }
+
+    /// Page navigator — opposite side from toolbar, only when more than
+    /// one page. Spacer-on-toolbar-side pushes it clear of the 48pt
+    /// rail so the prev/next button can't be cropped.
+    @ViewBuilder
+    private var pageNavigatorLayer: some View {
+        if pages.count > 1 {
+            VStack {
+                Spacer()
+                HStack {
+                    if toolbarIsLeft { Spacer() }
+
+                    PageNavigator(
+                        current: store.currentIndex + 1,
+                        total: pages.count,
+                        onPrevious: {
+                            let new = max(0, store.currentIndex - 1)
+                            withAnimation { store.send(.currentIndexChanged(new)) }
+                        },
+                        onNext: {
+                            let new = min(pages.count - 1, store.currentIndex + 1)
+                            withAnimation { store.send(.currentIndexChanged(new)) }
+                        },
+                        onAddPage: {
+                            // Discard explicitly so the closure type
+                            // doesn't infer `StoreTask` and conflict
+                            // with `withAnimation`'s `Void` expectation.
+                            _ = withAnimation { store.send(.addPageTapped) }
+                        }
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, showAddButton ? 100 : 24)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showAddButton)
+
+                    if !toolbarIsLeft { Spacer() }
+                }
+            }
+            .ignoresSafeArea()
         }
     }
 

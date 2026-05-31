@@ -51,6 +51,18 @@ final class CanvasViewBridge {
         coordinator.canvas = canvas
     }
 
+    /// Drives the live `PKCanvasView`'s `undoManager` directly. PencilKit
+    /// owns the responder-chain manager that tracks stroke deltas; reaching
+    /// for SwiftUI's `@Environment(\.undoManager)` doesn't reliably hit
+    /// the same manager from a wiring view above the canvas.
+    func undo() {
+        coordinator?.canvas?.undoManager?.undo()
+    }
+
+    func redo() {
+        coordinator?.canvas?.undoManager?.redo()
+    }
+
     /// Synchronously captures everything needed to persist the current
     /// drawing. Returns nil if the Coordinator/canvas/client is gone or
     /// the drawing hasn't changed since the last save. Caller awaits
@@ -342,7 +354,16 @@ struct CanvasView: UIViewRepresentable {
 
         private var isNearBottom = false
 
-        func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+        // Apple Pencil double-tap. iOS 17.5 split this into typed
+        // tap / squeeze callbacks; the legacy `pencilInteractionDidTap`
+        // only fires when the user's preferred tap action is set to
+        // "ignore", which is why double-tap was missing for users with
+        // any other system pref. The modern callback fires regardless
+        // of preference.
+        func pencilInteraction(
+            _ interaction: UIPencilInteraction,
+            didReceiveTap tap: UIPencilInteraction.Tap
+        ) {
             onPencilDoubleTap()
         }
 

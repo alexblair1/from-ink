@@ -18,6 +18,8 @@ struct ToolbarFeature: Reducer {
         var side: ToolbarSide = .left
         var isBoltVisible: Bool = false
         var isDispatchRequested: Bool = false
+        var isUndoRequested: Bool = false
+        var isRedoRequested: Bool = false
 
         /// Pre-resolved settings for the currently open tool-customization
         /// panel. Kept on the reducer (not derived in the view with a
@@ -54,6 +56,8 @@ struct ToolbarFeature: Reducer {
         // Forwarded to parent (return .none here)
         case undoTapped
         case redoTapped
+        case undoAcknowledged
+        case redoAcknowledged
         case analyzeTapped
         case dispatchTapped
         case dispatchAcknowledged
@@ -167,7 +171,23 @@ struct ToolbarFeature: Reducer {
                 state.isDispatchRequested = false
                 return .none
 
-            case .undoTapped, .redoTapped, .analyzeTapped, .templateSelected:
+            case .undoTapped:
+                state.isUndoRequested = true
+                return .none
+
+            case .redoTapped:
+                state.isRedoRequested = true
+                return .none
+
+            case .undoAcknowledged:
+                state.isUndoRequested = false
+                return .none
+
+            case .redoAcknowledged:
+                state.isRedoRequested = false
+                return .none
+
+            case .analyzeTapped, .templateSelected:
                 return .none
 
             // MARK: - Lifecycle
