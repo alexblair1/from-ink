@@ -24,6 +24,10 @@ struct HomeScreenView: View {
                             HomeNotebookShelf(model: model.shelf)
                         }
 
+                        if let recentPDFs = model.recentPDFs {
+                            HomeRecentPDFsShelf(model: recentPDFs)
+                        }
+
                         if let emptyState = model.emptyState {
                             HomeEmptyState(model: emptyState)
                         }
@@ -85,6 +89,10 @@ extension HomeScreenView {
         let dailyBrief: HomeDailyBrief.Model
         let shelf: HomeNotebookShelf.Model
         let notebooks: [HomeNotebookShelf.NotebookCardModel]
+        /// Recent PDFs section. `nil` when the library has no imported
+        /// PDFs yet so the home screen doesn't show an empty-shelf
+        /// header. Non-nil ⇒ renders with at least one card.
+        let recentPDFs: HomeRecentPDFsShelf.Model?
         let emptyState: HomeEmptyState.Model?
         let backgroundColor: Color
         let bottomSpacing: CGFloat
@@ -110,6 +118,7 @@ extension HomeScreenView.Model {
         dailyBrief: HomeDailyBrief.Model,
         shelf: HomeNotebookShelf.Model,
         notebooks: [HomeNotebookShelf.NotebookCardModel],
+        recentPDFs: HomeRecentPDFsShelf.Model? = nil,
         emptyState: HomeEmptyState.Model? = nil,
         nonFocalOpacity: Double = 1.0,
         nonFocalIsInteractive: Bool = true,
@@ -120,6 +129,7 @@ extension HomeScreenView.Model {
         self.dailyBrief = dailyBrief
         self.shelf = shelf
         self.notebooks = notebooks
+        self.recentPDFs = recentPDFs
         self.emptyState = emptyState
         self.backgroundColor = ds.colors.paper
         self.bottomSpacing = ds.spacing.xxl

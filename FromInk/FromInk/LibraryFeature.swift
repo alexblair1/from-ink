@@ -24,6 +24,19 @@ struct LibraryFeature: Reducer {
     struct State: Equatable {
         var notebooks: [NotebookSnapshot] = []
         var folders: [FolderSnapshot] = []
+        /// Most-recently-opened PDFs (with `modifiedAt` fallback for
+        /// never-opened entries). Sourced from
+        /// `NotebookClient.fetchRecentPDFs(limit:)` and capped at
+        /// `recentPDFsLimit`. Surfaces use this directly — there's no
+        /// secondary "all PDFs" list today; when a full library page
+        /// lands we'll add a parallel field rather than reusing this.
+        var recentPDFs: [PDFDocumentSnapshot] = []
+
+        /// Page size for `recentPDFs`. Enough to fill a horizontal
+        /// scroller on the largest current device without thrashing the
+        /// store for a paginated load. Surfaces can read fewer than
+        /// this; nothing reads more.
+        var recentPDFsLimit: Int = 20
 
         /// Becomes true after the first `dataLoaded` action. Used by
         /// surfaces to distinguish "still loading" from "loaded empty".
@@ -40,7 +53,11 @@ struct LibraryFeature: Reducer {
     enum Action: Equatable {
         case onAppear
         case storeDidChange
-        case dataLoaded(notebooks: [NotebookSnapshot], folders: [FolderSnapshot])
+        case dataLoaded(
+            notebooks: [NotebookSnapshot],
+            folders: [FolderSnapshot],
+            recentPDFs: [PDFDocumentSnapshot]
+        )
         case loadFailed(reason: String)
 
         // Notebook lifecycle (caller-initiated)
@@ -101,10 +118,11 @@ struct LibraryFeature: Reducer {
             case .storeDidChange:
                 return refresh()
 
-            case .dataLoaded(let nbs, let folders):
+            case .dataLoaded(let nbs, let folders, let pdfs):
                 let wasFirstLoad = !state.hasLoadedOnce
                 state.notebooks = nbs
                 state.folders = folders
+                state.recentPDFs = pdfs
                 state.hasLoadedOnce = true
                 if wasFirstLoad && state.shouldSeedIfEmpty && nbs.isEmpty {
                     return seedDefaultNotebook()
@@ -206,8 +224,14 @@ struct LibraryFeature: Reducer {
             do {
                 async let notebooksTask = notebookClient.fetchAllNotebooks()
                 async let foldersTask = notebookClient.fetchAllFolders()
-                let (nbs, folders) = try await (notebooksTask, foldersTask)
-                await send(.dataLoaded(notebooks: nbs, folders: folders))
+                // The PDFs limit is read by the reducer from
+                // `State.recentPDFsLimit`; effect closures can't see
+                // state, so the cap is duplicated here. Keep in sync
+                // by reading `LibraryFeature.State()` defaults or
+                // bumping both at once.
+                async let pdfsTask = notebookClient.fetchRecentPDFs(20)
+                let (nbs, folders, pdfs) = try await (notebooksTask, foldersTask, pdfsTask)
+                await send(.dataLoaded(notebooks: nbs, folders: folders, recentPDFs: pdfs))
             } catch {
                 await send(.loadFailed(reason: String(describing: error)))
             }

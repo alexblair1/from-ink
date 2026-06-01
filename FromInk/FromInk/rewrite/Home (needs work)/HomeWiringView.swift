@@ -182,6 +182,7 @@ struct HomeWiringView: View {
             dailyBrief: dailyBriefModel,
             shelf: shelfModel,
             notebooks: notebookCards,
+            recentPDFs: recentPDFsModel,
             emptyState: rootNotebooks.isEmpty
                 ? HomeEmptyState.Model(onCreateNotebook: { store.send(.newNotebookTapped) })
                 : nil,
@@ -189,6 +190,35 @@ struct HomeWiringView: View {
             nonFocalIsInteractive: !store.isWheelOpen,
             onScrimTap: store.isWheelOpen ? { store.send(.wheelToggled) } : nil
         )
+    }
+
+    /// Builds the Recent PDFs shelf model, or `nil` when the library is
+    /// empty of PDFs (the shelf renders nothing rather than showing a
+    /// header above zero cards). Tap handlers are a no-op placeholder
+    /// today — Phase 3 (`PDFFeature` viewer) wires them to a presentation.
+    private var recentPDFsModel: HomeRecentPDFsShelf.Model? {
+        let pdfs = filteredPDFs
+        guard !pdfs.isEmpty else { return nil }
+        let cards = pdfs.map { snap in
+            HomeRecentPDFsShelf.PDFCardModel(
+                id: snap.id,
+                title: snap.title,
+                pagesLabel: "\(snap.pageCount) \(AppStrings.Home.pdfPagesLabel)",
+                thumbnailData: snap.thumbnailData,
+                onTap: { /* Phase 3: present PDFFeature for snap.id */ }
+            )
+        }
+        return HomeRecentPDFsShelf.Model(pdfs: cards)
+    }
+
+    /// Applies the home search filter to the loaded recent-PDF
+    /// snapshots. Cheap (small N) and consistent with how
+    /// `filteredNotebooks` filters its source.
+    private var filteredPDFs: [PDFDocumentSnapshot] {
+        guard !localSearchText.isEmpty else { return store.library.recentPDFs }
+        return store.library.recentPDFs.filter {
+            $0.title.localizedCaseInsensitiveContains(localSearchText)
+        }
     }
 
     private var topBarModel: HomeTopBar.Model {

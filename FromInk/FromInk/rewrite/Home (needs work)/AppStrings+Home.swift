@@ -137,6 +137,16 @@ static let highlights = NSLocalizedString(
             value: "Notebooks",
             comment: "Notebooks shelf section title"
         )
+        static let recentPDFs = NSLocalizedString(
+            "home.recentPDFs",
+            value: "Recent PDFs",
+            comment: "Recent PDFs shelf section title on the home screen"
+        )
+        static let pdfPagesLabel = NSLocalizedString(
+            "home.pdf.pagesLabel",
+            value: "PAGES",
+            comment: "Mono-label suffix shown next to a PDF page count on the home shelf"
+        )
         static let noEventsToday = NSLocalizedString(
             "home.noEventsToday",
             value: "No events or reminders today. A clear day for deep work.",
