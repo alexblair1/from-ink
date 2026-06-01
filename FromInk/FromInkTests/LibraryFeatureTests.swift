@@ -56,8 +56,8 @@ final class LibraryFeatureTests: XCTestCase {
     private func makeClient(
         importPDF: @escaping @Sendable (ImportedPDFDraft, UUID?) async throws -> ImportedPDFSnapshot
             = { _, _ in throw CancellationError() },
-        fetchAllPDFs: @escaping @Sendable () async throws -> [ImportedPDFSnapshot]
-            = { throw CancellationError() }
+        fetchPDF: @escaping @Sendable (UUID) async throws -> ImportedPDFSnapshot?
+            = { _ in throw CancellationError() }
     ) -> NotebookClient {
         NotebookClient(
             fetchAllNotebooks: { throw CancellationError() },
@@ -72,8 +72,10 @@ final class LibraryFeatureTests: XCTestCase {
             renameNotebook: { _, _ in throw CancellationError() },
             deleteNotebook: { _ in throw CancellationError() },
             touchNotebookModified: { _ in throw CancellationError() },
-            fetchAllPDFs: fetchAllPDFs,
+            fetchAllPDFs: { throw CancellationError() },
             fetchRecentPDFs: { _ in throw CancellationError() },
+            fetchPDF: fetchPDF,
+            fetchPDFData: { _ in throw CancellationError() },
             findPDFByContentHash: { _ in throw CancellationError() },
             importPDF: importPDF,
             touchPDFOpened: { _ in throw CancellationError() },
@@ -137,7 +139,7 @@ final class LibraryFeatureTests: XCTestCase {
                 importPDF: { _, _ in
                     throw NotebookClientError.pdfAlreadyImported(existingID: existingID)
                 },
-                fetchAllPDFs: { [existing] }
+                fetchPDF: { id in id == existingID ? existing : nil }
             )
         }
 
@@ -146,10 +148,10 @@ final class LibraryFeatureTests: XCTestCase {
     }
 
     /// Dedup-pointer-but-row-missing race: the client throws
-    /// `pdfAlreadyImported(existingID:)` but `fetchAllPDFs` no longer
-    /// returns a matching row (the existing PDF was deleted between the
-    /// dedup check and the re-fetch). The reducer must surface this as
-    /// a generic import failure rather than silently doing nothing.
+    /// `pdfAlreadyImported(existingID:)` but `fetchPDF` returns nil
+    /// (the existing PDF was deleted between the dedup check and the
+    /// re-fetch). The reducer must surface this as a generic import
+    /// failure rather than silently doing nothing.
     @MainActor
     func test_importPDFRequested_duplicate_existingRowMissing_delegatesPdfImportFailed() async {
         let draft = makeDraft()
@@ -162,7 +164,7 @@ final class LibraryFeatureTests: XCTestCase {
                 importPDF: { _, _ in
                     throw NotebookClientError.pdfAlreadyImported(existingID: UUID())
                 },
-                fetchAllPDFs: { [] }
+                fetchPDF: { _ in nil }
             )
         }
 

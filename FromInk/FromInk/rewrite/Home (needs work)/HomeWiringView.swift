@@ -62,6 +62,11 @@ struct HomeWiringView: View {
         ) { notebookStore in
             NotebookScreen(store: notebookStore)
         }
+        .fullScreenCover(
+            item: $store.scope(state: \.pdfViewer, action: \.pdfViewer)
+        ) { pdfStore in
+            PDFViewerWiringView(store: pdfStore)
+        }
         // Settings sheet driven by `@Presents`. `.sheet(item:)`
         // binds against the scoped optional store — non-nil presents,
         // nil dismisses, and SwiftUI's swipe-down gesture writes nil
@@ -115,12 +120,19 @@ struct HomeWiringView: View {
                 }
             ),
             presenting: store.importAlert
-        ) { _ in
-            // Single OK action across all three cases; Phase 3 splits
-            // duplicate/imported into a viewer-presentation path with
-            // a second "Open" button.
-            Button(AppStrings.Library.importPDFDismissButton, role: .cancel) {
-                store.send(.importAlertDismissed)
+        ) { alert in
+            switch alert {
+            case .duplicate:
+                Button(AppStrings.Library.importPDFOpenButton) {
+                    store.send(.importAlertOpenTapped)
+                }
+                Button(AppStrings.Common.cancel, role: .cancel) {
+                    store.send(.importAlertDismissed)
+                }
+            case .failed:
+                Button(AppStrings.Library.importPDFDismissButton, role: .cancel) {
+                    store.send(.importAlertDismissed)
+                }
             }
         } message: { alert in
             switch alert {
@@ -128,8 +140,6 @@ struct HomeWiringView: View {
                 Text(AppStrings.Library.importPDFDuplicateMessage(title: snap.title))
             case .failed(let message):
                 Text(message)
-            case .imported(let snap):
-                Text(AppStrings.Library.importPDFSuccessMessage(title: snap.title))
             }
         }
         .animation(ds.animation.standard, value: store.isNewNotebookSheetOpen)
@@ -146,8 +156,6 @@ struct HomeWiringView: View {
         switch store.importAlert {
         case .duplicate:
             return AppStrings.Library.importPDFDuplicateTitle
-        case .imported:
-            return AppStrings.Library.importPDFSuccessTitle
         case .failed, .none:
             return AppStrings.Library.importPDFFailedTitle
         }
@@ -205,7 +213,7 @@ struct HomeWiringView: View {
                 title: snap.title,
                 pagesLabel: "\(snap.pageCount) \(AppStrings.Home.pdfPagesLabel)",
                 thumbnailData: snap.thumbnailData,
-                onTap: { /* Phase 3: present PDFFeature for snap.id */ }
+                onTap: { store.send(.pdfCardTapped(id: snap.id)) }
             )
         }
         return HomeRecentPDFsShelf.Model(pdfs: cards)

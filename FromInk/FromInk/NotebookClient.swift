@@ -51,6 +51,16 @@ struct NotebookClient: Sendable {
     /// Most-recently-opened PDFs, falling back to `modifiedAt` for
     /// never-opened ones. Drives the home "Recent PDFs" section.
     var fetchRecentPDFs: @Sendable (_ limit: Int) async throws -> [ImportedPDFSnapshot]
+    /// Looks up a PDF by id. O(1) — backs the dedup-recover path in
+    /// `LibraryFeature` and the viewer's load step. Returns nil when
+    /// the row no longer exists (e.g., delete race after a dedup hit).
+    var fetchPDF: @Sendable (_ id: UUID) async throws -> ImportedPDFSnapshot?
+    /// Loads the persisted PDF bytes for a given id. Separated from
+    /// `fetchPDF` so list views never accidentally materialize the
+    /// externalStorage blob — only the viewer asks for the bytes.
+    /// Returns nil when the row no longer exists OR when
+    /// `sourcePDFData` is somehow nil (corrupted import).
+    var fetchPDFData: @Sendable (_ id: UUID) async throws -> Data?
     /// Looks up an existing PDF by content hash. Used by the import
     /// flow to detect a re-import of the same bytes and surface the
     /// existing PDF instead of inserting a duplicate.
@@ -258,6 +268,8 @@ extension NotebookClient: DependencyKey {
         touchNotebookModified: { _ in throw CancellationError() },
         fetchAllPDFs: { throw CancellationError() },
         fetchRecentPDFs: { _ in throw CancellationError() },
+        fetchPDF: { _ in throw CancellationError() },
+        fetchPDFData: { _ in throw CancellationError() },
         findPDFByContentHash: { _ in throw CancellationError() },
         importPDF: { _, _ in throw CancellationError() },
         touchPDFOpened: { _ in throw CancellationError() },

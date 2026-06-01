@@ -172,19 +172,17 @@ struct LibraryFeature: Reducer {
                             let snap = try await notebookClient.importPDF(draft, nil)
                             await send(.delegate(.pdfImported(snap, wasDuplicate: false)))
                         } catch NotebookClientError.pdfAlreadyImported(let existingID) {
-                            // Dedup hit. Walk the full-PDFs list and pick
-                            // out the matching ID — cheap on libraries of
-                            // realistic size, and avoids adding a
-                            // dedicated by-ID PDF fetch to the client.
-                            let allPDFs = try await notebookClient.fetchAllPDFs()
-                            if let snap = allPDFs.first(where: { $0.id == existingID }) {
+                            // Dedup hit. O(1) lookup of the existing
+                            // snapshot so the parent can navigate to it
+                            // without scanning the whole library.
+                            if let snap = try await notebookClient.fetchPDF(existingID) {
                                 await send(.delegate(.pdfImported(snap, wasDuplicate: true)))
                             } else {
                                 // Existing row vanished between dedup
                                 // check and re-fetch (delete race).
                                 // Surface as a generic failure rather
                                 // than silently doing nothing.
-                                log.error("importPDF dedup pointed at id=\(existingID) but no matching PDF in fetchAllPDFs")
+                                log.error("importPDF dedup pointed at id=\(existingID) but fetchPDF returned nil")
                                 await send(.delegate(.pdfImportFailed(
                                     message: AppStrings.Library.importPDFInvalidMessage
                                 )))

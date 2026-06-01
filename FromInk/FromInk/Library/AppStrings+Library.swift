@@ -38,21 +38,6 @@ extension AppStrings {
             value: "Couldn't Import PDF",
             comment: "Alert title when PDF import fails"
         )
-        static let importPDFSuccessTitle = NSLocalizedString(
-            "library.importPDF.success.title",
-            value: "PDF Imported",
-            comment: "Alert title confirming a successful PDF import"
-        )
-        static func importPDFSuccessMessage(title: String) -> String {
-            String.localizedStringWithFormat(
-                NSLocalizedString(
-                    "library.importPDF.success.message",
-                    value: "%@ has been added to your library.",
-                    comment: "Alert body confirming a successful PDF import; %@ is the PDF title"
-                ),
-                title
-            )
-        }
         static let importPDFOpenButton = NSLocalizedString(
             "library.importPDF.openButton",
             value: "Open",

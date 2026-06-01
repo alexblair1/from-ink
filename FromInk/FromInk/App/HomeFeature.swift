@@ -25,17 +25,13 @@ struct HomeFeature: Reducer {
 
         enum ImportAlert: Equatable {
             /// The picked file already existed in the library. The
-            /// snapshot is the existing PDF. The alert is informational
-            /// only today — opening a PDF viewer is Phase 3 work, so
-            /// the action set is just "OK." When `PDFFeature` lands the
-            /// alert gains an "Open" button that presents the viewer.
+            /// snapshot is the existing PDF; the alert offers "Open"
+            /// (present the viewer for the existing copy) and
+            /// "Cancel" (dismiss without navigating).
             case duplicate(ImportedPDFSnapshot)
             /// The import flow failed. `message` is the localized,
             /// human-readable body; alert offers "OK".
             case failed(message: String)
-            /// New PDF was imported successfully. Informational
-            /// confirmation; opening the viewer comes in Phase 3.
-            case imported(ImportedPDFSnapshot)
         }
 
         var isWheelOpen: Bool = false
@@ -66,6 +62,14 @@ struct HomeFeature: Reducer {
         /// dismiss gestures via the `PresentationAction` framework so we
         /// don't need a parallel "is presenting?" bool.
         @Presents var notebook: NotebookFeature.State?
+
+        /// Presented PDF viewer state. Same `@Presents` machinery as
+        /// `notebook`; presented as a fullScreenCover. Set on
+        /// successful new-PDF import, on Recent shelf tap, or on the
+        /// duplicate-alert's Open button. Mutually exclusive with
+        /// `notebook` in practice — the UI surfaces only emit one at
+        /// a time.
+        @Presents var pdfViewer: PDFFeature.State?
 
         init(currentDate: Date? = nil) {
             @Dependency(\.calendarContext) var cal
@@ -118,8 +122,22 @@ struct HomeFeature: Reducer {
         /// User picked a PDF; forward to LibraryFeature for the actual
         /// import work.
         case importPDFPicked(URL)
-        /// User dismissed the import alert via the OK button or by swipe.
+        /// User dismissed the import alert via the OK / Cancel button
+        /// or by swipe.
         case importAlertDismissed
+        /// User tapped "Open" on the duplicate alert — present the
+        /// existing PDF in the viewer.
+        case importAlertOpenTapped
+
+        // PDF viewer
+        /// User tapped a card in the home Recent PDFs shelf —
+        /// present `PDFFeature` for that id. The snapshot is looked
+        /// up from `library.recentPDFs`; if it vanished between
+        /// render and tap (delete race) the action is a no-op.
+        case pdfCardTapped(id: UUID)
+        /// Presented PDF viewer child. Same `@Presents` machinery as
+        /// `notebook`; `.dismiss` is auto-handled by `.ifLet`.
+        case pdfViewer(PresentationAction<PDFFeature.Action>)
         /// User tapped the masthead date — open or close the Time Warp wheel.
         /// On open: switches to wheel mode (editor's note hides, calendar tab
         /// auto-activates, dayContent fetch fires for the current date).
@@ -362,6 +380,48 @@ struct HomeFeature: Reducer {
                 state.importAlert = nil
                 return .none
 
+            case .importAlertOpenTapped:
+                // Only the duplicate alert offers Open. Pull the
+                // snapshot off the alert state and present the viewer.
+                if case .duplicate(let snap) = state.importAlert {
+                    state.pdfViewer = PDFFeature.State(
+                        pdfID: snap.id,
+                        title: snap.title,
+                        pageCount: snap.pageCount
+                    )
+                }
+                state.importAlert = nil
+                return .none
+
+            case .pdfCardTapped(let id):
+                // Look up the snapshot in the recent list so the
+                // viewer has title + page count ready before bytes
+                // load. Delete race (the row vanished between render
+                // and tap) is a no-op rather than a crash.
+                guard let snap = state.library.recentPDFs.first(where: { $0.id == id }) else {
+                    return .none
+                }
+                state.pdfViewer = PDFFeature.State(
+                    pdfID: snap.id,
+                    title: snap.title,
+                    pageCount: snap.pageCount
+                )
+                return .none
+
+            // PDF viewer dismiss — clear the @Presents slot.
+            case .pdfViewer(.presented(.dismissTapped)):
+                state.pdfViewer = nil
+                return .none
+
+            // SwiftUI fired auto-dismiss (swipe-down or interactive
+            // dismiss). `.ifLet` cleared the optional already.
+            case .pdfViewer(.dismiss):
+                return .none
+
+            // Pass-through for every other PDF viewer action.
+            case .pdfViewer:
+                return .none
+
             case .notebookTapped(let id):
                 // Open the notebook in the fullScreenCover and bump its
                 // modifiedAt so it sorts to the top of the shelf next refresh.
@@ -382,13 +442,21 @@ struct HomeFeature: Reducer {
 
             // PDF import completed.
             case .library(.delegate(.pdfImported(let snap, let wasDuplicate))):
-                // Phase 2: no PDF viewer exists yet, so success and
-                // duplicate both surface as informational alerts. Phase
-                // 3 (`PDFFeature`) replaces the alerts with direct
-                // navigation into the viewer.
-                state.importAlert = wasDuplicate
-                    ? .duplicate(snap)
-                    : .imported(snap)
+                if wasDuplicate {
+                    // Re-import of an existing PDF — surface an alert so
+                    // the user can confirm the navigation rather than
+                    // being silently dropped into a viewer for a file
+                    // they didn't realize was already there.
+                    state.importAlert = .duplicate(snap)
+                } else {
+                    // New import — the user explicitly chose this file;
+                    // auto-present the viewer. No alert.
+                    state.pdfViewer = PDFFeature.State(
+                        pdfID: snap.id,
+                        title: snap.title,
+                        pageCount: snap.pageCount
+                    )
+                }
                 return .none
 
             case .library(.delegate(.pdfImportFailed(let message))):
@@ -484,6 +552,9 @@ struct HomeFeature: Reducer {
         }
         .ifLet(\.$notebook, action: \.notebook) {
             NotebookFeature()
+        }
+        .ifLet(\.$pdfViewer, action: \.pdfViewer) {
+            PDFFeature()
         }
     }
 

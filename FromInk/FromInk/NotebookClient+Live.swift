@@ -189,6 +189,30 @@ extension NotebookClient {
                     return (openedRows + neverOpenedRows).map(ImportedPDFSnapshot.init(model:))
                 }
             },
+            fetchPDF: { id in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let descriptor = FetchDescriptor<ImportedPDF>(
+                        predicate: #Predicate { $0.id == id }
+                    )
+                    return try ctx.fetch(descriptor).first.map(ImportedPDFSnapshot.init(model:))
+                }
+            },
+            fetchPDFData: { id in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let descriptor = FetchDescriptor<ImportedPDF>(
+                        predicate: #Predicate { $0.id == id }
+                    )
+                    // Reading `sourcePDFData` materializes the
+                    // externalStorage blob (up to ~500 MB). MainActor
+                    // is fine here — SwiftData reads are non-blocking
+                    // I/O backed by the file system; PDFKit's parse,
+                    // which IS heavy, happens off-actor inside the
+                    // viewer.
+                    return try ctx.fetch(descriptor).first?.sourcePDFData
+                }
+            },
             findPDFByContentHash: { hash in
                 try await MainActor.run {
                     let ctx = modelContext.context()
