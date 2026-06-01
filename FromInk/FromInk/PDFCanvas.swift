@@ -1,6 +1,126 @@
 import PDFKit
 import SwiftUI
 
+// MARK: - Custom annotation key for identity round-trip
+
+extension PDFAnnotationKey {
+    /// Custom annotation key we stamp on every `PDFKit.PDFAnnotation` we
+    /// create so the reconcile loop can identify "our" annotations by
+    /// `PDFAnnotationSnapshot.id`. PDFKit preserves unknown keys in
+    /// memory; whether they survive PDF export depends on the writer
+    /// path (PDFView's `dataRepresentation()` keeps them). Embedded
+    /// annotations imported from the source PDF do not carry this key,
+    /// so the reconcile loop won't accidentally touch them.
+    static let fromInkID = PDFAnnotationKey(rawValue: "FromInkID")
+}
+
+// MARK: - Reconcile
+
+/// Diff-by-id reconcile of our `PDFAnnotationSnapshot` records against
+/// PDFKit's `PDFView.annotations`. Adds, removes, and updates in-place
+/// rather than tearing down + rebuilding the full set, so PDFView's
+/// own scrolling/selection state doesn't reset on every state change.
+///
+/// Embedded annotations from the source PDF (those without the
+/// `FromInkID` key) are left alone — only annotations we've authored
+/// participate in the diff.
+@MainActor
+private func reconcileAnnotations(
+    desired: [PDFAnnotationSnapshot],
+    in pdfView: PDFView
+) {
+    guard let document = pdfView.document else { return }
+
+    // Index desired snapshots by id.
+    let desiredByID: [UUID: PDFAnnotationSnapshot] = Dictionary(
+        uniqueKeysWithValues: desired.map { ($0.id, $0) }
+    )
+
+    // Walk every page and index "ours" by id.
+    var existingByID: [UUID: PDFKit.PDFAnnotation] = [:]
+    for pageIndex in 0..<document.pageCount {
+        guard let page = document.page(at: pageIndex) else { continue }
+        for annotation in page.annotations {
+            guard let idString = annotation.value(forAnnotationKey: .fromInkID) as? String,
+                  let id = UUID(uuidString: idString)
+            else { continue }
+            existingByID[id] = annotation
+        }
+    }
+
+    // Remove vanished annotations.
+    for (id, existing) in existingByID where desiredByID[id] == nil {
+        existing.page?.removeAnnotation(existing)
+    }
+
+    // Add new annotations.
+    for (id, snapshot) in desiredByID where existingByID[id] == nil {
+        guard let page = document.page(at: snapshot.pageIndex) else { continue }
+        if let pdfAnnotation = makePDFAnnotation(from: snapshot, page: page) {
+            page.addAnnotation(pdfAnnotation)
+        }
+    }
+
+    // Phase 4a is create-only — annotations are immutable for v1.
+    // Phase 4b adds the update path here when edit-color / edit-bounds
+    // ships.
+}
+
+/// Builds a `PDFKit.PDFAnnotation` from one of our snapshots. Returns
+/// nil for kinds the v1 viewer doesn't render yet (ink, pencil,
+/// freeText, shape) — those land in later phases. Highlights and
+/// underlines render today.
+@MainActor
+private func makePDFAnnotation(
+    from snapshot: PDFAnnotationSnapshot,
+    page: PDFPage
+) -> PDFKit.PDFAnnotation? {
+    let bounds = denormalize(snapshot.bounds, in: page)
+    let color = UIColor(
+        red: snapshot.color.r,
+        green: snapshot.color.g,
+        blue: snapshot.color.b,
+        alpha: snapshot.color.a
+    )
+
+    let pdfAnnotation: PDFKit.PDFAnnotation?
+    switch snapshot.kind {
+    case .highlight:
+        pdfAnnotation = PDFKit.PDFAnnotation(
+            bounds: bounds, forType: .highlight, withProperties: nil
+        )
+    case .underline:
+        pdfAnnotation = PDFKit.PDFAnnotation(
+            bounds: bounds, forType: .underline, withProperties: nil
+        )
+    case .freeText, .line, .square, .circle, .polygon, .ink, .pencil:
+        // Render paths land in their own phases; for v1 skip silently
+        // so a stray record doesn't crash the viewer.
+        return nil
+    }
+
+    guard let pdfAnnotation else { return nil }
+    pdfAnnotation.color = color
+    pdfAnnotation.setValue(snapshot.id.uuidString, forAnnotationKey: .fromInkID)
+    return pdfAnnotation
+}
+
+/// Denormalizes the 0..1 snapshot bounds back into PDF page user-space.
+/// Page bounds depend on the page's `cropBox` since that's what PDFView
+/// renders.
+@MainActor
+private func denormalize(_ normalized: CGRect, in page: PDFPage) -> CGRect {
+    let pageBounds = page.bounds(for: .cropBox)
+    return CGRect(
+        x: pageBounds.origin.x + normalized.origin.x * pageBounds.size.width,
+        y: pageBounds.origin.y + normalized.origin.y * pageBounds.size.height,
+        width: normalized.size.width * pageBounds.size.width,
+        height: normalized.size.height * pageBounds.size.height
+    )
+}
+
+// MARK: - PDFCanvas
+
 /// SwiftUI host for an already-parsed `PDFKit.PDFDocument`. Thin
 /// `UIViewRepresentable` wrapper around `PDFKit.PDFView` — assumes the
 /// document is ready and just mounts it.
@@ -9,11 +129,11 @@ import SwiftUI
 /// `PDFKit.PDFDocument(data:)` walk doesn't block the MainActor. See
 /// the comment on `PDFContent` for the parse pipeline.
 ///
-/// Phase 3 scope: read-only rendering + page tracking. Phase 4 layers
-/// annotation rendering / selection on top via a coordinator delegate
-/// path that the upcoming `AnnotationStore` will own.
+/// Phase 4a: read-only annotation rendering via the reconcile loop in
+/// `updateUIView`. Phase 4b adds selection-based creation.
 struct PDFCanvas: UIViewRepresentable {
     let document: PDFKit.PDFDocument
+    let annotations: [PDFAnnotationSnapshot]
     @Binding var currentPage: Int
 
     func makeUIView(context: Context) -> PDFView {
@@ -23,6 +143,11 @@ struct PDFCanvas: UIViewRepresentable {
         view.displayDirection = .vertical
         view.backgroundColor = UIColor(Color.canvas)
         view.document = document
+
+        // First-time annotation install — updateUIView also runs the
+        // reconcile, but on initial render the annotations array may
+        // already be populated from state.
+        reconcileAnnotations(desired: annotations, in: view)
 
         // PDFView posts `PDFViewPageChanged` on visible-page changes;
         // the coordinator forwards them via the binding so the parent
@@ -38,11 +163,13 @@ struct PDFCanvas: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
-        // No-op for now. Phase 4 will reconcile our `PDFAnnotation`
-        // records against PDFView.annotations here via a diff-by-id
-        // pass. Embedded PDF annotations from the source file already
-        // render via PDFKit's defaults; only our overlay annotations
-        // need this hook.
+        // Reconcile annotations on every SwiftUI re-render driven by
+        // state changes (typically: annotations were loaded, or a new
+        // highlight was created in Phase 4b). Diff-by-id keeps the
+        // common case (annotations array unchanged) cheap — the
+        // reconcile loop is O(N + M) where N is desired and M is
+        // existing-with-our-id.
+        reconcileAnnotations(desired: annotations, in: uiView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -74,6 +201,8 @@ struct PDFCanvas: UIViewRepresentable {
     }
 }
 
+// MARK: - PDFContent
+
 /// SwiftUI wrapper that turns raw PDF bytes into a rendered viewer.
 /// Owns the off-actor parse pipeline:
 ///
@@ -94,6 +223,7 @@ struct PDFCanvas: UIViewRepresentable {
 /// reducer hands raw `Data` and forgets.
 struct PDFContent: View {
     let data: Data
+    let annotations: [PDFAnnotationSnapshot]
     @Binding var currentPage: Int
 
     @State private var parseResult: ParseResult = .parsing
@@ -116,7 +246,11 @@ struct PDFContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .parsed(let document):
-                PDFCanvas(document: document, currentPage: $currentPage)
+                PDFCanvas(
+                    document: document,
+                    annotations: annotations,
+                    currentPage: $currentPage
+                )
 
             case .failed:
                 VStack(spacing: DesignSystem.standard.spacing.base) {

@@ -153,6 +153,74 @@ final class PDFFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Annotation load
+
+    @MainActor
+    func test_onAppear_loadsAnnotations_populatesState() async {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let snapshots: [PDFAnnotationSnapshot] = [
+            PDFAnnotationSnapshot(
+                id: UUID(), pdfDocumentID: pdfID,
+                kind: .highlight, createdAt: now, modifiedAt: now,
+                pageIndex: 2,
+                extractedText: "matched line",
+                contents: "",
+                bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
+                color: .yellowHighlight,
+                hasInkData: false, inkDataByteSize: nil,
+                hasPencilDrawing: false, pencilDrawingByteSize: nil
+            )
+        ]
+
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient(
+                fetchPDFData: { _ in self.bytes }
+            )
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in snapshots },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.onAppear)
+        await store.receive(.annotationsLoaded(snapshots)) {
+            $0.annotations = snapshots
+        }
+    }
+
+    /// Annotation load failure is non-fatal — the viewer renders the
+    /// PDF without overlay annotations rather than transitioning the
+    /// whole loadState to .failed. State.annotations stays empty.
+    @MainActor
+    func test_onAppear_annotationStoreThrows_leavesAnnotationsEmpty() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient(
+                fetchPDFData: { _ in self.bytes }
+            )
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in throw CancellationError() },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // No `.annotationsLoaded` action arrives — the listForPDF throw
+        // is caught inside `loadAnnotations` and logged, not dispatched.
+        // The bytes path still works.
+        await store.send(.onAppear)
+        await store.receive(.dataLoaded(bytes)) {
+            $0.loadState = .loaded(self.bytes)
+            // $0.annotations stays []
+        }
+    }
+
     // MARK: - Dismiss
 
     @MainActor

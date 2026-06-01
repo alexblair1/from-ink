@@ -29,6 +29,18 @@ struct PDFFeature: Reducer {
         /// (annotations) uses this to scope rendering.
         var currentPage: Int = 0
 
+        /// Annotations owned by this PDF, loaded once on `.onAppear`.
+        /// Renders are diff-by-id reconciled in `PDFCanvas`; the
+        /// upcoming highlight-creation UI (Phase 4b) appends new
+        /// snapshots here so they render immediately without round-
+        /// tripping through a re-fetch.
+        ///
+        /// Annotation-load failure is non-fatal: the viewer renders
+        /// the PDF without overlay annotations, with a logged warning.
+        /// Treating it as fatal would hide the document for a
+        /// recoverable issue (sync race, transient SwiftData hiccup).
+        var annotations: [PDFAnnotationSnapshot] = []
+
         enum LoadState: Equatable {
             case loading
             /// Bytes are loaded and ready to hand to PDFKit. Stored as
@@ -52,6 +64,11 @@ struct PDFFeature: Reducer {
         /// `notebookClient.fetchPDFData` threw. Logs and transitions to
         /// `.failed` with the localized message.
         case loadFailed(String)
+        /// Result of `annotationStore.listForPDF(id:)`. Empty array is
+        /// the normal "no annotations yet" state, distinct from a
+        /// load failure (which logs and leaves the array empty —
+        /// non-fatal so the PDF still renders).
+        case annotationsLoaded([PDFAnnotationSnapshot])
         /// User tapped the dismiss chrome. Parent observes this via
         /// presentation action and clears its `@Presents` slot.
         case dismissTapped
@@ -61,6 +78,7 @@ struct PDFFeature: Reducer {
     }
 
     @Dependency(\.notebookClient) var notebookClient
+    @Dependency(\.annotationStore) var annotationStore
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -74,13 +92,15 @@ struct PDFFeature: Reducer {
                     do { try await notebookClient.touchPDFOpened(id) }
                     catch { log.error("touchPDFOpened failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)") }
 
-                    do {
-                        let data = try await notebookClient.fetchPDFData(id)
-                        await send(.dataLoaded(data))
-                    } catch {
-                        log.error("fetchPDFData failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                        await send(.loadFailed(error.localizedDescription))
-                    }
+                    // Bytes and annotations are independent — load
+                    // them in parallel so the viewer doesn't gate
+                    // either on the other. Bytes failure transitions
+                    // loadState to .failed; annotation failure logs
+                    // and leaves the array empty (PDF still renders,
+                    // without overlay annotations).
+                    async let bytes: Void = loadBytes(id: id, send: send)
+                    async let annotations: Void = loadAnnotations(id: id, send: send)
+                    _ = await (bytes, annotations)
                 }
                 .cancellable(id: "pdfLoad-\(id)", cancelInFlight: true)
 
@@ -112,10 +132,45 @@ struct PDFFeature: Reducer {
                 state.currentPage = index
                 return .none
 
+            case .annotationsLoaded(let annotations):
+                state.annotations = annotations
+                return .none
+
             case .dismissTapped:
                 // Parent owns dismiss — clears the @Presents slot.
                 return .none
             }
+        }
+    }
+
+    // MARK: - Effect helpers
+
+    /// Loads the PDF bytes and dispatches the right outcome action.
+    /// Extracted from `.onAppear` so the parallel `async let` reads
+    /// cleanly without a nested do/catch tower.
+    private func loadBytes(id: UUID, send: Send<Action>) async {
+        do {
+            let data = try await notebookClient.fetchPDFData(id)
+            await send(.dataLoaded(data))
+        } catch {
+            log.error("fetchPDFData failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            await send(.loadFailed(error.localizedDescription))
+        }
+    }
+
+    /// Loads the PDF's annotations. Failure is non-fatal: log and
+    /// leave the array empty so the viewer still renders the document.
+    /// The user sees no annotations rather than a crash / dead viewer
+    /// for a recoverable issue (sync race, transient SwiftData hiccup).
+    private func loadAnnotations(id: UUID, send: Send<Action>) async {
+        do {
+            let annotations = try await annotationStore.listForPDF(id)
+            await send(.annotationsLoaded(annotations))
+        } catch {
+            log.error("annotationStore.listForPDF failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            // Don't transition loadState — empty annotations isn't a
+            // viewer failure. Leaving `state.annotations` at its default
+            // empty array.
         }
     }
 }

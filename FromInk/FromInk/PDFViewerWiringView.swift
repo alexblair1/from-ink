@@ -77,6 +77,7 @@ struct PDFViewerWiringView: View {
         case .loaded(let data):
             PDFContent(
                 data: data,
+                annotations: store.annotations,
                 currentPage: Binding(
                     get: { store.currentPage },
                     set: { store.send(.pageChanged($0)) }
