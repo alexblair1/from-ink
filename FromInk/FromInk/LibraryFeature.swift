@@ -30,7 +30,7 @@ struct LibraryFeature: Reducer {
         /// `recentPDFsLimit`. Surfaces use this directly — there's no
         /// secondary "all PDFs" list today; when a full library page
         /// lands we'll add a parallel field rather than reusing this.
-        var recentPDFs: [PDFDocumentSnapshot] = []
+        var recentPDFs: [ImportedPDFSnapshot] = []
 
         /// Page size for `recentPDFs`. Enough to fill a horizontal
         /// scroller on the largest current device without thrashing the
@@ -56,7 +56,7 @@ struct LibraryFeature: Reducer {
         case dataLoaded(
             notebooks: [NotebookSnapshot],
             folders: [FolderSnapshot],
-            recentPDFs: [PDFDocumentSnapshot]
+            recentPDFs: [ImportedPDFSnapshot]
         )
         case loadFailed(reason: String)
 
@@ -69,7 +69,7 @@ struct LibraryFeature: Reducer {
         /// Despite the legacy "opened" framing in earlier revisions,
         /// this maps to `notebookClient.touchNotebookModified` — there
         /// is no `lastOpenedAt` field on `Notebook` (that semantic
-        /// lives on `PDFDocument` for PDFs).
+        /// lives on `ImportedPDF` for PDFs).
         case touchNotebookActivated(id: UUID)
         case moveNotebookToFolderRequested(notebookID: UUID, folderID: UUID?)
 
@@ -91,12 +91,12 @@ struct LibraryFeature: Reducer {
             /// already in `state.notebooks` by the time this fires.
             case notebookCreated(NotebookSnapshot)
             /// Fired after a PDF import completes. `wasDuplicate == true`
-            /// means the bytes matched an already-imported `PDFDocument`
+            /// means the bytes matched an already-imported `ImportedPDF`
             /// and the snapshot is the existing one (no new row was
             /// inserted); parents typically navigate to it and surface
             /// a small "already in your library" affordance. `false` is
             /// the new-import case.
-            case pdfImported(PDFDocumentSnapshot, wasDuplicate: Bool)
+            case pdfImported(ImportedPDFSnapshot, wasDuplicate: Bool)
             /// Fired when PDF import fails. `message` is the human-readable
             /// localized string ready for an alert body.
             case pdfImportFailed(message: String)

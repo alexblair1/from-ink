@@ -5,7 +5,7 @@ import Foundation
 /// the computed `Notebook.notebookType` bridge.
 ///
 /// PDFs are NOT a `NotebookType` variant — they're their own root entity
-/// (`PDFDocument`). This enum covers only the handwriting/text family of
+/// (`ImportedPDF`). This enum covers only the handwriting/text family of
 /// documents that share the `NotePage` + drawing/OCR/template
 /// infrastructure.
 ///

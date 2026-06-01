@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 import SwiftData
 
-/// Annotation belonging to a `PDFDocument`. Anchors to a PDF page
+/// Annotation belonging to a `ImportedPDF`. Anchors to a PDF page
 /// index rather than a `NotePage` because PDF pages don't have stable
 /// `NotePage` model identities.
 ///
@@ -89,7 +89,7 @@ import SwiftData
     /// expensive to retrofit later.
     var authorUserID: String?
 
-    var pdfDocument: PDFDocument?
+    var pdfDocument: ImportedPDF?
 
     /// **Internal — prefer the kind-specific factories.** This init
     /// permits all field combinations (including `kind = .highlight`
@@ -105,7 +105,7 @@ import SwiftData
         bounds: CGRect = .zero,
         color: PDFAnnotationColor = .yellowHighlight,
         createdAt: Date = Date(),
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) {
         self.id = id
         self.kindRaw = kind.rawValue
@@ -185,7 +185,7 @@ extension PDFAnnotation {
         extractedText: String = "",
         color: PDFAnnotationColor = .yellowHighlight,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .highlight,
@@ -205,7 +205,7 @@ extension PDFAnnotation {
         extractedText: String = "",
         color: PDFAnnotationColor = .yellowHighlight,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .underline,
@@ -225,7 +225,7 @@ extension PDFAnnotation {
         contents: String,
         color: PDFAnnotationColor = .blackText,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .freeText,
@@ -245,7 +245,7 @@ extension PDFAnnotation {
         bounds: CGRect,
         color: PDFAnnotationColor,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .line,
@@ -263,7 +263,7 @@ extension PDFAnnotation {
         bounds: CGRect,
         color: PDFAnnotationColor,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .square,
@@ -281,7 +281,7 @@ extension PDFAnnotation {
         bounds: CGRect,
         color: PDFAnnotationColor,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         PDFAnnotation(
             kind: .circle,
@@ -301,7 +301,7 @@ extension PDFAnnotation {
         color: PDFAnnotationColor,
         vertexData: Data,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         let annotation = PDFAnnotation(
             kind: .polygon,
@@ -322,7 +322,7 @@ extension PDFAnnotation {
         color: PDFAnnotationColor,
         inkData: Data,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         let annotation = PDFAnnotation(
             kind: .ink,
@@ -345,7 +345,7 @@ extension PDFAnnotation {
         pencilDrawing: Data,
         color: PDFAnnotationColor = .blackText,
         createdAt: Date,
-        pdfDocument: PDFDocument? = nil
+        pdfDocument: ImportedPDF? = nil
     ) -> PDFAnnotation {
         let annotation = PDFAnnotation(
             kind: .pencil,

@@ -7,6 +7,10 @@ import SwiftData
 /// (dedupe by content hash), and different annotations (anchored to PDF
 /// page indices via the normalized-bounds `PDFAnnotation` model).
 ///
+/// Named `ImportedPDF` rather than `PDFDocument` so it doesn't collide
+/// with `PDFKit.PDFDocument` — the rendering type that the upcoming
+/// `PDFFeature` viewer will instantiate from `sourcePDFData`.
+///
 /// **CloudKit notes:**
 /// - Every property has a default or is optional (CloudKit silent-failure
 ///   prevention).
@@ -21,12 +25,15 @@ import SwiftData
 ///
 /// **Relationships:**
 /// - `annotations` are owned (cascade-delete on PDF removal).
-/// - `folder` is plain back-pointer; deleting a folder doesn't delete its
-///   PDFs (see `data_model_edd.md` §4.7 for the philosophy).
+/// - `folder` is a back-pointer; the inverse lives on `Folder.pdfs` with
+///   `.nullify` so deleting a folder returns its PDFs to the root rather
+///   than the bin.
 ///
 /// `PDFAnnotation.pdfDocument` is the inverse of `annotations`; see
-/// `PDFAnnotation.swift` for the relationship declaration.
-@Model final class PDFDocument {
+/// `PDFAnnotation.swift` for the relationship declaration. The field on
+/// `PDFAnnotation` keeps the semantic name `pdfDocument` despite the
+/// model rename — the field describes the concept, not the type.
+@Model final class ImportedPDF {
     var id: UUID = UUID()
     var title: String = ""
     var createdAt: Date = Date()
@@ -56,8 +63,8 @@ import SwiftData
     @Attribute(.externalStorage) var sourcePDFData: Data?
     @Attribute(.externalStorage) var thumbnailData: Data?
 
-    /// Folder membership — plain back-pointer (no `@Relationship` macro
-    /// here; the inverse on `Folder` carries the macro).
+    /// Folder membership — plain back-pointer. The inverse on `Folder.pdfs`
+    /// carries the `@Relationship` macro + `.nullify` rule.
     var folder: Folder?
 
     @Relationship(deleteRule: .cascade, inverse: \PDFAnnotation.pdfDocument)

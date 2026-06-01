@@ -22,7 +22,7 @@ enum FromInkSchemaV1: VersionedSchema {
             NotePage.self,
             Folder.self,
             Tag.self,
-            PDFDocument.self,
+            ImportedPDF.self,
             PDFAnnotation.self,
             NoteHeader.self,
             NoteLink.self,

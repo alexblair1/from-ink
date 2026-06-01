@@ -47,21 +47,21 @@ struct NotebookClient: Sendable {
 
     // MARK: - PDF lookups + lifecycle
     /// All PDFs, newest-modified first.
-    var fetchAllPDFs: @Sendable () async throws -> [PDFDocumentSnapshot]
+    var fetchAllPDFs: @Sendable () async throws -> [ImportedPDFSnapshot]
     /// Most-recently-opened PDFs, falling back to `modifiedAt` for
     /// never-opened ones. Drives the home "Recent PDFs" section.
-    var fetchRecentPDFs: @Sendable (_ limit: Int) async throws -> [PDFDocumentSnapshot]
+    var fetchRecentPDFs: @Sendable (_ limit: Int) async throws -> [ImportedPDFSnapshot]
     /// Looks up an existing PDF by content hash. Used by the import
     /// flow to detect a re-import of the same bytes and surface the
     /// existing PDF instead of inserting a duplicate.
-    var findPDFByContentHash: @Sendable (_ hash: String) async throws -> PDFDocumentSnapshot?
-    /// Inserts a new `PDFDocument` from a finished import draft. The
+    var findPDFByContentHash: @Sendable (_ hash: String) async throws -> ImportedPDFSnapshot?
+    /// Inserts a new `ImportedPDF` from a finished import draft. The
     /// caller (`ImportPDFService`) is responsible for picking, hashing,
     /// metadata extraction, and the size guard before this is invoked.
     /// Throws `NotebookClientError.pdfAlreadyImported(existingID:)` if
     /// the content hash matches an already-imported PDF — caller is
     /// expected to navigate to the existing snapshot instead.
-    var importPDF: @Sendable (_ draft: ImportedPDFDraft, _ folderID: UUID?) async throws -> PDFDocumentSnapshot
+    var importPDF: @Sendable (_ draft: ImportedPDFDraft, _ folderID: UUID?) async throws -> ImportedPDFSnapshot
     /// Stamps `lastOpenedAt` on the PDF. Coalesced — skips the write
     /// (and the resulting cross-device sync ping) if the stored value
     /// is already within the 5-minute coalesce window.

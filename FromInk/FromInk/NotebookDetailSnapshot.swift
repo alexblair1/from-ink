@@ -6,7 +6,7 @@ import Foundation
 /// via `NotebookClient.fetchPage(_:)` for the heavy
 /// `NotePageDetailSnapshot` payload.
 ///
-/// PDF annotations live on `PDFDocument`, not on `Notebook`; this type
+/// PDF annotations live on `ImportedPDF`, not on `Notebook`; this type
 /// does not surface them.
 struct NotebookDetailSnapshot: Equatable, Sendable {
     let notebook: NotebookSnapshot

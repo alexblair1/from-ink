@@ -1,12 +1,12 @@
 import Foundation
 import SwiftData
 
-/// A user-defined folder that groups notebooks. Self-referencing parent
-/// pointer supports two-level nesting; the depth limit is enforced in
-/// app logic (`NotebookClient.createFolder` rejects depth > 1).
+/// A user-defined folder that groups notebooks and PDFs. Self-referencing
+/// parent pointer supports two-level nesting; the depth limit is enforced
+/// in app logic (`NotebookClient.createFolder` rejects depth > 1).
 ///
 /// **Delete behavior:** deleting a folder cascades to its child folders
-/// (`.cascade`) but nullifies its notebooks (`.nullify`) — notebooks
+/// (`.cascade`) but nullifies its notebooks and PDFs (`.nullify`) — both
 /// outlive their folder, returning to the root list rather than
 /// disappearing with the container.
 @Model final class Folder {
@@ -22,6 +22,13 @@ import SwiftData
 
     @Relationship(deleteRule: .nullify, inverse: \Notebook.folder)
     var notebooks: [Notebook]? = []
+
+    /// Imported PDFs in this folder. Same `.nullify` rule as
+    /// `notebooks` — deleting a folder returns its PDFs to the root,
+    /// not the bin. Without this inverse, `ImportedPDF.folder` would
+    /// be a dangling back-pointer with undefined cascade behavior.
+    @Relationship(deleteRule: .nullify, inverse: \ImportedPDF.folder)
+    var pdfs: [ImportedPDF]? = []
 
     init(
         id: UUID = UUID(),

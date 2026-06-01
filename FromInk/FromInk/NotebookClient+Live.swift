@@ -151,10 +151,10 @@ extension NotebookClient {
             fetchAllPDFs: {
                 try await MainActor.run {
                     let ctx = modelContext.context()
-                    let descriptor = FetchDescriptor<PDFDocument>(
+                    let descriptor = FetchDescriptor<ImportedPDF>(
                         sortBy: [SortDescriptor(\.modifiedAt, order: .reverse)]
                     )
-                    return try ctx.fetch(descriptor).map(PDFDocumentSnapshot.init(model:))
+                    return try ctx.fetch(descriptor).map(ImportedPDFSnapshot.init(model:))
                 }
             },
             fetchRecentPDFs: { limit in
@@ -170,7 +170,7 @@ extension NotebookClient {
                     //      fewer than `limit` in step 1
                     // Bounds memory to ~2·limit even at huge library
                     // sizes.
-                    var opened = FetchDescriptor<PDFDocument>(
+                    var opened = FetchDescriptor<ImportedPDF>(
                         predicate: #Predicate { $0.lastOpenedAt != nil },
                         sortBy: [SortDescriptor(\.lastOpenedAt, order: .reverse)]
                     )
@@ -178,24 +178,24 @@ extension NotebookClient {
                     let openedRows = try ctx.fetch(opened)
 
                     if openedRows.count >= limit {
-                        return openedRows.map(PDFDocumentSnapshot.init(model:))
+                        return openedRows.map(ImportedPDFSnapshot.init(model:))
                     }
-                    var neverOpened = FetchDescriptor<PDFDocument>(
+                    var neverOpened = FetchDescriptor<ImportedPDF>(
                         predicate: #Predicate { $0.lastOpenedAt == nil },
                         sortBy: [SortDescriptor(\.modifiedAt, order: .reverse)]
                     )
                     neverOpened.fetchLimit = limit - openedRows.count
                     let neverOpenedRows = try ctx.fetch(neverOpened)
-                    return (openedRows + neverOpenedRows).map(PDFDocumentSnapshot.init(model:))
+                    return (openedRows + neverOpenedRows).map(ImportedPDFSnapshot.init(model:))
                 }
             },
             findPDFByContentHash: { hash in
                 try await MainActor.run {
                     let ctx = modelContext.context()
-                    let descriptor = FetchDescriptor<PDFDocument>(
+                    let descriptor = FetchDescriptor<ImportedPDF>(
                         predicate: #Predicate { $0.contentHash == hash }
                     )
-                    return try ctx.fetch(descriptor).first.map(PDFDocumentSnapshot.init(model:))
+                    return try ctx.fetch(descriptor).first.map(ImportedPDFSnapshot.init(model:))
                 }
             },
             importPDF: { draft, folderID in
@@ -210,7 +210,7 @@ extension NotebookClient {
                     // to every device. Throwing here forces the caller
                     // to branch to navigate-to-existing instead.
                     let hash = draft.contentHash
-                    let existingDescriptor = FetchDescriptor<PDFDocument>(
+                    let existingDescriptor = FetchDescriptor<ImportedPDF>(
                         predicate: #Predicate { $0.contentHash == hash }
                     )
                     if let existing = try ctx.fetch(existingDescriptor).first {
@@ -225,7 +225,7 @@ extension NotebookClient {
                         folder = nil
                     }
                     let now = calendarContext.now()
-                    let pdf = PDFDocument(
+                    let pdf = ImportedPDF(
                         title: draft.title,
                         contentHash: draft.contentHash,
                         pageCount: draft.pageCount,
@@ -241,13 +241,13 @@ extension NotebookClient {
                     ctx.insert(pdf)
                     try ctx.save()
                     log.info("Imported PDF id=\(pdf.id.uuidString, privacy: .public) hash=\(String(hash.prefix(8)), privacy: .public) bytes=\(draft.byteSize, privacy: .public) pages=\(draft.pageCount, privacy: .public)")
-                    return PDFDocumentSnapshot(model: pdf)
+                    return ImportedPDFSnapshot(model: pdf)
                 }
             },
             touchPDFOpened: { id in
                 try await MainActor.run {
                     let ctx = modelContext.context()
-                    let descriptor = FetchDescriptor<PDFDocument>(
+                    let descriptor = FetchDescriptor<ImportedPDF>(
                         predicate: #Predicate { $0.id == id }
                     )
                     guard let pdf = try ctx.fetch(descriptor).first else {

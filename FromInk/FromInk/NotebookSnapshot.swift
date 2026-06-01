@@ -5,7 +5,7 @@ import Foundation
 /// `firstPageThumbnailData` give cards what they need without loading any
 /// `drawingData`.
 ///
-/// PDF-specific projections live on `PDFDocumentSnapshot` — this type does not
+/// PDF-specific projections live on `ImportedPDFSnapshot` — this type does not
 /// carry any PDF metadata.
 ///
 /// For an opened notebook with its full page list, use `NotebookDetailSnapshot`.

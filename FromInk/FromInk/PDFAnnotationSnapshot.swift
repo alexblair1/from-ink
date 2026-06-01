@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// Value-type projection of `PDFAnnotation` — anchored to a
-/// `PDFDocument` via `pdfDocumentID`. `bounds` is normalized 0..1
+/// `ImportedPDF` via `pdfDocumentID`. `bounds` is normalized 0..1
 /// within the PDF page so it survives re-rendering at any scale.
 ///
 /// `pdfDocumentID` is optional: a fetched annotation with a nil parent

@@ -6,7 +6,7 @@ import SwiftData
 /// The `notebookType` discriminator distinguishes the three handwriting/
 /// text variants (notebook / quickSheet / textNote).
 ///
-/// PDFs are NOT notebooks. They're their own root entity (`PDFDocument`).
+/// PDFs are NOT notebooks. They're their own root entity (`ImportedPDF`).
 /// PDF-specific fields, annotations, and lifecycle live there.
 ///
 /// **CloudKit notes:**

@@ -214,7 +214,7 @@ struct HomeWiringView: View {
     /// Applies the home search filter to the loaded recent-PDF
     /// snapshots. Cheap (small N) and consistent with how
     /// `filteredNotebooks` filters its source.
-    private var filteredPDFs: [PDFDocumentSnapshot] {
+    private var filteredPDFs: [ImportedPDFSnapshot] {
         guard !localSearchText.isEmpty else { return store.library.recentPDFs }
         return store.library.recentPDFs.filter {
             $0.title.localizedCaseInsensitiveContains(localSearchText)

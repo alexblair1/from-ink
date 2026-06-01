@@ -29,13 +29,13 @@ struct HomeFeature: Reducer {
             /// only today — opening a PDF viewer is Phase 3 work, so
             /// the action set is just "OK." When `PDFFeature` lands the
             /// alert gains an "Open" button that presents the viewer.
-            case duplicate(PDFDocumentSnapshot)
+            case duplicate(ImportedPDFSnapshot)
             /// The import flow failed. `message` is the localized,
             /// human-readable body; alert offers "OK".
             case failed(message: String)
             /// New PDF was imported successfully. Informational
             /// confirmation; opening the viewer comes in Phase 3.
-            case imported(PDFDocumentSnapshot)
+            case imported(ImportedPDFSnapshot)
         }
 
         var isWheelOpen: Bool = false

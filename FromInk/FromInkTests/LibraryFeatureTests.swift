@@ -33,8 +33,8 @@ final class LibraryFeatureTests: XCTestCase {
     private func makeSnapshot(
         id: UUID = UUID(),
         contentHash: String = "abc123"
-    ) -> PDFDocumentSnapshot {
-        PDFDocumentSnapshot(
+    ) -> ImportedPDFSnapshot {
+        ImportedPDFSnapshot(
             id: id,
             title: "Test PDF",
             createdAt: fixedDate,
@@ -54,9 +54,9 @@ final class LibraryFeatureTests: XCTestCase {
     /// can't mutate a single closure on the dependency — every test
     /// builds the full struct.
     private func makeClient(
-        importPDF: @escaping @Sendable (ImportedPDFDraft, UUID?) async throws -> PDFDocumentSnapshot
+        importPDF: @escaping @Sendable (ImportedPDFDraft, UUID?) async throws -> ImportedPDFSnapshot
             = { _, _ in throw CancellationError() },
-        fetchAllPDFs: @escaping @Sendable () async throws -> [PDFDocumentSnapshot]
+        fetchAllPDFs: @escaping @Sendable () async throws -> [ImportedPDFSnapshot]
             = { throw CancellationError() }
     ) -> NotebookClient {
         NotebookClient(
