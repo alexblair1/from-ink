@@ -96,6 +96,17 @@ struct PDFFeature: Reducer {
         /// `state.annotations` so the reconcile loop renders it
         /// immediately — no round-trip through `listForPDF`.
         case highlightCreated(PDFAnnotationSnapshot)
+        /// User tapped one of our annotations and chose "Remove" from
+        /// the edit menu. The reducer fires `annotationStore.delete`
+        /// and removes the snapshot optimistically so the reconcile
+        /// loop strips the PDFKit annotation on the next render.
+        case deleteAnnotation(UUID)
+        /// Confirms the optimistic remove — emitted from the delete
+        /// effect's success path. The state mutation already happened
+        /// in `.deleteAnnotation`; this action exists for parity with
+        /// the create flow and gives the test store an explicit
+        /// completion signal.
+        case annotationDeleted(UUID)
         /// User tapped the dismiss chrome. Parent observes this via
         /// presentation action and clears its `@Presents` slot.
         case dismissTapped
@@ -195,6 +206,27 @@ struct PDFFeature: Reducer {
 
             case .highlightCreated(let snapshot):
                 state.annotations.append(snapshot)
+                return .none
+
+            case .deleteAnnotation(let id):
+                // Optimistic — strip the snapshot now so the reconcile
+                // loop removes the PDFKit annotation on the next
+                // render. If the store throws (rare; sync race), we log
+                // and let the missing record reappear on next
+                // listForPDF.
+                state.annotations.removeAll { $0.id == id }
+                return .run { send in
+                    do {
+                        try await annotationStore.delete(id)
+                        await send(.annotationDeleted(id))
+                    } catch {
+                        log.error("annotationStore.delete failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .private)")
+                    }
+                }
+
+            case .annotationDeleted:
+                // Completion signal — state was mutated optimistically
+                // in `.deleteAnnotation`. No-op here.
                 return .none
 
             case .dismissTapped:

@@ -361,6 +361,129 @@ final class PDFFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Highlight deletion
+
+    @MainActor
+    func test_deleteAnnotation_removesSnapshotOptimisticallyAndCallsStore() async {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let target = PDFAnnotationSnapshot(
+            id: UUID(), pdfDocumentID: pdfID,
+            kind: .highlight, createdAt: now, modifiedAt: now,
+            pageIndex: 1, extractedText: "to delete", contents: "",
+            bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
+            color: .yellowHighlight,
+            hasInkData: false, inkDataByteSize: nil,
+            hasPencilDrawing: false, pencilDrawingByteSize: nil
+        )
+        let keep = PDFAnnotationSnapshot(
+            id: UUID(), pdfDocumentID: pdfID,
+            kind: .highlight, createdAt: now, modifiedAt: now,
+            pageIndex: 1, extractedText: "to keep", contents: "",
+            bounds: CGRect(x: 0.4, y: 0.2, width: 0.3, height: 0.05),
+            color: .yellowHighlight,
+            hasInkData: false, inkDataByteSize: nil,
+            hasPencilDrawing: false, pencilDrawingByteSize: nil
+        )
+        var initial = makeState()
+        initial.annotations = [target, keep]
+        let deletedID = LockIsolated<UUID?>(nil)
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                delete: { id in deletedID.setValue(id) }
+            )
+        }
+
+        // Optimistic removal happens inside the same reducer pass —
+        // assert state in the .send closure.
+        await store.send(.deleteAnnotation(target.id)) {
+            $0.annotations = [keep]
+        }
+        await store.receive(.annotationDeleted(target.id))
+
+        XCTAssertEqual(deletedID.value, target.id)
+    }
+
+    /// A store-side delete failure leaves the optimistic state in
+    /// place — the snapshot's already gone from `state.annotations`.
+    /// No `.annotationDeleted` follow-up arrives, but the local state
+    /// is already consistent with the user's intent.
+    @MainActor
+    func test_deleteAnnotation_storeThrows_optimisticRemovalSticks() async {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let target = PDFAnnotationSnapshot(
+            id: UUID(), pdfDocumentID: pdfID,
+            kind: .highlight, createdAt: now, modifiedAt: now,
+            pageIndex: 1, extractedText: "x", contents: "",
+            bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
+            color: .yellowHighlight,
+            hasInkData: false, inkDataByteSize: nil,
+            hasPencilDrawing: false, pencilDrawingByteSize: nil
+        )
+        var initial = makeState()
+        initial.annotations = [target]
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.deleteAnnotation(target.id)) {
+            $0.annotations = []
+        }
+        // No `.annotationDeleted` action — the catch path swallows the
+        // error after logging.
+    }
+
+    @MainActor
+    func test_deleteAnnotation_unknownID_isNoOpButStillCallsStore() async {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        let existing = PDFAnnotationSnapshot(
+            id: UUID(), pdfDocumentID: pdfID,
+            kind: .highlight, createdAt: now, modifiedAt: now,
+            pageIndex: 1, extractedText: "x", contents: "",
+            bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
+            color: .yellowHighlight,
+            hasInkData: false, inkDataByteSize: nil,
+            hasPencilDrawing: false, pencilDrawingByteSize: nil
+        )
+        var initial = makeState()
+        initial.annotations = [existing]
+        let unknownID = UUID()
+        let deletedID = LockIsolated<UUID?>(nil)
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                delete: { id in deletedID.setValue(id) }
+            )
+        }
+
+        // Unknown id: no removal from state (filter finds nothing), but
+        // the store delete still fires — live store treats unknown
+        // delete as a no-op (sync race), so this is correct behavior.
+        await store.send(.deleteAnnotation(unknownID))
+        await store.receive(.annotationDeleted(unknownID))
+
+        XCTAssertEqual(deletedID.value, unknownID)
+    }
+
     /// Annotation load failure is non-fatal — the viewer renders the
     /// PDF without overlay annotations rather than transitioning the
     /// whole loadState to .failed. State.annotations stays empty.

@@ -213,6 +213,10 @@ struct PDFCanvas: UIViewRepresentable {
     @Binding var currentPage: Int
     let highlightTrigger: HighlightTrigger?
     let onHighlightExtracted: ([HighlightLine]) -> Void
+    /// Fired when the user taps an existing annotation and chooses
+    /// "Remove" from the edit menu. Parent dispatches to
+    /// `PDFFeature.deleteAnnotation(id)`.
+    let onAnnotationDeleteRequested: (UUID) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -221,6 +225,11 @@ struct PDFCanvas: UIViewRepresentable {
         view.displayDirection = .vertical
         view.backgroundColor = UIColor(Color.canvas)
         view.document = document
+
+        // Tell the coordinator about the host view so the edit-menu
+        // interaction has a UIView to attach to and can present the
+        // menu anchored at the tap location.
+        context.coordinator.attach(pdfView: view, onDelete: onAnnotationDeleteRequested)
 
         // First-time annotation install — updateUIView also runs the
         // reconcile, but on initial render the annotations array may
@@ -234,6 +243,16 @@ struct PDFCanvas: UIViewRepresentable {
             context.coordinator,
             selector: #selector(Coordinator.pageDidChange(_:)),
             name: .PDFViewPageChanged,
+            object: view
+        )
+
+        // PDFView posts `PDFViewAnnotationHit` when an annotation is
+        // tapped. The coordinator filters for "ours" (FromInkID-stamped)
+        // and presents the edit menu.
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.annotationDidHit(_:)),
+            name: .PDFViewAnnotationHit,
             object: view
         )
 
@@ -276,9 +295,33 @@ struct PDFCanvas: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIEditMenuInteractionDelegate {
         let currentPage: Binding<Int>
         var lastConsumedHighlightTriggerID: UUID?
+
+        /// Weak reference back to the host PDFView so the edit-menu
+        /// interaction can convert page-space tap points to view-space
+        /// coordinates. PDFCanvas is value-typed and re-created on
+        /// every SwiftUI re-render — the coordinator outlives the
+        /// struct, so we cache the view here instead of capturing it.
+        private weak var pdfView: PDFView?
+
+        /// Edit-menu interaction installed on the PDFView. iOS 16+
+        /// affordance for contextual menus on UIKit content; matches
+        /// the system text-selection menu treatment used by Books and
+        /// Mail. Created lazily on first attach.
+        private var editMenuInteraction: UIEditMenuInteraction?
+
+        /// Callback to surface the user's "Remove" choice back to TCA.
+        /// Re-attached on every `makeUIView` / re-render so the latest
+        /// closure (and the latest store reference) wins.
+        private var onDelete: ((UUID) -> Void)?
+
+        /// The annotation the user just tapped — captured here so the
+        /// menu builder in `editMenuInteraction(_:menuFor:)` can read
+        /// it without threading state through the configuration's
+        /// identifier. Cleared after the menu dismisses.
+        private var pendingAnnotationID: UUID?
 
         init(currentPage: Binding<Int>) {
             self.currentPage = currentPage
@@ -291,12 +334,91 @@ struct PDFCanvas: UIViewRepresentable {
             NotificationCenter.default.removeObserver(self)
         }
 
+        /// Called from `PDFCanvas.makeUIView`. Caches the host view and
+        /// the latest delete callback, and installs the edit-menu
+        /// interaction on first attach. Safe to call again on re-render
+        /// — only the callback updates after first install.
+        func attach(pdfView: PDFView, onDelete: @escaping (UUID) -> Void) {
+            self.pdfView = pdfView
+            self.onDelete = onDelete
+
+            if editMenuInteraction == nil {
+                let interaction = UIEditMenuInteraction(delegate: self)
+                pdfView.addInteraction(interaction)
+                editMenuInteraction = interaction
+            }
+        }
+
         @objc func pageDidChange(_ notification: Notification) {
             guard let view = notification.object as? PDFView,
                   let page = view.currentPage,
                   let index = view.document?.index(for: page)
             else { return }
             currentPage.wrappedValue = index
+        }
+
+        /// Posted by PDFView when an annotation receives a tap.
+        /// Filters for annotations we authored (stamped with
+        /// `FromInkID`); embedded annotations from the source PDF are
+        /// ignored so user "Remove" can't touch them.
+        @objc func annotationDidHit(_ notification: Notification) {
+            guard let view = notification.object as? PDFView,
+                  let annotation = notification.userInfo?["PDFAnnotationHit"] as? PDFKit.PDFAnnotation,
+                  let idString = annotation.value(forAnnotationKey: .fromInkID) as? String,
+                  let id = UUID(uuidString: idString),
+                  let page = annotation.page
+            else { return }
+
+            // Convert the annotation's page-space bounds to view-space
+            // so the menu can anchor at the annotation, not at a stale
+            // tap location (PDFViewAnnotationHit doesn't expose the
+            // raw touch point).
+            let anchorInPage = CGPoint(
+                x: annotation.bounds.midX,
+                y: annotation.bounds.midY
+            )
+            let anchorInView = view.convert(anchorInPage, from: page)
+
+            pendingAnnotationID = id
+            let config = UIEditMenuConfiguration(
+                identifier: id.uuidString as NSString,
+                sourcePoint: anchorInView
+            )
+            editMenuInteraction?.presentEditMenu(with: config)
+        }
+
+        // MARK: - UIEditMenuInteractionDelegate
+
+        nonisolated func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction,
+            menuFor configuration: UIEditMenuConfiguration,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            MainActor.assumeIsolated {
+                guard let id = pendingAnnotationID else { return nil }
+                let remove = UIAction(
+                    title: AppStrings.Library.annotationRemoveAction,
+                    image: UIImage(systemName: "trash"),
+                    attributes: .destructive
+                ) { [weak self] _ in
+                    self?.onDelete?(id)
+                    self?.pendingAnnotationID = nil
+                }
+                // Suggested actions cover copy/lookup/share — keep them
+                // so the menu still feels like the system one; append
+                // Remove at the end so destructive lives last per HIG.
+                return UIMenu(children: suggestedActions + [remove])
+            }
+        }
+
+        nonisolated func editMenuInteraction(
+            _ interaction: UIEditMenuInteraction,
+            willDismissMenuFor configuration: UIEditMenuConfiguration,
+            animator: any UIEditMenuInteractionAnimating
+        ) {
+            MainActor.assumeIsolated {
+                pendingAnnotationID = nil
+            }
         }
     }
 }
@@ -330,6 +452,10 @@ struct PDFContent: View {
     /// the selection spans; the parent dispatches them to
     /// `PDFFeature.createHighlightFromSelection`.
     let onHighlightExtracted: ([HighlightLine]) -> Void
+    /// Fired when the user taps an existing annotation and selects
+    /// "Remove" from the edit menu. Parent dispatches to
+    /// `PDFFeature.deleteAnnotation(id)`.
+    let onAnnotationDeleteRequested: (UUID) -> Void
 
     @State private var parseResult: ParseResult = .parsing
     /// Bumped on every highlight-button tap so `PDFCanvas` re-runs
@@ -362,7 +488,8 @@ struct PDFContent: View {
                         annotations: annotations,
                         currentPage: $currentPage,
                         highlightTrigger: highlightTrigger,
-                        onHighlightExtracted: onHighlightExtracted
+                        onHighlightExtracted: onHighlightExtracted,
+                        onAnnotationDeleteRequested: onAnnotationDeleteRequested
                     )
 
                     highlightButton

@@ -48,6 +48,11 @@ extension AppStrings {
             value: "Highlight Selection",
             comment: "Accessibility label for the floating button that turns the current PDF text selection into a highlight"
         )
+        static let annotationRemoveAction = NSLocalizedString(
+            "library.pdfViewer.annotation.remove",
+            value: "Remove",
+            comment: "Edit-menu action that deletes the tapped PDF annotation"
+        )
         static let importPDFOpenButton = NSLocalizedString(
             "library.importPDF.openButton",
             value: "Open",

@@ -84,6 +84,9 @@ struct PDFViewerWiringView: View {
                 ),
                 onHighlightExtracted: { lines in
                     store.send(.createHighlightFromSelection(lines))
+                },
+                onAnnotationDeleteRequested: { id in
+                    store.send(.deleteAnnotation(id))
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
