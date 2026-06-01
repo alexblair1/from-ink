@@ -5,6 +5,9 @@ import Foundation
 /// `firstPageThumbnailData` give cards what they need without loading any
 /// `drawingData`.
 ///
+/// PDF-specific projections live on `PDFDocumentSnapshot` — this type does not
+/// carry any PDF metadata.
+///
 /// For an opened notebook with its full page list, use `NotebookDetailSnapshot`.
 struct NotebookSnapshot: Equatable, Identifiable, Sendable {
     let id: UUID
@@ -15,9 +18,9 @@ struct NotebookSnapshot: Equatable, Identifiable, Sendable {
     let isPinned: Bool
     let isArchived: Bool
     let sortOrder: Int
-    let documentKind: DocumentKind
+    let notebookType: NotebookType
     let folderID: UUID?
-    let pageCount: Int
+    let pageCount: Int                  // count of NotePages
     let firstPageThumbnailData: Data?
     let tagIDs: [UUID]
 }
@@ -35,7 +38,7 @@ extension NotebookSnapshot {
         self.isPinned = model.isPinned
         self.isArchived = model.isArchived
         self.sortOrder = model.sortOrder
-        self.documentKind = model.documentKind
+        self.notebookType = model.notebookType
         self.folderID = model.folder?.id
         self.pageCount = pages.count
         self.firstPageThumbnailData = pages.first?.thumbnailData

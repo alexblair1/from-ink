@@ -16,6 +16,28 @@ struct HomeFeature: Reducer {
         /// "has an active tab."
         var activeBriefTab: BriefTab? = nil
         var isNewNotebookSheetOpen: Bool = false
+        var isImportPickerOpen: Bool = false
+
+        /// PDF-import status alert. `nil` = nothing presented. Set when a
+        /// duplicate is detected (so the user can choose to open the
+        /// existing copy) or when the import flow fails.
+        var importAlert: ImportAlert? = nil
+
+        enum ImportAlert: Equatable {
+            /// The picked file already existed in the library. The
+            /// snapshot is the existing PDF. The alert is informational
+            /// only today — opening a PDF viewer is Phase 3 work, so
+            /// the action set is just "OK." When `PDFFeature` lands the
+            /// alert gains an "Open" button that presents the viewer.
+            case duplicate(PDFDocumentSnapshot)
+            /// The import flow failed. `message` is the localized,
+            /// human-readable body; alert offers "OK".
+            case failed(message: String)
+            /// New PDF was imported successfully. Informational
+            /// confirmation; opening the viewer comes in Phase 3.
+            case imported(PDFDocumentSnapshot)
+        }
+
         var isWheelOpen: Bool = false
         /// True iff the user has warped to a non-today day. While warped,
         /// `.foregrounded` and `.calendarChanged` are no-ops — they target
@@ -84,6 +106,20 @@ struct HomeFeature: Reducer {
         case newNotebookDismissed
         case notebookCreated(title: String)
         case notebookTapped(id: UUID)
+
+        // PDF import
+        /// User tapped the import-PDF button in the top bar — open the
+        /// file picker.
+        case importPDFTapped
+        /// User canceled the picker or it dismissed itself. Clears
+        /// `isImportPickerOpen` so the binding stays consistent with
+        /// SwiftUI's state.
+        case importPickerDismissed
+        /// User picked a PDF; forward to LibraryFeature for the actual
+        /// import work.
+        case importPDFPicked(URL)
+        /// User dismissed the import alert via the OK button or by swipe.
+        case importAlertDismissed
         /// User tapped the masthead date — open or close the Time Warp wheel.
         /// On open: switches to wheel mode (editor's note hides, calendar tab
         /// auto-activates, dayContent fetch fires for the current date).
@@ -310,13 +346,29 @@ struct HomeFeature: Reducer {
                 state.isNewNotebookSheetOpen = false
                 return .none
 
+            case .importPDFTapped:
+                state.isImportPickerOpen = true
+                return .none
+
+            case .importPickerDismissed:
+                state.isImportPickerOpen = false
+                return .none
+
+            case .importPDFPicked(let url):
+                state.isImportPickerOpen = false
+                return .send(.library(.importPDFRequested(url)))
+
+            case .importAlertDismissed:
+                state.importAlert = nil
+                return .none
+
             case .notebookTapped(let id):
                 // Open the notebook in the fullScreenCover and bump its
                 // modifiedAt so it sorts to the top of the shelf next refresh.
                 let title = state.library.notebooks
                     .first(where: { $0.id == id })?.title ?? AppStrings.Common.untitled
                 state.notebook = NotebookFeature.State(notebookID: id, notebookTitle: title)
-                return .send(.library(.touchNotebookOpened(id: id)))
+                return .send(.library(.touchNotebookActivated(id: id)))
 
             // Library's delegate: a notebook was just created. Dismiss the
             // create sheet and present the new notebook.
@@ -326,6 +378,21 @@ struct HomeFeature: Reducer {
                     notebookID: snap.id,
                     notebookTitle: snap.title
                 )
+                return .none
+
+            // PDF import completed.
+            case .library(.delegate(.pdfImported(let snap, let wasDuplicate))):
+                // Phase 2: no PDF viewer exists yet, so success and
+                // duplicate both surface as informational alerts. Phase
+                // 3 (`PDFFeature`) replaces the alerts with direct
+                // navigation into the viewer.
+                state.importAlert = wasDuplicate
+                    ? .duplicate(snap)
+                    : .imported(snap)
+                return .none
+
+            case .library(.delegate(.pdfImportFailed(let message))):
+                state.importAlert = .failed(message: message)
                 return .none
 
             // Pass-through for every other library action — the Scope ran

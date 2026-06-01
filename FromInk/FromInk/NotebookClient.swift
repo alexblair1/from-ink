@@ -17,6 +17,17 @@ import Foundation
 /// `@Model` objects into `Sendable` snapshot value types before crossing
 /// the actor boundary back to the caller. `@Model` instances never enter
 /// TCA `State` (per `view_layer_edd.md` §15).
+///
+/// **Method categories** (in order of appearance):
+///   1. Reads — fetch + projection.
+///   2. Notebook lifecycle — create / rename / delete / touch.
+///   3. PDF lookups + import — `fetchAllPDFs`, `fetchRecentPDFs`,
+///      `findPDFByContentHash`, `importPDF`. Defense-in-depth dedup
+///      lives inside `importPDF`; callers don't have to remember.
+///   4. Page lifecycle.
+///   5. Page content (high frequency — drawing / OCR / typed text).
+///   6. Headers / Links / History.
+///   7. Folders / Tags.
 struct NotebookClient: Sendable {
     // MARK: - Reads
     var fetchAllNotebooks: @Sendable () async throws -> [NotebookSnapshot]
@@ -29,10 +40,32 @@ struct NotebookClient: Sendable {
     var fetchAllTags: @Sendable () async throws -> [TagSnapshot]
 
     // MARK: - Notebook lifecycle
-    var createNotebook: @Sendable (_ title: String, _ folderID: UUID?, _ kind: DocumentKind) async throws -> NotebookSnapshot
+    var createNotebook: @Sendable (_ title: String, _ folderID: UUID?, _ type: NotebookType) async throws -> NotebookSnapshot
     var renameNotebook: @Sendable (_ id: UUID, _ title: String) async throws -> Void
     var deleteNotebook: @Sendable (_ id: UUID) async throws -> Void
     var touchNotebookModified: @Sendable (_ id: UUID) async throws -> Void
+
+    // MARK: - PDF lookups + lifecycle
+    /// All PDFs, newest-modified first.
+    var fetchAllPDFs: @Sendable () async throws -> [PDFDocumentSnapshot]
+    /// Most-recently-opened PDFs, falling back to `modifiedAt` for
+    /// never-opened ones. Drives the home "Recent PDFs" section.
+    var fetchRecentPDFs: @Sendable (_ limit: Int) async throws -> [PDFDocumentSnapshot]
+    /// Looks up an existing PDF by content hash. Used by the import
+    /// flow to detect a re-import of the same bytes and surface the
+    /// existing PDF instead of inserting a duplicate.
+    var findPDFByContentHash: @Sendable (_ hash: String) async throws -> PDFDocumentSnapshot?
+    /// Inserts a new `PDFDocument` from a finished import draft. The
+    /// caller (`ImportPDFService`) is responsible for picking, hashing,
+    /// metadata extraction, and the size guard before this is invoked.
+    /// Throws `NotebookClientError.pdfAlreadyImported(existingID:)` if
+    /// the content hash matches an already-imported PDF — caller is
+    /// expected to navigate to the existing snapshot instead.
+    var importPDF: @Sendable (_ draft: ImportedPDFDraft, _ folderID: UUID?) async throws -> PDFDocumentSnapshot
+    /// Stamps `lastOpenedAt` on the PDF. Coalesced — skips the write
+    /// (and the resulting cross-device sync ping) if the stored value
+    /// is already within the 5-minute coalesce window.
+    var touchPDFOpened: @Sendable (_ id: UUID) async throws -> Void
 
     // MARK: - Page lifecycle
     var createPage: @Sendable (_ notebookID: UUID, _ templateName: String) async throws -> NotePageSnapshot
@@ -119,6 +152,50 @@ struct NoteHistoryDraft: Sendable, Equatable {
     }
 }
 
+/// Caller-facing payload describing a PDF that has been picked, read,
+/// hashed, and inspected — but not yet persisted. `ImportPDFService`
+/// produces it; `NotebookClient.importPDF` inserts it.
+///
+/// The split exists so the side-effectful work (security-scoped URL
+/// read, SHA-256, PDFKit parse, thumbnail render, size guard) lives
+/// in a dependency that's straightforward to mock in tests, while
+/// the SwiftData write stays in `NotebookClient` alongside all other
+/// model writes.
+struct ImportedPDFDraft: Sendable, Equatable {
+    var title: String
+    var contentHash: String        // SHA-256 hex of pdfData
+    var pageCount: Int             // PDF page count
+
+    /// Byte size of `pdfData`. Caller-maintained invariant:
+    /// `byteSize == pdfData.count` at all times. Carried as a separate
+    /// field (rather than computed from `pdfData.count` at the
+    /// `importPDF` write site) so the value can be threaded through
+    /// the size-guard pipeline without re-measuring; the `Data` count
+    /// is O(1) but the field is the source of truth for the persisted
+    /// `Notebook.byteSize`. Any future code that mutates `pdfData`
+    /// without updating `byteSize` will silently corrupt the size
+    /// indicator across the library UI.
+    var byteSize: Int
+    var pdfData: Data              // the actual bytes; promoted to CKAsset on sync
+    var thumbnailData: Data?       // rendered first page, JPEG ~0.7 quality
+
+    init(
+        title: String,
+        contentHash: String,
+        pageCount: Int,
+        byteSize: Int,
+        pdfData: Data,
+        thumbnailData: Data? = nil
+    ) {
+        self.title = title
+        self.contentHash = contentHash
+        self.pageCount = pageCount
+        self.byteSize = byteSize
+        self.pdfData = pdfData
+        self.thumbnailData = thumbnailData
+    }
+}
+
 // MARK: - Errors
 
 enum NotebookClientError: Error, Equatable, Sendable {
@@ -129,6 +206,21 @@ enum NotebookClientError: Error, Equatable, Sendable {
     case folderNotFound(UUID)
     case tagNotFound(UUID)
     case historyEntryNotFound(UUID)
+    /// Defense-in-depth dedup: a PDF with this `contentHash` already
+    /// exists. Returned by `importPDF` so the caller can navigate to the
+    /// existing notebook instead of silently inserting a duplicate.
+    /// `existingID` is the already-imported `Notebook.id`.
+    case pdfAlreadyImported(existingID: UUID)
+}
+
+// MARK: - Tunables
+
+extension NotebookClient {
+    /// `touchPDFOpened` skips the write (and the resulting cross-device
+    /// sync ping) if the stored value is already within this many
+    /// seconds of `now`. 5 minutes matches the iOS Notes convention
+    /// for "Recently Opened" semantics.
+    static let openedCoalesceWindow: TimeInterval = 300
 }
 
 // MARK: - DependencyKey
@@ -164,6 +256,11 @@ extension NotebookClient: DependencyKey {
         renameNotebook: { _, _ in throw CancellationError() },
         deleteNotebook: { _ in throw CancellationError() },
         touchNotebookModified: { _ in throw CancellationError() },
+        fetchAllPDFs: { throw CancellationError() },
+        fetchRecentPDFs: { _ in throw CancellationError() },
+        findPDFByContentHash: { _ in throw CancellationError() },
+        importPDF: { _, _ in throw CancellationError() },
+        touchPDFOpened: { _ in throw CancellationError() },
         createPage: { _, _ in throw CancellationError() },
         deletePage: { _ in throw CancellationError() },
         reindexPages: { _, _ in throw CancellationError() },

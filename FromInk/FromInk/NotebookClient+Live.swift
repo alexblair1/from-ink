@@ -92,7 +92,7 @@ extension NotebookClient {
             },
 
             // MARK: - Notebook lifecycle
-            createNotebook: { title, folderID, kind in
+            createNotebook: { title, folderID, type in
                 try await MainActor.run {
                     let ctx = modelContext.context()
                     let folder: Folder?
@@ -107,7 +107,7 @@ extension NotebookClient {
                         title: title,
                         createdAt: now,
                         modifiedAt: now,
-                        kind: kind,
+                        type: type,
                         folder: folder
                     )
                     ctx.insert(nb)
@@ -132,7 +132,7 @@ extension NotebookClient {
                     guard let nb = try fetchNotebookModel(id: id, ctx: ctx) else {
                         throw NotebookClientError.notebookNotFound(id)
                     }
-                    ctx.delete(nb)   // cascades to pages → headers/links/history; highlights cascade
+                    ctx.delete(nb)   // cascades to pages → headers/links/history
                     try ctx.save()
                 }
             },
@@ -143,6 +143,122 @@ extension NotebookClient {
                         throw NotebookClientError.notebookNotFound(id)
                     }
                     nb.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                }
+            },
+
+            // MARK: - PDF lookups + lifecycle
+            fetchAllPDFs: {
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let descriptor = FetchDescriptor<PDFDocument>(
+                        sortBy: [SortDescriptor(\.modifiedAt, order: .reverse)]
+                    )
+                    return try ctx.fetch(descriptor).map(PDFDocumentSnapshot.init(model:))
+                }
+            },
+            fetchRecentPDFs: { limit in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    // SwiftData's SortDescriptor doesn't compose a
+                    // nullable-fallback ordering ("lastOpenedAt ??
+                    // modifiedAt"). Approximate with two predicate-
+                    // narrowed, store-side-limited fetches:
+                    //   1) opened PDFs, sorted by lastOpenedAt desc
+                    //   2) never-opened PDFs (lastOpenedAt nil),
+                    //      sorted by modifiedAt desc — only if we got
+                    //      fewer than `limit` in step 1
+                    // Bounds memory to ~2·limit even at huge library
+                    // sizes.
+                    var opened = FetchDescriptor<PDFDocument>(
+                        predicate: #Predicate { $0.lastOpenedAt != nil },
+                        sortBy: [SortDescriptor(\.lastOpenedAt, order: .reverse)]
+                    )
+                    opened.fetchLimit = limit
+                    let openedRows = try ctx.fetch(opened)
+
+                    if openedRows.count >= limit {
+                        return openedRows.map(PDFDocumentSnapshot.init(model:))
+                    }
+                    var neverOpened = FetchDescriptor<PDFDocument>(
+                        predicate: #Predicate { $0.lastOpenedAt == nil },
+                        sortBy: [SortDescriptor(\.modifiedAt, order: .reverse)]
+                    )
+                    neverOpened.fetchLimit = limit - openedRows.count
+                    let neverOpenedRows = try ctx.fetch(neverOpened)
+                    return (openedRows + neverOpenedRows).map(PDFDocumentSnapshot.init(model:))
+                }
+            },
+            findPDFByContentHash: { hash in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let descriptor = FetchDescriptor<PDFDocument>(
+                        predicate: #Predicate { $0.contentHash == hash }
+                    )
+                    return try ctx.fetch(descriptor).first.map(PDFDocumentSnapshot.init(model:))
+                }
+            },
+            importPDF: { draft, folderID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+
+                    // Defense-in-depth dedup. Callers are expected to
+                    // pre-check via findPDFByContentHash, but the moment
+                    // there are two import sites (home button, share
+                    // extension, drag-and-drop), one will forget — and
+                    // CloudKit will faithfully replicate the duplicate
+                    // to every device. Throwing here forces the caller
+                    // to branch to navigate-to-existing instead.
+                    let hash = draft.contentHash
+                    let existingDescriptor = FetchDescriptor<PDFDocument>(
+                        predicate: #Predicate { $0.contentHash == hash }
+                    )
+                    if let existing = try ctx.fetch(existingDescriptor).first {
+                        throw NotebookClientError.pdfAlreadyImported(existingID: existing.id)
+                    }
+
+                    let folder: Folder?
+                    if let folderID {
+                        folder = try fetchFolderModel(id: folderID, ctx: ctx)
+                        if folder == nil { throw NotebookClientError.folderNotFound(folderID) }
+                    } else {
+                        folder = nil
+                    }
+                    let now = calendarContext.now()
+                    let pdf = PDFDocument(
+                        title: draft.title,
+                        contentHash: draft.contentHash,
+                        pageCount: draft.pageCount,
+                        byteSize: draft.byteSize,
+                        createdAt: now,
+                        modifiedAt: now,
+                        folder: folder
+                    )
+                    pdf.sourcePDFData = draft.pdfData
+                    pdf.thumbnailData = draft.thumbnailData
+                    // lastOpenedAt left nil; first open via touchPDFOpened
+                    // bubbles it onto the Recent list.
+                    ctx.insert(pdf)
+                    try ctx.save()
+                    log.info("Imported PDF id=\(pdf.id.uuidString, privacy: .public) hash=\(String(hash.prefix(8)), privacy: .public) bytes=\(draft.byteSize, privacy: .public) pages=\(draft.pageCount, privacy: .public)")
+                    return PDFDocumentSnapshot(model: pdf)
+                }
+            },
+            touchPDFOpened: { id in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let descriptor = FetchDescriptor<PDFDocument>(
+                        predicate: #Predicate { $0.id == id }
+                    )
+                    guard let pdf = try ctx.fetch(descriptor).first else {
+                        throw NotebookClientError.notebookNotFound(id)
+                    }
+                    let now = calendarContext.now()
+                    if let last = pdf.lastOpenedAt,
+                       now.timeIntervalSince(last) < NotebookClient.openedCoalesceWindow {
+                        return
+                    }
+                    pdf.lastOpenedAt = now
                     try ctx.save()
                 }
             },

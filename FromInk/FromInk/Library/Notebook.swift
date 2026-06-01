@@ -1,23 +1,22 @@
 import Foundation
 import SwiftData
 
-/// A notebook — the top-level user document. Notebooks contain ordered
-/// pages, may live inside a folder, and may carry tags and PDF
-/// highlights. The `documentKind` discriminator distinguishes the four
-/// variants (notebook / quickSheet / pdfDocument / textNote); ink-bearing
-/// kinds use the `pages` relationship, while `pdfDocument` additionally
-/// owns `highlights` anchored to PDF page indices.
+/// A notebook — a user-created handwriting / typed document. Notebooks
+/// contain ordered pages, may live inside a folder, and may carry tags.
+/// The `notebookType` discriminator distinguishes the three handwriting/
+/// text variants (notebook / quickSheet / textNote).
+///
+/// PDFs are NOT notebooks. They're their own root entity (`PDFDocument`).
+/// PDF-specific fields, annotations, and lifecycle live there.
 ///
 /// **CloudKit notes:**
 /// - Every property has a default (CloudKit silent-failure prevention).
 /// - All relationships optional; `@Relationship(...)` declared on this
-///   parent side only — child classes (`NotePage`, `Highlight`, `Tag`)
-///   hold plain back-pointers without a macro to avoid SwiftData's
-///   "duplicate inverse" runtime error.
-/// - `sourcePDFData` uses `@Attribute(.externalStorage)` so payloads
-///   larger than CloudKit's 1 MB record limit auto-promote to `CKAsset`.
+///   parent side only — child classes (`NotePage`, `Tag`) hold plain
+///   back-pointers without a macro to avoid SwiftData's "duplicate
+///   inverse" runtime error.
 /// - `#Predicate` cannot read computed properties — predicates on
-///   document kind must reference `documentKindRaw == "quickSheet"`.
+///   notebook type must reference `notebookTypeRaw == "quickSheet"`.
 @Model final class Notebook {
     var id: UUID = UUID()
     var title: String = "Untitled"
@@ -28,14 +27,16 @@ import SwiftData
     var isArchived: Bool = false
     var sortOrder: Int = 0
 
-    var documentKindRaw: String = DocumentKind.notebook.rawValue
-    var documentKind: DocumentKind {
-        get { DocumentKind(rawValue: documentKindRaw) ?? .notebook }
-        set { documentKindRaw = newValue.rawValue }
+    var notebookTypeRaw: String = NotebookType.notebook.rawValue
+    var notebookType: NotebookType {
+        get { NotebookType(rawValue: notebookTypeRaw) ?? .notebook }
+        set { notebookTypeRaw = newValue.rawValue }
     }
 
-    @Attribute(.externalStorage)
-    var sourcePDFData: Data?
+    /// CloudKit record ID of the user who created this notebook.
+    /// Placeholder for future shared-notebook attribution; nil for
+    /// single-user records.
+    var authorUserID: String?
 
     // Parent
     var folder: Folder?
@@ -47,15 +48,12 @@ import SwiftData
     @Relationship(inverse: \Tag.notebooks)
     var tags: [Tag]? = []
 
-    @Relationship(deleteRule: .cascade, inverse: \Highlight.notebook)
-    var highlights: [Highlight]? = []
-
     init(
         id: UUID = UUID(),
         title: String = "Untitled",
         createdAt: Date = Date(),
         modifiedAt: Date? = nil,
-        kind: DocumentKind = .notebook,
+        type: NotebookType = .notebook,
         coverColorHex: String = "#FAFAF8",
         folder: Folder? = nil,
         sortOrder: Int = 0
@@ -68,7 +66,7 @@ import SwiftData
         // Backfill / import flows that need a distinct value (e.g.,
         // restoring a notebook last edited yesterday) pass it explicitly.
         self.modifiedAt = modifiedAt ?? createdAt
-        self.documentKindRaw = kind.rawValue
+        self.notebookTypeRaw = type.rawValue
         self.coverColorHex = coverColorHex
         self.folder = folder
         self.sortOrder = sortOrder

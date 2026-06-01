@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Wiring view for the home screen. Reads notebooks/folders from the
 /// composed `LibraryFeature` substate; the days of `@Query` + direct
@@ -80,10 +81,76 @@ struct HomeWiringView: View {
                     .transition(.opacity)
             }
         }
+        .fileImporter(
+            isPresented: Binding(
+                get: { store.isImportPickerOpen },
+                set: { newValue in
+                    // The view only ever sets this to false (user
+                    // cancellation / SwiftUI dismissing the sheet).
+                    // The reducer opens it via .importPDFTapped.
+                    if !newValue {
+                        store.send(.importPickerDismissed)
+                    }
+                }
+            ),
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                store.send(.importPDFPicked(url))
+            case .failure:
+                // SwiftUI surfaces its own picker error; we just clear
+                // the open state so the binding stays consistent.
+                store.send(.importPickerDismissed)
+            }
+        }
+        .alert(
+            importAlertTitle,
+            isPresented: Binding(
+                get: { store.importAlert != nil },
+                set: { newValue in
+                    if !newValue { store.send(.importAlertDismissed) }
+                }
+            ),
+            presenting: store.importAlert
+        ) { _ in
+            // Single OK action across all three cases; Phase 3 splits
+            // duplicate/imported into a viewer-presentation path with
+            // a second "Open" button.
+            Button(AppStrings.Library.importPDFDismissButton, role: .cancel) {
+                store.send(.importAlertDismissed)
+            }
+        } message: { alert in
+            switch alert {
+            case .duplicate(let snap):
+                Text(AppStrings.Library.importPDFDuplicateMessage(title: snap.title))
+            case .failed(let message):
+                Text(message)
+            case .imported(let snap):
+                Text(AppStrings.Library.importPDFSuccessMessage(title: snap.title))
+            }
+        }
         .animation(ds.animation.standard, value: store.isNewNotebookSheetOpen)
         .animation(ds.animation.standard, value: store.isWheelOpen)
         .animation(ds.animation.standard, value: store.activeBriefTab)
         .animation(ds.animation.standard, value: store.dayContent)
+    }
+
+    /// Title for the import status alert, switched by case. The
+    /// presented `alert` parameter on `.alert(_:isPresented:presenting:)`
+    /// drives the body + actions; the title needs to resolve before the
+    /// modifier sees the optional, so it derives from the current state.
+    private var importAlertTitle: String {
+        switch store.importAlert {
+        case .duplicate:
+            return AppStrings.Library.importPDFDuplicateTitle
+        case .imported:
+            return AppStrings.Library.importPDFSuccessTitle
+        case .failed, .none:
+            return AppStrings.Library.importPDFFailedTitle
+        }
     }
 
     // MARK: - New Notebook Overlay
@@ -127,6 +194,7 @@ struct HomeWiringView: View {
     private var topBarModel: HomeTopBar.Model {
         HomeTopBar.Model(
             onSettings: { store.send(.settingsTapped) },
+            onImportPDF: { store.send(.importPDFTapped) },
             onCompose: { store.send(.newNotebookTapped) }
         )
     }
@@ -304,7 +372,7 @@ struct HomeWiringView: View {
                 timeLabel: relativeTimeLabel(snap.modifiedAt),
                 onTap: {
                     // HomeFeature.notebookTapped sets presentingNotebookID
-                    // AND forwards .library(.touchNotebookOpened) so the
+                    // AND forwards .library(.touchNotebookActivated) so the
                     // shelf re-sorts on next refresh.
                     store.send(.notebookTapped(id: snap.id))
                 }

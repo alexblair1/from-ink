@@ -47,8 +47,17 @@ struct LibraryFeature: Reducer {
         case createNotebookRequested(title: String)
         case renameNotebookRequested(id: UUID, title: String)
         case deleteNotebookRequested(id: UUID)
-        case touchNotebookOpened(id: UUID)
+        /// Bumps the notebook's `modifiedAt` so opening (without
+        /// editing) bubbles it to the top of recency-sorted lists.
+        /// Despite the legacy "opened" framing in earlier revisions,
+        /// this maps to `notebookClient.touchNotebookModified` — there
+        /// is no `lastOpenedAt` field on `Notebook` (that semantic
+        /// lives on `PDFDocument` for PDFs).
+        case touchNotebookActivated(id: UUID)
         case moveNotebookToFolderRequested(notebookID: UUID, folderID: UUID?)
+
+        // PDF import (caller-initiated)
+        case importPDFRequested(URL)
 
         // Folder lifecycle (caller-initiated)
         case createFolderRequested(name: String, parentID: UUID?)
@@ -64,10 +73,21 @@ struct LibraryFeature: Reducer {
             /// created notebook (`fullScreenCover` etc.). The snapshot is
             /// already in `state.notebooks` by the time this fires.
             case notebookCreated(NotebookSnapshot)
+            /// Fired after a PDF import completes. `wasDuplicate == true`
+            /// means the bytes matched an already-imported `PDFDocument`
+            /// and the snapshot is the existing one (no new row was
+            /// inserted); parents typically navigate to it and surface
+            /// a small "already in your library" affordance. `false` is
+            /// the new-import case.
+            case pdfImported(PDFDocumentSnapshot, wasDuplicate: Bool)
+            /// Fired when PDF import fails. `message` is the human-readable
+            /// localized string ready for an alert body.
+            case pdfImportFailed(message: String)
         }
     }
 
     @Dependency(\.notebookClient) var notebookClient
+    @Dependency(\.importPDFService) var importPDFService
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -116,7 +136,7 @@ struct LibraryFeature: Reducer {
                     try await notebookClient.deleteNotebook(id)
                 }
 
-            case .touchNotebookOpened(let id):
+            case .touchNotebookActivated(let id):
                 return .run { _ in
                     try await notebookClient.touchNotebookModified(id)
                 }
@@ -124,6 +144,43 @@ struct LibraryFeature: Reducer {
             case .moveNotebookToFolderRequested(let notebookID, let folderID):
                 return .run { _ in
                     try await notebookClient.moveNotebookToFolder(notebookID, folderID)
+                }
+
+            case .importPDFRequested(let url):
+                return .run { send in
+                    do {
+                        let draft = try await importPDFService.importPDF(url)
+                        do {
+                            let snap = try await notebookClient.importPDF(draft, nil)
+                            await send(.delegate(.pdfImported(snap, wasDuplicate: false)))
+                        } catch NotebookClientError.pdfAlreadyImported(let existingID) {
+                            // Dedup hit. Walk the full-PDFs list and pick
+                            // out the matching ID — cheap on libraries of
+                            // realistic size, and avoids adding a
+                            // dedicated by-ID PDF fetch to the client.
+                            let allPDFs = try await notebookClient.fetchAllPDFs()
+                            if let snap = allPDFs.first(where: { $0.id == existingID }) {
+                                await send(.delegate(.pdfImported(snap, wasDuplicate: true)))
+                            } else {
+                                // Existing row vanished between dedup
+                                // check and re-fetch (delete race).
+                                // Surface as a generic failure rather
+                                // than silently doing nothing.
+                                log.error("importPDF dedup pointed at id=\(existingID) but no matching PDF in fetchAllPDFs")
+                                await send(.delegate(.pdfImportFailed(
+                                    message: AppStrings.Library.importPDFInvalidMessage
+                                )))
+                            }
+                        }
+                    } catch let importError as ImportPDFError {
+                        log.error("importPDF flow failed: \(String(describing: importError))")
+                        await send(.delegate(.pdfImportFailed(message: importError.userMessage)))
+                    } catch {
+                        log.error("importPDF flow failed (unknown): \(error.localizedDescription)")
+                        await send(.delegate(.pdfImportFailed(
+                            message: AppStrings.Library.importPDFInvalidMessage
+                        )))
+                    }
                 }
 
             case .createFolderRequested(let name, let parentID):

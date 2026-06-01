@@ -11,6 +11,89 @@ extension AppStrings {
         static let emptyTitle = NSLocalizedString("library.empty.title", value: "No notebooks yet", comment: "Empty state when no notebooks exist")
         static let myNotebook = NSLocalizedString("library.myNotebook", value: "My Notebook", comment: "Default first notebook name")
 
+        // MARK: - PDF import
+
+        static let importPDFButton = NSLocalizedString(
+            "library.importPDF.button",
+            value: "Import PDF",
+            comment: "Accessibility label for the home-screen import-PDF button"
+        )
+        static let importPDFDuplicateTitle = NSLocalizedString(
+            "library.importPDF.duplicate.title",
+            value: "Already in Your Library",
+            comment: "Alert title when a re-imported PDF is detected as a duplicate"
+        )
+        static func importPDFDuplicateMessage(title: String) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "library.importPDF.duplicate.message",
+                    value: "%@ is already in your library. Opening the existing copy.",
+                    comment: "Alert body for duplicate PDF; %@ is the PDF title"
+                ),
+                title
+            )
+        }
+        static let importPDFFailedTitle = NSLocalizedString(
+            "library.importPDF.failed.title",
+            value: "Couldn't Import PDF",
+            comment: "Alert title when PDF import fails"
+        )
+        static let importPDFSuccessTitle = NSLocalizedString(
+            "library.importPDF.success.title",
+            value: "PDF Imported",
+            comment: "Alert title confirming a successful PDF import"
+        )
+        static func importPDFSuccessMessage(title: String) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "library.importPDF.success.message",
+                    value: "%@ has been added to your library.",
+                    comment: "Alert body confirming a successful PDF import; %@ is the PDF title"
+                ),
+                title
+            )
+        }
+        static let importPDFOpenButton = NSLocalizedString(
+            "library.importPDF.openButton",
+            value: "Open",
+            comment: "Alert button that confirms opening the existing duplicate PDF"
+        )
+        static let importPDFDismissButton = NSLocalizedString(
+            "library.importPDF.dismissButton",
+            value: "OK",
+            comment: "Alert button that dismisses the import-failure alert"
+        )
+        static func importPDFTooLargeMessage(byteCount: Int, limit: Int) -> String {
+            let formatter = ByteCountFormatter()
+            formatter.allowedUnits = [.useMB, .useGB]
+            formatter.countStyle = .file
+            let actual = formatter.string(fromByteCount: Int64(byteCount))
+            let cap = formatter.string(fromByteCount: Int64(limit))
+            return String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "library.importPDF.tooLarge.message",
+                    value: "This PDF is %@. From Ink syncs PDFs via iCloud, which has a %@ per-file limit. Compress the PDF first — most PDF editors can reduce image quality or remove embedded fonts.",
+                    comment: "Alert body for oversized PDF; first %@ is actual size, second %@ is the limit"
+                ),
+                actual, cap
+            )
+        }
+        static let importPDFInvalidMessage = NSLocalizedString(
+            "library.importPDF.invalid.message",
+            value: "From Ink couldn't read this file as a PDF. It may be corrupt or in an unsupported format.",
+            comment: "Alert body when PDFKit can't parse the file"
+        )
+        static let importPDFAccessDeniedMessage = NSLocalizedString(
+            "library.importPDF.accessDenied.message",
+            value: "From Ink couldn't open this file. Try moving it to a location that From Ink can access (e.g. iCloud Drive or Files).",
+            comment: "Alert body when security-scoped access is denied"
+        )
+        static let importPDFAttributesUnavailableMessage = NSLocalizedString(
+            "library.importPDF.attributesUnavailable.message",
+            value: "From Ink couldn't read file attributes. The file may have moved or been deleted.",
+            comment: "Alert body when FileManager can't read file attributes"
+        )
+
         static func folderCount(_ count: Int) -> String {
             String.localizedStringWithFormat(
                 NSLocalizedString("library.folderCount", value: "%d FOLDERS", comment: "Number of folders"),

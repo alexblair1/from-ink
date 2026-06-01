@@ -29,14 +29,11 @@ import SwiftData
     @Attribute(.externalStorage)
     var thumbnailData: Data?
 
-    // PDF page reference (populated when parent Notebook.documentKind == .pdfDocument)
-    var pdfPageIndex: Int?
-
     // OCR
     var ocrText: String?
     var ocrUpdatedAt: Date?
 
-    // Typed text (populated when parent Notebook.documentKind == .textNote)
+    // Typed text (populated when parent Notebook.notebookType == .textNote)
     var typedText: String?
 
     // ML cache — invalidated when SHA256(ocrText) differs from summaryHash

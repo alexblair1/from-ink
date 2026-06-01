@@ -10,7 +10,6 @@ struct NotePageDetailSnapshot: Equatable, Sendable {
     let drawingData: Data?
     let ocrText: String?
     let typedText: String?
-    let pdfPageIndex: Int?
     let headers: [NoteHeaderSnapshot]
     let links: [NoteLinkSnapshot]
     let history: [NoteHistoryEntrySnapshot]
@@ -24,7 +23,6 @@ extension NotePageDetailSnapshot {
         self.drawingData = model.drawingData
         self.ocrText = model.ocrText
         self.typedText = model.typedText
-        self.pdfPageIndex = model.pdfPageIndex
         self.headers = (model.headers ?? [])
             .sorted { $0.sortOrder < $1.sortOrder }
             .map(NoteHeaderSnapshot.init(model:))

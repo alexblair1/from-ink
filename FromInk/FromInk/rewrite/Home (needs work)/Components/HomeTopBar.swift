@@ -1,13 +1,15 @@
 import SwiftUI
 
-/// Sticky top bar: weather icon (left), wordmark (center), compose button (right).
+/// Sticky top bar: settings (left), wordmark (center), import-PDF + compose
+/// (right). Trailing area renders the import button to the left of compose
+/// so the right edge stays anchored on the canonical "new" action.
 /// Component view — no TCA imports.
 ///
 struct HomeTopBar: View {
     let model: Model
 
     var body: some View {
-        HStack {
+        HStack(spacing: 0) {
             Button(action: model.onSettings) {
                 Image(systemName: model.leadingIcon)
                     .font(.system(size: model.iconSize, weight: .regular))
@@ -26,6 +28,17 @@ struct HomeTopBar: View {
                 .tracking(model.titleTracking)
 
             Spacer()
+
+            Button(action: model.onImportPDF) {
+                Image(systemName: model.importPDFIcon)
+                    .font(.system(size: model.iconSize, weight: .regular))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(model.iconColor)
+                    .frame(width: model.hitTarget, height: model.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.importPDFAccessibilityLabel)
 
             Button(action: model.onCompose) {
                 Image(systemName: model.trailingIcon)
@@ -49,8 +62,11 @@ extension HomeTopBar {
     struct Model {
         let title: String
         let leadingIcon: String
+        let importPDFIcon: String
+        let importPDFAccessibilityLabel: String
         let trailingIcon: String
         let onSettings: () -> Void
+        let onImportPDF: () -> Void
         let onCompose: () -> Void
         let titleFont: Font
         let titleColor: Color
@@ -69,13 +85,17 @@ extension HomeTopBar {
 extension HomeTopBar.Model {
     init(
         onSettings: @escaping () -> Void,
+        onImportPDF: @escaping () -> Void,
         onCompose: @escaping () -> Void,
         ds: DesignSystem = .standard
     ) {
         self.title = AppStrings.Home.title
         self.leadingIcon = "gearshape"
+        self.importPDFIcon = "doc.badge.plus"
+        self.importPDFAccessibilityLabel = AppStrings.Library.importPDFButton
         self.trailingIcon = "square.and.pencil"
         self.onSettings = onSettings
+        self.onImportPDF = onImportPDF
         self.onCompose = onCompose
         self.titleFont = ds.typography.wordmark
         self.titleColor = ds.colors.ink
