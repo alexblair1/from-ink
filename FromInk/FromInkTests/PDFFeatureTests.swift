@@ -115,7 +115,7 @@ final class PDFFeatureTests: XCTestCase {
 
         await store.send(.onAppear)
         await store.receive(.dataLoaded(nil)) {
-            $0.loadState = .failed(message: AppStrings.Library.importPDFInvalidMessage)
+            $0.loadState = .failed(message: AppStrings.Library.pdfViewerLoadFailedMessage)
         }
     }
 
@@ -134,7 +134,7 @@ final class PDFFeatureTests: XCTestCase {
 
         await store.send(.onAppear)
         await store.receive(\.loadFailed) {
-            $0.loadState = .failed(message: AppStrings.Library.importPDFInvalidMessage)
+            $0.loadState = .failed(message: AppStrings.Library.pdfViewerLoadFailedMessage)
         }
     }
 

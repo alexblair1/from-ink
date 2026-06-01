@@ -89,11 +89,23 @@ struct PDFFeature: Reducer {
                 return .none
 
             case .dataLoaded(.none):
-                state.loadState = .failed(message: AppStrings.Library.importPDFInvalidMessage)
+                // `sourcePDFData` was nil or the row vanished between
+                // presentation and load. Log the id for diagnostics;
+                // surface a viewer-specific message (the import-time
+                // "couldn't read this file as a PDF" copy is misleading
+                // here — the read succeeded, the bytes were missing).
+                let id = state.pdfID
+                log.error("PDF load failed: fetchPDFData returned nil for \(id, privacy: .public)")
+                state.loadState = .failed(message: AppStrings.Library.pdfViewerLoadFailedMessage)
                 return .none
 
-            case .loadFailed:
-                state.loadState = .failed(message: AppStrings.Library.importPDFInvalidMessage)
+            case .loadFailed(let message):
+                // Bind the carried error description so it shows up in
+                // diagnostics. The user-facing message is the
+                // viewer-specific string — the raw error description
+                // is rarely user-actionable.
+                log.error("PDF load failed: \(message, privacy: .private)")
+                state.loadState = .failed(message: AppStrings.Library.pdfViewerLoadFailedMessage)
                 return .none
 
             case .pageChanged(let index):

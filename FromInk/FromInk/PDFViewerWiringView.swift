@@ -75,7 +75,7 @@ struct PDFViewerWiringView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .loaded(let data):
-            PDFCanvas(
+            PDFContent(
                 data: data,
                 currentPage: Binding(
                     get: { store.currentPage },

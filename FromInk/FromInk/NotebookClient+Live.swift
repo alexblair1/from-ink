@@ -205,11 +205,15 @@ extension NotebookClient {
                         predicate: #Predicate { $0.id == id }
                     )
                     // Reading `sourcePDFData` materializes the
-                    // externalStorage blob (up to ~500 MB). MainActor
-                    // is fine here — SwiftData reads are non-blocking
-                    // I/O backed by the file system; PDFKit's parse,
-                    // which IS heavy, happens off-actor inside the
-                    // viewer.
+                    // externalStorage blob synchronously — for
+                    // hundreds-of-MB PDFs this is a real MainActor
+                    // I/O block (sub-second on local SSD, multi-second
+                    // on cold iCloud). `ModelContext` is MainActor-
+                    // bound, so we can't easily move the read off-
+                    // actor. The viewer's spinner is up for this
+                    // entire window; the dominant cost — PDFKit's
+                    // parse — runs off-actor inside `PDFContent`
+                    // (see `PDFCanvas.swift`).
                     return try ctx.fetch(descriptor).first?.sourcePDFData
                 }
             },

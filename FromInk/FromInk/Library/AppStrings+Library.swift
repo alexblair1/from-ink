@@ -38,6 +38,11 @@ extension AppStrings {
             value: "Couldn't Import PDF",
             comment: "Alert title when PDF import fails"
         )
+        static let pdfViewerLoadFailedMessage = NSLocalizedString(
+            "library.pdfViewer.loadFailed.message",
+            value: "Couldn't open this PDF right now. Try again, or remove and re-import it from your library.",
+            comment: "Body shown in the PDF viewer when bytes can't load or PDFKit can't parse them"
+        )
         static let importPDFOpenButton = NSLocalizedString(
             "library.importPDF.openButton",
             value: "Open",
