@@ -1,8 +1,25 @@
 import ComposableArchitecture
+import CoreGraphics
 import Foundation
 import os
 
 private let log = Logger(subsystem: "com.fromink.app", category: "PDFFeature")
+
+/// A single PDF-text-line worth of highlight payload — the unit
+/// `AnnotationStore.createHighlight` consumes. A `PDFSelection` that
+/// spans multiple lines is split into one `HighlightLine` per
+/// `selectionsByLine()` segment so each line gets its own
+/// `PDFAnnotation` record (the rendering matches Acrobat / Books:
+/// per-line rectangles rather than one giant bounding box).
+///
+/// Bounds are **normalized 0..1 in the PDF page's cropBox** — same
+/// coordinate space as `PDFAnnotationSnapshot.bounds`. The conversion
+/// happens at extraction time inside `PDFCanvas`.
+struct HighlightLine: Equatable, Sendable {
+    let pageIndex: Int
+    let bounds: CGRect
+    let extractedText: String
+}
 
 /// Owns the open PDF viewer state. Presented as a fullScreenCover from
 /// `HomeFeature` (and, later, from a notebook page's link tap). Loads
@@ -69,6 +86,16 @@ struct PDFFeature: Reducer {
         /// load failure (which logs and leaves the array empty —
         /// non-fatal so the PDF still renders).
         case annotationsLoaded([PDFAnnotationSnapshot])
+        /// User tapped the highlight button while text was selected.
+        /// `PDFCanvas` extracted the selection into one
+        /// `HighlightLine` per text line and normalized the bounds.
+        /// The reducer fans out per-line `createHighlight` calls and
+        /// appends each returned snapshot via `.highlightCreated`.
+        case createHighlightFromSelection([HighlightLine])
+        /// Result of `annotationStore.createHighlight`. Appended to
+        /// `state.annotations` so the reconcile loop renders it
+        /// immediately — no round-trip through `listForPDF`.
+        case highlightCreated(PDFAnnotationSnapshot)
         /// User tapped the dismiss chrome. Parent observes this via
         /// presentation action and clears its `@Presents` slot.
         case dismissTapped
@@ -79,6 +106,7 @@ struct PDFFeature: Reducer {
 
     @Dependency(\.notebookClient) var notebookClient
     @Dependency(\.annotationStore) var annotationStore
+    @Dependency(\.calendarContext) var cal
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -134,6 +162,39 @@ struct PDFFeature: Reducer {
 
             case .annotationsLoaded(let annotations):
                 state.annotations = annotations
+                return .none
+
+            case .createHighlightFromSelection(let lines):
+                guard !lines.isEmpty else { return .none }
+                let pdfID = state.pdfID
+                let now = cal.now()
+                return .run { send in
+                    // Sequential rather than parallel — each create is
+                    // a fast SwiftData write, and serializing them keeps
+                    // the lines' createdAt strictly ordered (matters
+                    // for the `sortBy: createdAt` in `listForPDF`).
+                    // A per-line failure logs and continues so a
+                    // mid-selection sync hiccup doesn't drop the rest
+                    // of the user's highlight.
+                    for line in lines {
+                        do {
+                            let snapshot = try await annotationStore.createHighlight(
+                                pdfID,
+                                line.pageIndex,
+                                line.bounds,
+                                line.extractedText,
+                                .yellowHighlight,
+                                now
+                            )
+                            await send(.highlightCreated(snapshot))
+                        } catch {
+                            log.error("createHighlight failed for pdf=\(pdfID, privacy: .public) page=\(line.pageIndex, privacy: .public): \(error.localizedDescription, privacy: .private)")
+                        }
+                    }
+                }
+
+            case .highlightCreated(let snapshot):
+                state.annotations.append(snapshot)
                 return .none
 
             case .dismissTapped:

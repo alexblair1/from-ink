@@ -119,6 +119,79 @@ private func denormalize(_ normalized: CGRect, in page: PDFPage) -> CGRect {
     )
 }
 
+// MARK: - HighlightTrigger
+
+/// One-shot signal asking `PDFCanvas` to convert the current
+/// `PDFView.currentSelection` into `HighlightLine`s and fire
+/// `onHighlightExtracted`. The wrapping UUID makes each tap a fresh
+/// trigger so SwiftUI re-renders propagate; the coordinator compares
+/// against the last consumed id to dedupe.
+///
+/// Mirrors the `scrollTo: Binding<CGPoint?>` pattern used by
+/// `CanvasView` for the handwriting canvas — the SwiftUI side
+/// publishes a request, the UIKit coordinator consumes it imperatively.
+struct HighlightTrigger: Equatable {
+    let id: UUID
+}
+
+// MARK: - Selection extraction
+
+/// Splits a `PDFSelection` into one `HighlightLine` per visible line
+/// using `PDFSelection.selectionsByLine()` so highlights wrap text
+/// rather than painting one giant cross-line rectangle (Acrobat /
+/// Books convention).
+///
+/// Bounds normalize against each line's page cropBox — same
+/// coordinate space `PDFAnnotation.bounds` stores and the reconcile
+/// loop's `denormalize` reverses.
+@MainActor
+private func extractHighlightLines(
+    from selection: PDFSelection,
+    in pdfView: PDFView
+) -> [HighlightLine] {
+    guard let document = pdfView.document else { return [] }
+
+    let perLine = selection.selectionsByLine()
+    var lines: [HighlightLine] = []
+    lines.reserveCapacity(perLine.count)
+
+    for lineSelection in perLine {
+        // A line selection belongs to exactly one page; take the
+        // first.
+        guard let page = lineSelection.pages.first,
+              let pageIndex = document.index(for: page) as Int?
+        else { continue }
+
+        let rawBounds = lineSelection.bounds(for: page)
+        let normalized = normalize(rawBounds, in: page)
+        let text = lineSelection.string ?? ""
+
+        lines.append(HighlightLine(
+            pageIndex: pageIndex,
+            bounds: normalized,
+            extractedText: text
+        ))
+    }
+
+    return lines
+}
+
+/// Inverse of `denormalize` — converts page-space bounds back to
+/// 0..1 normalized.
+@MainActor
+private func normalize(_ rect: CGRect, in page: PDFPage) -> CGRect {
+    let pageBounds = page.bounds(for: .cropBox)
+    guard pageBounds.size.width > 0, pageBounds.size.height > 0 else {
+        return .zero
+    }
+    return CGRect(
+        x: (rect.origin.x - pageBounds.origin.x) / pageBounds.size.width,
+        y: (rect.origin.y - pageBounds.origin.y) / pageBounds.size.height,
+        width: rect.size.width / pageBounds.size.width,
+        height: rect.size.height / pageBounds.size.height
+    )
+}
+
 // MARK: - PDFCanvas
 
 /// SwiftUI host for an already-parsed `PDFKit.PDFDocument`. Thin
@@ -129,12 +202,17 @@ private func denormalize(_ normalized: CGRect, in page: PDFPage) -> CGRect {
 /// `PDFKit.PDFDocument(data:)` walk doesn't block the MainActor. See
 /// the comment on `PDFContent` for the parse pipeline.
 ///
-/// Phase 4a: read-only annotation rendering via the reconcile loop in
-/// `updateUIView`. Phase 4b adds selection-based creation.
+/// Renders annotations via the reconcile loop on every SwiftUI
+/// re-render. Selection-to-highlight extraction runs when the parent
+/// publishes a new `HighlightTrigger` — the coordinator dedupes via
+/// trigger id so a stable trigger value across re-renders doesn't
+/// re-fire.
 struct PDFCanvas: UIViewRepresentable {
     let document: PDFKit.PDFDocument
     let annotations: [PDFAnnotationSnapshot]
     @Binding var currentPage: Int
+    let highlightTrigger: HighlightTrigger?
+    let onHighlightExtracted: ([HighlightLine]) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -164,12 +242,33 @@ struct PDFCanvas: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         // Reconcile annotations on every SwiftUI re-render driven by
-        // state changes (typically: annotations were loaded, or a new
-        // highlight was created in Phase 4b). Diff-by-id keeps the
-        // common case (annotations array unchanged) cheap — the
-        // reconcile loop is O(N + M) where N is desired and M is
-        // existing-with-our-id.
+        // state changes (annotations loaded, new highlight created).
+        // Diff-by-id keeps the common case cheap.
         reconcileAnnotations(desired: annotations, in: uiView)
+
+        // Consume a fresh highlight trigger. Coordinator tracks the
+        // last consumed id so a stable trigger across unrelated
+        // re-renders doesn't re-extract.
+        if let trigger = highlightTrigger,
+           trigger.id != context.coordinator.lastConsumedHighlightTriggerID {
+            context.coordinator.lastConsumedHighlightTriggerID = trigger.id
+            processHighlight(in: uiView)
+        }
+    }
+
+    /// Reads `PDFView.currentSelection`, splits it per line,
+    /// normalizes bounds, and hands the result to the parent. Clears
+    /// the selection on success so the user sees the highlight render
+    /// without the selection overlay competing visually. Silent no-op
+    /// if no text is selected — the trigger button is always tappable
+    /// and the user learns "select first" by trying.
+    @MainActor
+    private func processHighlight(in pdfView: PDFView) {
+        guard let selection = pdfView.currentSelection else { return }
+        let lines = extractHighlightLines(from: selection, in: pdfView)
+        guard !lines.isEmpty else { return }
+        onHighlightExtracted(lines)
+        pdfView.clearSelection()
     }
 
     func makeCoordinator() -> Coordinator {
@@ -179,6 +278,7 @@ struct PDFCanvas: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject {
         let currentPage: Binding<Int>
+        var lastConsumedHighlightTriggerID: UUID?
 
         init(currentPage: Binding<Int>) {
             self.currentPage = currentPage
@@ -225,8 +325,18 @@ struct PDFContent: View {
     let data: Data
     let annotations: [PDFAnnotationSnapshot]
     @Binding var currentPage: Int
+    /// Fired when the user taps the highlight button while text is
+    /// selected. Each call carries one `HighlightLine` per text line
+    /// the selection spans; the parent dispatches them to
+    /// `PDFFeature.createHighlightFromSelection`.
+    let onHighlightExtracted: ([HighlightLine]) -> Void
 
     @State private var parseResult: ParseResult = .parsing
+    /// Bumped on every highlight-button tap so `PDFCanvas` re-runs
+    /// selection extraction. `nil` means "no request yet"; subsequent
+    /// taps produce a new id that the canvas coordinator dedupes
+    /// against.
+    @State private var highlightTrigger: HighlightTrigger?
 
     private enum ParseResult {
         case parsing
@@ -246,11 +356,18 @@ struct PDFContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .parsed(let document):
-                PDFCanvas(
-                    document: document,
-                    annotations: annotations,
-                    currentPage: $currentPage
-                )
+                ZStack(alignment: .bottomTrailing) {
+                    PDFCanvas(
+                        document: document,
+                        annotations: annotations,
+                        currentPage: $currentPage,
+                        highlightTrigger: highlightTrigger,
+                        onHighlightExtracted: onHighlightExtracted
+                    )
+
+                    highlightButton
+                        .padding(DesignSystem.standard.spacing.lg)
+                }
 
             case .failed:
                 VStack(spacing: DesignSystem.standard.spacing.base) {
@@ -285,5 +402,36 @@ struct PDFContent: View {
                 parseResult = .failed
             }
         }
+    }
+
+    /// Floating highlighter button. Always enabled — Phase 4b
+    /// deliberately skips selection-state tracking (PDFView doesn't
+    /// expose a clean "selection changed" hook short of polling).
+    /// Tap with no selection is a silent no-op; tap with selection
+    /// fires the extract pipeline. Users learn the contract on first
+    /// try.
+    private var highlightButton: some View {
+        Button {
+            highlightTrigger = HighlightTrigger(id: UUID())
+        } label: {
+            Image(systemName: "highlighter")
+                .font(.system(size: 20, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(DesignSystem.standard.colors.inkPure)
+                .frame(width: 52, height: 52)
+                .background(
+                    Circle()
+                        .fill(DesignSystem.standard.colors.paper)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(
+                                    DesignSystem.standard.colors.rule,
+                                    lineWidth: DesignSystem.standard.layout.borderWidth
+                                )
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(AppStrings.Library.highlightSelectionButton)
     }
 }

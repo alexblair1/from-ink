@@ -192,6 +192,175 @@ final class PDFFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Highlight creation
+
+    private let highlightDate = Date(timeIntervalSince1970: 1_780_500_000)
+
+    private func makeLine(
+        pageIndex: Int = 2,
+        bounds: CGRect = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
+        extractedText: String = "matched line"
+    ) -> HighlightLine {
+        HighlightLine(pageIndex: pageIndex, bounds: bounds, extractedText: extractedText)
+    }
+
+    private func makeSnapshot(
+        for line: HighlightLine,
+        id: UUID = UUID()
+    ) -> PDFAnnotationSnapshot {
+        PDFAnnotationSnapshot(
+            id: id,
+            pdfDocumentID: pdfID,
+            kind: .highlight,
+            createdAt: highlightDate,
+            modifiedAt: highlightDate,
+            pageIndex: line.pageIndex,
+            extractedText: line.extractedText,
+            contents: "",
+            bounds: line.bounds,
+            color: .yellowHighlight,
+            hasInkData: false, inkDataByteSize: nil,
+            hasPencilDrawing: false, pencilDrawingByteSize: nil
+        )
+    }
+
+    @MainActor
+    func test_createHighlightFromSelection_emptyArray_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.createHighlightFromSelection([]))
+        // No effect, no state change — no follow-up `.highlightCreated`.
+    }
+
+    @MainActor
+    func test_createHighlightFromSelection_singleLine_callsStoreAndAppends() async {
+        let line = makeLine()
+        let snapshot = makeSnapshot(for: line)
+        let captured = LockIsolated<[(UUID, Int, CGRect, String, PDFAnnotationColor, Date)]>([])
+
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.calendarContext = .fixed(now: self.highlightDate)
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { pdfID, pageIndex, bounds, text, color, now in
+                    captured.withValue { $0.append((pdfID, pageIndex, bounds, text, color, now)) }
+                    return snapshot
+                },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+
+        await store.send(.createHighlightFromSelection([line]))
+        await store.receive(.highlightCreated(snapshot)) {
+            $0.annotations = [snapshot]
+        }
+
+        XCTAssertEqual(captured.value.count, 1)
+        let call = captured.value[0]
+        XCTAssertEqual(call.0, pdfID)
+        XCTAssertEqual(call.1, line.pageIndex)
+        XCTAssertEqual(call.2, line.bounds)
+        XCTAssertEqual(call.3, line.extractedText)
+        XCTAssertEqual(call.4, .yellowHighlight)
+        XCTAssertEqual(call.5, highlightDate)
+    }
+
+    /// A multi-line selection produces one highlight record per line.
+    /// State.annotations grows by one on each `.highlightCreated`
+    /// receive, in the same order the lines arrived.
+    @MainActor
+    func test_createHighlightFromSelection_multipleLines_appendsAllInOrder() async {
+        let lines = [
+            makeLine(pageIndex: 2, extractedText: "first line"),
+            makeLine(pageIndex: 2, extractedText: "second line"),
+            makeLine(pageIndex: 2, extractedText: "third line")
+        ]
+        let snapshots = lines.map { makeSnapshot(for: $0) }
+        let snapshotQueue = LockIsolated<[PDFAnnotationSnapshot]>(snapshots)
+
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.calendarContext = .fixed(now: self.highlightDate)
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in
+                    // Pop the next prearranged snapshot. The reducer's
+                    // `for` loop awaits each create before issuing the
+                    // next, but `LockIsolated` keeps mutation Sendable-
+                    // safe either way.
+                    let next = snapshotQueue.withValue { queue -> PDFAnnotationSnapshot? in
+                        guard !queue.isEmpty else { return nil }
+                        return queue.removeFirst()
+                    }
+                    guard let next else { throw CancellationError() }
+                    return next
+                },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+
+        await store.send(.createHighlightFromSelection(lines))
+        await store.receive(.highlightCreated(snapshots[0])) {
+            $0.annotations = [snapshots[0]]
+        }
+        await store.receive(.highlightCreated(snapshots[1])) {
+            $0.annotations = [snapshots[0], snapshots[1]]
+        }
+        await store.receive(.highlightCreated(snapshots[2])) {
+            $0.annotations = [snapshots[0], snapshots[1], snapshots[2]]
+        }
+    }
+
+    /// A per-line create failure is logged and skipped — the reducer
+    /// continues with the next line so a mid-selection sync hiccup
+    /// doesn't drop the entire user gesture.
+    @MainActor
+    func test_createHighlightFromSelection_storeThrowsForOneLine_continuesWithRest() async {
+        let lines = [makeLine(extractedText: "good"), makeLine(extractedText: "bad"), makeLine(extractedText: "good again")]
+        let goodSnapshot1 = makeSnapshot(for: lines[0])
+        let goodSnapshot2 = makeSnapshot(for: lines[2])
+
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.calendarContext = .fixed(now: self.highlightDate)
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, text, _, _ in
+                    switch text {
+                    case "good": return goodSnapshot1
+                    case "bad": throw AnnotationStoreError.pdfNotFound(pdfID: UUID())
+                    case "good again": return goodSnapshot2
+                    default: throw CancellationError()
+                    }
+                },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+
+        await store.send(.createHighlightFromSelection(lines))
+        // First line succeeds.
+        await store.receive(.highlightCreated(goodSnapshot1)) {
+            $0.annotations = [goodSnapshot1]
+        }
+        // Second line throws — logged, no `.highlightCreated`. Reducer
+        // moves on.
+        // Third line succeeds.
+        await store.receive(.highlightCreated(goodSnapshot2)) {
+            $0.annotations = [goodSnapshot1, goodSnapshot2]
+        }
+    }
+
     /// Annotation load failure is non-fatal — the viewer renders the
     /// PDF without overlay annotations rather than transitioning the
     /// whole loadState to .failed. State.annotations stays empty.

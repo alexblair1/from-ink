@@ -81,7 +81,10 @@ struct PDFViewerWiringView: View {
                 currentPage: Binding(
                     get: { store.currentPage },
                     set: { store.send(.pageChanged($0)) }
-                )
+                ),
+                onHighlightExtracted: { lines in
+                    store.send(.createHighlightFromSelection(lines))
+                }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
