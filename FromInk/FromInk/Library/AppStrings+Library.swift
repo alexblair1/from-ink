@@ -53,6 +53,46 @@ extension AppStrings {
             value: "Remove",
             comment: "Edit-menu action that deletes the tapped PDF annotation"
         )
+        static let searchButton = NSLocalizedString(
+            "library.pdfViewer.search.button",
+            value: "Search PDF",
+            comment: "Accessibility label for the top-bar button that opens the in-PDF search field"
+        )
+        static let searchFieldPlaceholder = NSLocalizedString(
+            "library.pdfViewer.search.placeholder",
+            value: "Search",
+            comment: "Placeholder text inside the in-PDF search field"
+        )
+        static let searchCloseButton = NSLocalizedString(
+            "library.pdfViewer.search.close",
+            value: "Close Search",
+            comment: "Accessibility label for the button that exits in-PDF search and clears the query"
+        )
+        static let searchPreviousMatchButton = NSLocalizedString(
+            "library.pdfViewer.search.previous",
+            value: "Previous Match",
+            comment: "Accessibility label for the chevron that steps to the previous in-PDF search match"
+        )
+        static let searchNextMatchButton = NSLocalizedString(
+            "library.pdfViewer.search.next",
+            value: "Next Match",
+            comment: "Accessibility label for the chevron that steps to the next in-PDF search match"
+        )
+        static func searchMatchCount(current: Int, total: Int) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "library.pdfViewer.search.count",
+                    value: "%1$d / %2$d",
+                    comment: "Search-result counter shown next to in-PDF search controls; %1$d is the current match (1-based), %2$d is the total"
+                ),
+                current, total
+            )
+        }
+        static let searchNoMatches = NSLocalizedString(
+            "library.pdfViewer.search.noMatches",
+            value: "No matches",
+            comment: "Counter shown when an in-PDF search query returned zero results"
+        )
         static let importPDFOpenButton = NSLocalizedString(
             "library.importPDF.openButton",
             value: "Open",

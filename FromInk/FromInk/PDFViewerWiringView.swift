@@ -36,23 +36,110 @@ struct PDFViewerWiringView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(AppStrings.Common.cancel)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.title)
-                    .font(ds.typography.cardTitle)
-                    .foregroundStyle(ds.colors.ink)
-                    .lineLimit(1)
-                MonoLabel(
-                    pageLabel,
-                    size: 10,
-                    color: ds.colors.ink2
-                )
-            }
+            if store.isSearchActive {
+                searchFieldGroup
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.title)
+                        .font(ds.typography.cardTitle)
+                        .foregroundStyle(ds.colors.ink)
+                        .lineLimit(1)
+                    MonoLabel(
+                        pageLabel,
+                        size: 10,
+                        color: ds.colors.ink2
+                    )
+                }
 
-            Spacer()
+                Spacer()
+
+                Button { store.send(.searchToggled) } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(ds.colors.inkPure)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppStrings.Library.searchButton)
+            }
         }
         .padding(.horizontal, ds.spacing.base)
         .frame(height: 56)
         .background(ds.colors.paper)
+    }
+
+    /// Search field + result counter + step chevrons + close button.
+    /// Rendered in place of the title when `isSearchActive`. The field
+    /// auto-focuses via `@FocusState`-on-appearance.
+    private var searchFieldGroup: some View {
+        HStack(spacing: ds.spacing.xs) {
+            TextField(
+                AppStrings.Library.searchFieldPlaceholder,
+                text: Binding(
+                    get: { store.searchQuery },
+                    set: { store.send(.searchQueryChanged($0)) }
+                )
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 15))
+            .foregroundStyle(ds.colors.ink)
+            .submitLabel(.search)
+            .onSubmit { store.send(.searchSubmitted) }
+            .autocorrectionDisabled(true)
+            .textInputAutocapitalization(.never)
+
+            MonoLabel(searchCountLabel, size: 10, color: ds.colors.ink2)
+
+            Button { store.send(.stepMatch(.previous)) } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(ds.colors.inkPure)
+                    .frame(width: 32, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(store.searchResultCount == 0)
+            .accessibilityLabel(AppStrings.Library.searchPreviousMatchButton)
+
+            Button { store.send(.stepMatch(.next)) } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(ds.colors.inkPure)
+                    .frame(width: 32, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(store.searchResultCount == 0)
+            .accessibilityLabel(AppStrings.Library.searchNextMatchButton)
+
+            Button { store.send(.searchToggled) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(ds.colors.ink2)
+                    .frame(width: 32, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(AppStrings.Library.searchCloseButton)
+        }
+    }
+
+    /// "3 / 12" once a query's been submitted with results, "No matches"
+    /// once a query's been submitted with none, empty before any
+    /// submission. The disambiguator is whether the query is non-empty
+    /// AND results have been reported; pre-submit the label hides.
+    private var searchCountLabel: String {
+        guard !store.searchQuery.isEmpty,
+              store.currentMatchIndex > 0 || store.searchResultCount == 0
+        else { return "" }
+        if store.searchResultCount == 0 {
+            return AppStrings.Library.searchNoMatches
+        }
+        return AppStrings.Library.searchMatchCount(
+            current: store.currentMatchIndex,
+            total: store.searchResultCount
+        )
     }
 
     /// "<current> / <total> PAGES" mono-label shown under the title.
@@ -87,6 +174,14 @@ struct PDFViewerWiringView: View {
                 },
                 onAnnotationDeleteRequested: { id in
                     store.send(.deleteAnnotation(id))
+                },
+                searchTrigger: store.searchTrigger,
+                gotoMatchTrigger: store.gotoMatchTrigger,
+                onSearchResults: { count, currentIndex in
+                    store.send(.searchResultsLoaded(count: count, currentIndex: currentIndex))
+                },
+                onCurrentMatchChanged: { index in
+                    store.send(.currentMatchChanged(index))
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -21,6 +21,26 @@ struct HighlightLine: Equatable, Sendable {
     let extractedText: String
 }
 
+/// One-shot signal asking `PDFCanvas` to run the given query against
+/// the loaded `PDFDocument`. The wrapping UUID forces SwiftUI to
+/// propagate state changes — the coordinator dedupes by comparing
+/// against the last consumed id, so identical queries fired twice
+/// still re-run.
+struct SearchTrigger: Equatable, Sendable {
+    let id: UUID
+    let query: String
+}
+
+/// One-shot signal asking `PDFCanvas` to advance its internal search
+/// cursor. The coordinator owns the `[PDFSelection]` result list
+/// (PDFSelection isn't Sendable) and applies `PDFView.go(to:)` against
+/// the next/previous match. Cycles at the ends.
+struct GotoMatchTrigger: Equatable, Sendable {
+    enum Direction: Sendable { case next, previous }
+    let id: UUID
+    let direction: Direction
+}
+
 /// Owns the open PDF viewer state. Presented as a fullScreenCover from
 /// `HomeFeature` (and, later, from a notebook page's link tap). Loads
 /// the PDF bytes once on `.onAppear` via `NotebookClient.fetchPDFData`
@@ -57,6 +77,31 @@ struct PDFFeature: Reducer {
         /// Treating it as fatal would hide the document for a
         /// recoverable issue (sync race, transient SwiftData hiccup).
         var annotations: [PDFAnnotationSnapshot] = []
+
+        // MARK: - Search
+
+        /// `true` when the search affordance is open — the top bar
+        /// shows the search field instead of the title. Toggled by
+        /// `.searchToggled`; clearing the field doesn't auto-close so
+        /// the user can refine without losing focus.
+        var isSearchActive: Bool = false
+        /// The live search query the user has typed. Submission (return
+        /// key) emits `.searchSubmitted` and fires the trigger.
+        var searchQuery: String = ""
+        /// Total matches the canvas found for the last submitted query.
+        /// Zero means "no matches" or "no query submitted yet" — the
+        /// label disambiguates by checking `searchQuery` non-empty.
+        var searchResultCount: Int = 0
+        /// 1-based index of the currently-anchored match (matches the
+        /// "3 / 12" label). Zero when no match is anchored.
+        var currentMatchIndex: Int = 0
+        /// One-shot trigger consumed by `PDFCanvas` to run `findString`.
+        /// `nil` resets after the canvas reports back so a re-render
+        /// during a stable trigger doesn't re-search.
+        var searchTrigger: SearchTrigger?
+        /// One-shot trigger consumed by `PDFCanvas` to advance the
+        /// internal selection cursor.
+        var gotoMatchTrigger: GotoMatchTrigger?
 
         enum LoadState: Equatable {
             case loading
@@ -113,11 +158,35 @@ struct PDFFeature: Reducer {
         /// Coordinator reports a new visible page. State stores it for
         /// future annotation scoping; today nothing else reads it.
         case pageChanged(Int)
+
+        // MARK: - Search
+
+        /// User tapped the magnifying-glass chip / Close-Search button
+        /// in the top bar. Toggles `isSearchActive`; closing also
+        /// clears the query, count, and current-match cursor.
+        case searchToggled
+        /// User typed in the search field — onChange of the bound
+        /// string.
+        case searchQueryChanged(String)
+        /// User pressed return. If the query is non-empty, fires the
+        /// search trigger so the canvas runs `findString`.
+        case searchSubmitted
+        /// Canvas reports back after running `findString`. `count` is
+        /// total matches; `currentIndex` is 1-based (canvas jumped to
+        /// the first match) or 0 for no matches.
+        case searchResultsLoaded(count: Int, currentIndex: Int)
+        /// User tapped one of the up/down chevrons. Fires the
+        /// goto-match trigger.
+        case stepMatch(GotoMatchTrigger.Direction)
+        /// Canvas reports back after applying a step. New 1-based
+        /// index.
+        case currentMatchChanged(Int)
     }
 
     @Dependency(\.notebookClient) var notebookClient
     @Dependency(\.annotationStore) var annotationStore
     @Dependency(\.calendarContext) var cal
+    @Dependency(\.uuid) var uuid
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -231,6 +300,56 @@ struct PDFFeature: Reducer {
 
             case .dismissTapped:
                 // Parent owns dismiss — clears the @Presents slot.
+                return .none
+
+            case .searchToggled:
+                state.isSearchActive.toggle()
+                if !state.isSearchActive {
+                    // Closing search clears the query so the next open
+                    // starts clean. Don't fire a search trigger — the
+                    // canvas's stale selections clear when the user
+                    // submits the next query or when the trigger goes
+                    // back to nil mid-render.
+                    state.searchQuery = ""
+                    state.searchResultCount = 0
+                    state.currentMatchIndex = 0
+                    state.searchTrigger = nil
+                    state.gotoMatchTrigger = nil
+                }
+                return .none
+
+            case .searchQueryChanged(let query):
+                state.searchQuery = query
+                // Don't fire on every keystroke — wait for return. An
+                // empty field after a non-empty one shouldn't preserve
+                // stale counts in the label.
+                if query.isEmpty {
+                    state.searchResultCount = 0
+                    state.currentMatchIndex = 0
+                }
+                return .none
+
+            case .searchSubmitted:
+                let query = state.searchQuery
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !query.isEmpty else { return .none }
+                state.searchTrigger = SearchTrigger(id: uuid(), query: query)
+                return .none
+
+            case .searchResultsLoaded(let count, let currentIndex):
+                state.searchResultCount = count
+                state.currentMatchIndex = currentIndex
+                return .none
+
+            case .stepMatch(let direction):
+                // No-op if there's nothing to step through — guards the
+                // canvas from a spurious goto on an empty result set.
+                guard state.searchResultCount > 0 else { return .none }
+                state.gotoMatchTrigger = GotoMatchTrigger(id: uuid(), direction: direction)
+                return .none
+
+            case .currentMatchChanged(let index):
+                state.currentMatchIndex = index
                 return .none
             }
         }

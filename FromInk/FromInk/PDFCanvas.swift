@@ -217,6 +217,20 @@ struct PDFCanvas: UIViewRepresentable {
     /// "Remove" from the edit menu. Parent dispatches to
     /// `PDFFeature.deleteAnnotation(id)`.
     let onAnnotationDeleteRequested: (UUID) -> Void
+    /// Latest search request. When a new id arrives, the coordinator
+    /// runs `findString` on the document, caches the selections, and
+    /// jumps to the first match. Stable across renders means "no new
+    /// request".
+    let searchTrigger: SearchTrigger?
+    /// Step-the-cursor request — next or previous match. Coordinator
+    /// advances its internal index, jumps via `PDFView.go(to:)`, and
+    /// reports the new 1-based index.
+    let gotoMatchTrigger: GotoMatchTrigger?
+    /// Fired after `findString` completes. `count` is total matches;
+    /// `currentIndex` is 1-based (1 if any matches; 0 otherwise).
+    let onSearchResults: (_ count: Int, _ currentIndex: Int) -> Void
+    /// Fired after a step advances the cursor. New 1-based index.
+    let onCurrentMatchChanged: (Int) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -273,6 +287,20 @@ struct PDFCanvas: UIViewRepresentable {
             context.coordinator.lastConsumedHighlightTriggerID = trigger.id
             processHighlight(in: uiView)
         }
+
+        // Consume a fresh search trigger.
+        if let trigger = searchTrigger,
+           trigger.id != context.coordinator.lastConsumedSearchTriggerID {
+            context.coordinator.lastConsumedSearchTriggerID = trigger.id
+            context.coordinator.runSearch(query: trigger.query, in: uiView)
+        }
+
+        // Consume a fresh goto-match trigger.
+        if let trigger = gotoMatchTrigger,
+           trigger.id != context.coordinator.lastConsumedGotoTriggerID {
+            context.coordinator.lastConsumedGotoTriggerID = trigger.id
+            context.coordinator.step(direction: trigger.direction, in: uiView)
+        }
     }
 
     /// Reads `PDFView.currentSelection`, splits it per line,
@@ -291,13 +319,19 @@ struct PDFCanvas: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(currentPage: $currentPage)
+        Coordinator(
+            currentPage: $currentPage,
+            onSearchResults: onSearchResults,
+            onCurrentMatchChanged: onCurrentMatchChanged
+        )
     }
 
     @MainActor
     final class Coordinator: NSObject, UIEditMenuInteractionDelegate {
         let currentPage: Binding<Int>
         var lastConsumedHighlightTriggerID: UUID?
+        var lastConsumedSearchTriggerID: UUID?
+        var lastConsumedGotoTriggerID: UUID?
 
         /// Weak reference back to the host PDFView so the edit-menu
         /// interaction can convert page-space tap points to view-space
@@ -323,8 +357,25 @@ struct PDFCanvas: UIViewRepresentable {
         /// identifier. Cleared after the menu dismisses.
         private var pendingAnnotationID: UUID?
 
-        init(currentPage: Binding<Int>) {
+        /// Search results from the last `findString` run. Coordinator
+        /// owns these since `PDFSelection` is a non-Sendable reference
+        /// type that can't ride through TCA actions or State.
+        private var searchSelections: [PDFSelection] = []
+        /// 0-based index into `searchSelections` for the currently
+        /// anchored match. -1 when there are no results.
+        private var currentMatchIndex: Int = -1
+
+        private let onSearchResults: (Int, Int) -> Void
+        private let onCurrentMatchChanged: (Int) -> Void
+
+        init(
+            currentPage: Binding<Int>,
+            onSearchResults: @escaping (Int, Int) -> Void,
+            onCurrentMatchChanged: @escaping (Int) -> Void
+        ) {
             self.currentPage = currentPage
+            self.onSearchResults = onSearchResults
+            self.onCurrentMatchChanged = onCurrentMatchChanged
         }
 
         deinit {
@@ -420,6 +471,55 @@ struct PDFCanvas: UIViewRepresentable {
                 pendingAnnotationID = nil
             }
         }
+
+        // MARK: - Search
+
+        /// Runs `findString` against the current document and jumps the
+        /// PDFView to the first match. `findString` is synchronous in
+        /// PDFKit but fast even for large PDFs; if performance becomes
+        /// an issue we can switch to `beginFindString` and the async
+        /// `PDFViewDocumentMatchFound` notification stream.
+        func runSearch(query: String, in pdfView: PDFView) {
+            guard let document = pdfView.document else {
+                searchSelections = []
+                currentMatchIndex = -1
+                onSearchResults(0, 0)
+                return
+            }
+
+            let matches = document.findString(query, withOptions: .caseInsensitive)
+            searchSelections = matches
+
+            if let first = matches.first {
+                currentMatchIndex = 0
+                pdfView.go(to: first)
+                pdfView.setCurrentSelection(first, animate: false)
+                onSearchResults(matches.count, 1)
+            } else {
+                currentMatchIndex = -1
+                pdfView.clearSelection()
+                onSearchResults(0, 0)
+            }
+        }
+
+        /// Advances the cursor by one match in the given direction,
+        /// cycling at the ends. No-op if there are no results — the
+        /// reducer also guards but the canvas should be safe alone.
+        func step(direction: GotoMatchTrigger.Direction, in pdfView: PDFView) {
+            guard !searchSelections.isEmpty else { return }
+
+            switch direction {
+            case .next:
+                currentMatchIndex = (currentMatchIndex + 1) % searchSelections.count
+            case .previous:
+                currentMatchIndex = (currentMatchIndex - 1 + searchSelections.count) % searchSelections.count
+            }
+
+            let selection = searchSelections[currentMatchIndex]
+            pdfView.go(to: selection)
+            pdfView.setCurrentSelection(selection, animate: false)
+            onCurrentMatchChanged(currentMatchIndex + 1)
+        }
     }
 }
 
@@ -456,6 +556,16 @@ struct PDFContent: View {
     /// "Remove" from the edit menu. Parent dispatches to
     /// `PDFFeature.deleteAnnotation(id)`.
     let onAnnotationDeleteRequested: (UUID) -> Void
+    /// Latest search request from the parent reducer. `nil` between
+    /// submissions.
+    let searchTrigger: SearchTrigger?
+    /// Latest step-cursor request from the parent reducer.
+    let gotoMatchTrigger: GotoMatchTrigger?
+    /// Fired after the canvas runs `findString`. Parent stores
+    /// (count, currentIndex) in state.
+    let onSearchResults: (_ count: Int, _ currentIndex: Int) -> Void
+    /// Fired after the canvas advances its match cursor.
+    let onCurrentMatchChanged: (Int) -> Void
 
     @State private var parseResult: ParseResult = .parsing
     /// Bumped on every highlight-button tap so `PDFCanvas` re-runs
@@ -489,7 +599,11 @@ struct PDFContent: View {
                         currentPage: $currentPage,
                         highlightTrigger: highlightTrigger,
                         onHighlightExtracted: onHighlightExtracted,
-                        onAnnotationDeleteRequested: onAnnotationDeleteRequested
+                        onAnnotationDeleteRequested: onAnnotationDeleteRequested,
+                        searchTrigger: searchTrigger,
+                        gotoMatchTrigger: gotoMatchTrigger,
+                        onSearchResults: onSearchResults,
+                        onCurrentMatchChanged: onCurrentMatchChanged
                     )
 
                     highlightButton

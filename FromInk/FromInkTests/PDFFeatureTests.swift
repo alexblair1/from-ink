@@ -361,6 +361,135 @@ final class PDFFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Search
+
+    @MainActor
+    func test_searchToggled_opensAndClosesAndClearsState() async {
+        var initial = makeState()
+        initial.searchQuery = "stale"
+        initial.searchResultCount = 5
+        initial.currentMatchIndex = 2
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.searchToggled) {
+            $0.isSearchActive = true
+        }
+        // Opening from non-empty state preserves the existing query —
+        // closing wipes it.
+        await store.send(.searchToggled) {
+            $0.isSearchActive = false
+            $0.searchQuery = ""
+            $0.searchResultCount = 0
+            $0.currentMatchIndex = 0
+        }
+    }
+
+    @MainActor
+    func test_searchQueryChanged_emptyClearsCount() async {
+        var initial = makeState()
+        initial.isSearchActive = true
+        initial.searchQuery = "foo"
+        initial.searchResultCount = 4
+        initial.currentMatchIndex = 1
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.searchQueryChanged("")) {
+            $0.searchQuery = ""
+            $0.searchResultCount = 0
+            $0.currentMatchIndex = 0
+        }
+    }
+
+    @MainActor
+    func test_searchSubmitted_emptyQuery_doesNotFireTrigger() async {
+        var initial = makeState()
+        initial.isSearchActive = true
+        initial.searchQuery = "   "
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // Whitespace-only query — trimmed, falls through, no trigger.
+        await store.send(.searchSubmitted)
+    }
+
+    @MainActor
+    func test_searchSubmitted_firesTriggerAndAcceptsResults() async {
+        var initial = makeState()
+        initial.isSearchActive = true
+        initial.searchQuery = "hello"
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.uuid = .incrementing
+        }
+
+        // First incrementing UUID is all-zeros + "...000".
+        let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+        await store.send(.searchSubmitted) {
+            $0.searchTrigger = SearchTrigger(id: firstUUID, query: "hello")
+        }
+
+        // Canvas reports back with 7 results, first one anchored.
+        await store.send(.searchResultsLoaded(count: 7, currentIndex: 1)) {
+            $0.searchResultCount = 7
+            $0.currentMatchIndex = 1
+        }
+    }
+
+    @MainActor
+    func test_stepMatch_noResults_doesNotFireTrigger() async {
+        var initial = makeState()
+        initial.searchResultCount = 0
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.stepMatch(.next))
+    }
+
+    @MainActor
+    func test_stepMatch_withResults_firesTriggerAndUpdatesIndex() async {
+        var initial = makeState()
+        initial.searchResultCount = 7
+        initial.currentMatchIndex = 1
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.uuid = .incrementing
+        }
+
+        let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+        await store.send(.stepMatch(.next)) {
+            $0.gotoMatchTrigger = GotoMatchTrigger(id: firstUUID, direction: .next)
+        }
+        await store.send(.currentMatchChanged(2)) {
+            $0.currentMatchIndex = 2
+        }
+    }
+
     // MARK: - Highlight deletion
 
     @MainActor
