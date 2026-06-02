@@ -43,6 +43,10 @@ struct SettingsRow: View {
     /// Renders the right-side status hint with the case-appropriate
     /// typography + color. Neutral hints stay in serif prose; attention
     /// hints flip to mono uppercase + `flagRed` for at-a-glance read.
+    /// The mono attention treatment is rendered via the shared
+    /// `MonoLabel` primitive so the integration row's "Re-authenticate"
+    /// label and the pending-row status pill stay typographically in
+    /// sync with this one.
     @ViewBuilder
     private func statusHintLabel(_ hint: StatusHint) -> some View {
         switch hint {
@@ -53,11 +57,7 @@ struct SettingsRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         case .attention(let text):
-            Text(text)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .tracking(1.5)
-                .textCase(.uppercase)
-                .foregroundStyle(ds.colors.flagRed)
+            MonoLabel(text, size: 10, color: ds.colors.flagRed)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }

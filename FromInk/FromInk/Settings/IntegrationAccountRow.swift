@@ -47,11 +47,7 @@ struct IntegrationAccountRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         case .reauthRequired:
-            Text(model.reauthLabel)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .tracking(1.5)
-                .textCase(.uppercase)
-                .foregroundStyle(ds.colors.flagRed)
+            MonoLabel(model.reauthLabel, size: 10, color: ds.colors.flagRed)
                 .lineLimit(1)
         }
     }

@@ -44,11 +44,7 @@ struct IntegrationPendingRow: View {
 
     @ViewBuilder
     private var statusLabel: some View {
-        Text(model.statusText)
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .tracking(1.5)
-            .textCase(.uppercase)
-            .foregroundStyle(statusColor)
+        MonoLabel(model.statusText, size: 10, color: statusColor)
             .lineLimit(1)
     }
 
