@@ -43,10 +43,10 @@ extension AppStrings {
             value: "Couldn't open this PDF right now. Try again, or remove and re-import it from your library.",
             comment: "Body shown in the PDF viewer when bytes can't load or PDFKit can't parse them"
         )
-        static let highlightSelectionButton = NSLocalizedString(
-            "library.pdfViewer.highlightSelection.button",
-            value: "Highlight Selection",
-            comment: "Accessibility label for the floating button that turns the current PDF text selection into a highlight"
+        static let highlightSelectionMenuItem = NSLocalizedString(
+            "library.pdfViewer.highlightSelection.menuItem",
+            value: "Highlight",
+            comment: "Item title in PDFView's text-selection edit menu that turns the current selection into a yellow highlight annotation"
         )
         static let annotationRemoveAction = NSLocalizedString(
             "library.pdfViewer.annotation.remove",

@@ -207,21 +207,6 @@ private func denormalize(_ normalized: CGRect, in page: PDFPage) -> CGRect {
     )
 }
 
-// MARK: - HighlightTrigger
-
-/// One-shot signal asking `PDFCanvas` to convert the current
-/// `PDFView.currentSelection` into `HighlightLine`s and fire
-/// `onHighlightExtracted`. The wrapping UUID makes each tap a fresh
-/// trigger so SwiftUI re-renders propagate; the coordinator compares
-/// against the last consumed id to dedupe.
-///
-/// Mirrors the `scrollTo: Binding<CGPoint?>` pattern used by
-/// `CanvasView` for the handwriting canvas — the SwiftUI side
-/// publishes a request, the UIKit coordinator consumes it imperatively.
-struct HighlightTrigger: Equatable {
-    let id: UUID
-}
-
 // MARK: - Selection extraction
 
 /// Splits a `PDFSelection` into one `HighlightLine` per visible line
@@ -300,7 +285,11 @@ struct PDFCanvas: UIViewRepresentable {
     let document: PDFKit.PDFDocument
     let annotations: [PDFAnnotationSnapshot]
     @Binding var currentPage: Int
-    let highlightTrigger: HighlightTrigger?
+    /// Fired when the user picks **Highlight** from the system
+    /// text-selection edit menu. The coordinator extracts the
+    /// per-line highlights from PDFView's current selection and calls
+    /// this closure; the wiring view dispatches
+    /// `.createHighlightFromSelection(lines)`.
     let onHighlightExtracted: ([HighlightLine]) -> Void
     /// Fired when the user taps an existing annotation and chooses
     /// "Remove" from the edit menu. Parent dispatches to
@@ -352,12 +341,16 @@ struct PDFCanvas: UIViewRepresentable {
     let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
 
     func makeUIView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = FromInkPDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
         view.backgroundColor = UIColor(Color.canvas)
         view.document = document
+        view.fromInkCoordinator = context.coordinator
+        // Register the **Highlight** edit-menu item on first mount.
+        // Process-global and idempotent.
+        FromInkPDFView.registerMenuItemIfNeeded()
 
         // Tell the coordinator about the host view + the latest
         // callbacks. `attach` updates the closure refs on every render
@@ -366,6 +359,7 @@ struct PDFCanvas: UIViewRepresentable {
         context.coordinator.attach(pdfView: view)
         context.coordinator.refreshCallbacks(
             onDelete: onAnnotationDeleteRequested,
+            onHighlight: onHighlightExtracted,
             onSearchResults: onSearchResults,
             onCurrentMatchChanged: onCurrentMatchChanged,
             onDrawingCommitted: onDrawingCommitted
@@ -409,6 +403,7 @@ struct PDFCanvas: UIViewRepresentable {
         // doesn't silently break.
         context.coordinator.refreshCallbacks(
             onDelete: onAnnotationDeleteRequested,
+            onHighlight: onHighlightExtracted,
             onSearchResults: onSearchResults,
             onCurrentMatchChanged: onCurrentMatchChanged,
             onDrawingCommitted: onDrawingCommitted
@@ -450,14 +445,10 @@ struct PDFCanvas: UIViewRepresentable {
         // Diff-by-id keeps the common case cheap.
         reconcileAnnotations(desired: annotations, in: uiView)
 
-        // Consume a fresh highlight trigger. Coordinator tracks the
-        // last consumed id so a stable trigger across unrelated
-        // re-renders doesn't re-extract.
-        if let trigger = highlightTrigger,
-           trigger.id != context.coordinator.lastConsumedHighlightTriggerID {
-            context.coordinator.lastConsumedHighlightTriggerID = trigger.id
-            processHighlight(in: uiView)
-        }
+        // Highlight extraction is driven by the system text-selection
+        // edit menu (FromInkPDFView + UIMenuController.menuItems),
+        // not a SwiftUI trigger — see the FromInkPDFView doc comment.
+        // Nothing to consume here.
 
         // Consume a fresh search trigger — runs `findString` off
         // MainActor.
@@ -475,21 +466,6 @@ struct PDFCanvas: UIViewRepresentable {
         }
     }
 
-    /// Reads `PDFView.currentSelection`, splits it per line,
-    /// normalizes bounds, and hands the result to the parent. Clears
-    /// the selection on success so the user sees the highlight render
-    /// without the selection overlay competing visually. Silent no-op
-    /// if no text is selected — the trigger button is always tappable
-    /// and the user learns "select first" by trying.
-    @MainActor
-    private func processHighlight(in pdfView: PDFView) {
-        guard let selection = pdfView.currentSelection else { return }
-        let lines = extractHighlightLines(from: selection, in: pdfView)
-        guard !lines.isEmpty else { return }
-        onHighlightExtracted(lines)
-        pdfView.clearSelection()
-    }
-
     func makeCoordinator() -> Coordinator {
         Coordinator(currentPage: $currentPage)
     }
@@ -497,7 +473,6 @@ struct PDFCanvas: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, UIEditMenuInteractionDelegate {
         let currentPage: Binding<Int>
-        var lastConsumedHighlightTriggerID: UUID?
         var lastConsumedSearchTriggerID: UUID?
         var lastConsumedGotoTriggerID: UUID?
         var lastConsumedCommitTriggerID: UUID?
@@ -525,6 +500,7 @@ struct PDFCanvas: UIViewRepresentable {
         /// first render's value. `var` over `let` is the architectural
         /// guarantee here.
         private var onDelete: ((UUID) -> Void)?
+        private var onHighlight: (([HighlightLine]) -> Void)?
         private var onSearchResults: ((Int, Int) -> Void)?
         private var onCurrentMatchChanged: ((Int) -> Void)?
         private var onDrawingCommitted: ((Data, CGRect, Int) -> Void)?
@@ -592,14 +568,30 @@ struct PDFCanvas: UIViewRepresentable {
         /// past one frame.
         func refreshCallbacks(
             onDelete: @escaping (UUID) -> Void,
+            onHighlight: @escaping ([HighlightLine]) -> Void,
             onSearchResults: @escaping (Int, Int) -> Void,
             onCurrentMatchChanged: @escaping (Int) -> Void,
             onDrawingCommitted: @escaping (Data, CGRect, Int) -> Void
         ) {
             self.onDelete = onDelete
+            self.onHighlight = onHighlight
             self.onSearchResults = onSearchResults
             self.onCurrentMatchChanged = onCurrentMatchChanged
             self.onDrawingCommitted = onDrawingCommitted
+        }
+
+        /// Called from `FromInkPDFView.highlightSelection(_:)` when
+        /// the user picks **Highlight** from the system text-selection
+        /// edit menu. Extracts per-line highlights from the current
+        /// selection and dispatches via the refreshed callback. Clears
+        /// the selection on success so the rendered highlight isn't
+        /// fighting with the lingering selection overlay.
+        func handleHighlightMenuItem(in pdfView: PDFView) {
+            guard let selection = pdfView.currentSelection else { return }
+            let lines = extractHighlightLines(from: selection, in: pdfView)
+            guard !lines.isEmpty else { return }
+            onHighlight?(lines)
+            pdfView.clearSelection()
         }
 
         /// Resets the search machinery. Called from `runSearch` on
@@ -1026,11 +1018,6 @@ struct PDFContent: View {
     let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
 
     @State private var parseResult: ParseResult = .parsing
-    /// Bumped on every highlight-button tap so `PDFCanvas` re-runs
-    /// selection extraction. `nil` means "no request yet"; subsequent
-    /// taps produce a new id that the canvas coordinator dedupes
-    /// against.
-    @State private var highlightTrigger: HighlightTrigger?
 
     private enum ParseResult {
         case parsing
@@ -1088,72 +1075,27 @@ struct PDFContent: View {
     }
 
     /// Extracted from `body` to relieve the SwiftUI type-checker —
-    /// the inline `switch` arm with a 14-argument `PDFCanvas` plus a
-    /// conditional overlay was sitting right at the type-inference
-    /// ceiling.
-    @ViewBuilder
+    /// the inline `switch` arm with the full `PDFCanvas` argument
+    /// list was sitting right at the type-inference ceiling.
     private func parsedBody(document: PDFKit.PDFDocument) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            PDFCanvas(
-                document: document,
-                annotations: annotations,
-                currentPage: $currentPage,
-                highlightTrigger: highlightTrigger,
-                onHighlightExtracted: onHighlightExtracted,
-                onAnnotationDeleteRequested: onAnnotationDeleteRequested,
-                isSearchActive: isSearchActive,
-                searchTrigger: searchTrigger,
-                gotoMatchTrigger: gotoMatchTrigger,
-                onSearchResults: onSearchResults,
-                onCurrentMatchChanged: onCurrentMatchChanged,
-                isDrawingActive: isDrawingActive,
-                drawingTool: drawingTool,
-                drawingInkColor: drawingInkColor,
-                drawingInkWidth: drawingInkWidth,
-                drawingCommitTrigger: drawingCommitTrigger,
-                drawingUndoTrigger: drawingUndoTrigger,
-                onDrawingCommitted: onDrawingCommitted
-            )
-
-            // Hide the floating highlight button while in drawing
-            // mode so it doesn't compete with the bottom toolbar for
-            // taps.
-            if !isDrawingActive {
-                highlightButton
-                    .padding(DesignSystem.standard.spacing.lg)
-            }
-        }
-    }
-
-    /// Floating highlighter button. **Known UX issue**: the button is
-    /// always tappable but requires a text selection first — tap with
-    /// no selection is a silent no-op. Phase 5 replaces this whole
-    /// affordance with toolbar-driven ink + a `UIEditMenuInteraction`
-    /// "Highlight" item on the text-selection menu (the Files /
-    /// Markup pattern). Until then, the button stays for parity with
-    /// the existing extract pipeline.
-    private var highlightButton: some View {
-        Button {
-            highlightTrigger = HighlightTrigger(id: UUID())
-        } label: {
-            Image(systemName: "highlighter")
-                .font(.system(size: 20, weight: .regular))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(DesignSystem.standard.colors.inkPure)
-                .frame(width: 52, height: 52)
-                .background(
-                    Circle()
-                        .fill(DesignSystem.standard.colors.paper)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(
-                                    DesignSystem.standard.colors.rule,
-                                    lineWidth: DesignSystem.standard.layout.borderWidth
-                                )
-                        )
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(AppStrings.Library.highlightSelectionButton)
+        PDFCanvas(
+            document: document,
+            annotations: annotations,
+            currentPage: $currentPage,
+            onHighlightExtracted: onHighlightExtracted,
+            onAnnotationDeleteRequested: onAnnotationDeleteRequested,
+            isSearchActive: isSearchActive,
+            searchTrigger: searchTrigger,
+            gotoMatchTrigger: gotoMatchTrigger,
+            onSearchResults: onSearchResults,
+            onCurrentMatchChanged: onCurrentMatchChanged,
+            isDrawingActive: isDrawingActive,
+            drawingTool: drawingTool,
+            drawingInkColor: drawingInkColor,
+            drawingInkWidth: drawingInkWidth,
+            drawingCommitTrigger: drawingCommitTrigger,
+            drawingUndoTrigger: drawingUndoTrigger,
+            onDrawingCommitted: onDrawingCommitted
+        )
     }
 }
