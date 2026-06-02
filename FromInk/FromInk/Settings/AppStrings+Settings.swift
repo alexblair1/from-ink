@@ -7,7 +7,7 @@ extension AppStrings {
         // MARK: - Group headers (the editorial three-group rhythm)
 
         static let groupEditor = NSLocalizedString("settings.group.editor", value: "THE EDITOR", comment: "Settings group header — editor-related preferences (appearance, handedness, themes). Mono uppercase per the design system.")
-        static let groupYourData = NSLocalizedString("settings.group.yourData", value: "YOUR DATA", comment: "Settings group header — data + access preferences (integrations, permissions). Mono uppercase per the design system.")
+        static let groupYourData = NSLocalizedString("settings.group.yourData", value: "YOUR DATA", comment: "Settings group header — system access preferences. Mono uppercase per the design system.")
 
         // MARK: - Appearance
 
@@ -27,78 +27,6 @@ extension AppStrings {
         static let themes = NSLocalizedString("settings.themes", value: "Themes", comment: "Themes row title — visual themes beyond light/dark (paper colors, ink tints). Stub until the theme system ships.")
         static let themesEmptyTitle = NSLocalizedString("settings.themes.empty.title", value: "Themes coming soon", comment: "Empty-state title for the Themes screen — feature not yet implemented")
         static let themesEmptyBody = NSLocalizedString("settings.themes.empty.body", value: "Custom paper and ink color palettes will live here in a future update.", comment: "Empty-state body for the Themes screen — explains the section is reserved for the future theme system")
-
-        // MARK: - Integrations
-
-        static let integrations = NSLocalizedString("settings.integrations", value: "Integrations", comment: "Integrations row title — third-party services connected via PKCE")
-        static let integrationsScreenTitle = NSLocalizedString("settings.integrations.title", value: "Integrations.", comment: "Integrations screen title — serif with trailing period per the editorial design system")
-
-        // Per-provider group headers — `Adding` is appended dynamically
-        // when a pending add-account flow is in-flight for that provider.
-        static let integrationsProviderLinear = NSLocalizedString("settings.integrations.provider.linear", value: "Linear", comment: "Linear provider group header in the Integrations screen")
-        static let integrationsProviderSlack = NSLocalizedString("settings.integrations.provider.slack", value: "Slack", comment: "Slack provider group header in the Integrations screen")
-        static let integrationsAddingSuffix = NSLocalizedString("settings.integrations.adding.suffix", value: " · Adding", comment: "Suffix appended to the provider group header while an add-account flow is in-flight (e.g., `Linear · Adding`). Includes leading space + middle dot.")
-
-        // Per-screen count chip — "<connected>/<total>". Format is locale-aware via String.localizedStringWithFormat.
-        static func integrationsCountChip(_ connected: Int, of total: Int) -> String {
-            String.localizedStringWithFormat(
-                NSLocalizedString(
-                    "settings.integrations.count",
-                    value: "%1$d of %2$d",
-                    comment: "Connected providers count, e.g. '2 of 4'. %1$d is the count of providers with at least one account; %2$d is the total supported providers."
-                ),
-                connected, total
-            )
-        }
-
-        // Action row at the bottom of each provider group.
-        static let integrationsAddAccount = NSLocalizedString("settings.integrations.addAccount", value: "+ Add account", comment: "Action row label that initiates the add-account flow for the surrounding provider group")
-
-        // Pending-row labels — italic serif name shown while the
-        // add-account flow runs and the account itself isn't known yet.
-        static let integrationsPendingConnecting = NSLocalizedString("settings.integrations.pending.connecting", value: "Connecting…", comment: "Pending-row title while the add-account flow is connecting to the provider")
-        static let integrationsStatusPKCE = NSLocalizedString("settings.integrations.status.pkce", value: "PKCE", comment: "Mono uppercase status tag shown on the pending row while PKCE handshake is in flight")
-        static let integrationsStatusVerifying = NSLocalizedString("settings.integrations.status.verifying", value: "Verifying", comment: "Mono uppercase status tag shown while exchanging the auth code for a token")
-        static let integrationsStatusCancelled = NSLocalizedString("settings.integrations.status.cancelled", value: "Cancelled", comment: "Neutral mono uppercase status tag shown when the user cancelled the auth sheet")
-        static let integrationsStatusPermissionsDenied = NSLocalizedString("settings.integrations.status.permissionsDenied", value: "Permissions denied", comment: "Flag-red mono uppercase status tag shown when the vendor returned access_denied")
-        static let integrationsStatusNoConnection = NSLocalizedString("settings.integrations.status.noConnection", value: "No connection", comment: "Flag-red mono uppercase status tag shown when the network or vendor failed")
-        static let integrationsStatusCouldntVerify = NSLocalizedString("settings.integrations.status.couldntVerify", value: "Couldn't verify", comment: "Flag-red mono uppercase status tag shown when the PKCE state nonce didn't match (CSRF guard tripped)")
-
-        // Existing-account row label when token refresh fails / expires.
-        static let integrationsReauthenticate = NSLocalizedString("settings.integrations.reauthenticate", value: "Re-authenticate", comment: "Flag-red mono uppercase label shown on an existing-account row when its token has expired and cannot be refreshed")
-
-        // "Make default?" prompt card.
-        static let integrationsDefaultCaption = NSLocalizedString("settings.integrations.default.caption", value: "Just added", comment: "Mono uppercase caption above the make-default question card")
-
-        static func integrationsDefaultQuestion(_ name: String) -> String {
-            String.localizedStringWithFormat(
-                NSLocalizedString(
-                    "settings.integrations.default.question",
-                    value: "Make %@ your default?",
-                    comment: "Question on the make-default prompt card. %@ is the new account's display name."
-                ),
-                name
-            )
-        }
-
-        static func integrationsDefaultKeep(_ currentName: String) -> String {
-            String.localizedStringWithFormat(
-                NSLocalizedString(
-                    "settings.integrations.default.keep",
-                    value: "No, keep %@",
-                    comment: "Button label that keeps the current default account. %@ is the current default account's name."
-                ),
-                currentName
-            )
-        }
-
-        static let integrationsDefaultSwitch = NSLocalizedString("settings.integrations.default.switch", value: "Yes, switch", comment: "Button label that switches the default to the newly-added account")
-
-        // Empty-state copy — kept from prior stub so the file builds when
-        // a provider has zero accounts and zero pending adds. Used by the
-        // empty-section message inside a provider group.
-        static let integrationsEmptyTitle = NSLocalizedString("settings.integrations.empty.title", value: "No accounts connected", comment: "Empty-state title shown inside a provider group with zero accounts and no pending add")
-        static let integrationsEmptyBody = NSLocalizedString("settings.integrations.empty.body", value: "Tap + Add account to connect.", comment: "Empty-state body shown inside a provider group with zero accounts and no pending add")
 
         // MARK: - Permissions (stub)
 

@@ -12,10 +12,6 @@ struct SettingsWiringView: View {
         SettingsView(model: .init(store: store))
             .onAppear {
                 store.send(.appeared)
-                // Child feature seeds its mock connections lazily on
-                // first appear. When the OAuth layer integrates, this
-                // becomes a keychain + UserPreferences load.
-                store.send(.integrations(.appeared))
             }
     }
 }

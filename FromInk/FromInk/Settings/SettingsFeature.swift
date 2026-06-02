@@ -31,28 +31,22 @@ struct SettingsFeature: Reducer {
         var destination: SettingsDestination?
         var appearance: AppearanceSetting
         var handedness: Handedness
-        /// Child feature state. Always present so the child reducer
-        /// composed via `Scope` can respond to its own actions and
-        /// hold mock seed data across destination switches. The view
-        /// only renders it when `destination == .integrations`.
-        var integrations: IntegrationsFeature.State
-        /// Permissions child state — same always-present pattern as
-        /// `integrations`. View renders only when the destination is
-        /// `.permissions`, but the reducer keeps state warm so a
-        /// re-push doesn't trigger a re-prompt.
+        /// Permissions child state. Always present so the scoped
+        /// reducer can respond to its own actions; the view only
+        /// renders it when `destination == .permissions`, but the
+        /// reducer keeps state warm so a re-push doesn't trigger a
+        /// re-prompt.
         var permissions: PermissionsFeature.State
 
         init(
             destination: SettingsDestination? = nil,
             appearance: AppearanceSetting = .system,
             handedness: Handedness = .right,
-            integrations: IntegrationsFeature.State = IntegrationsFeature.State(),
             permissions: PermissionsFeature.State = PermissionsFeature.State()
         ) {
             self.destination = destination
             self.appearance = appearance
             self.handedness = handedness
-            self.integrations = integrations
             self.permissions = permissions
         }
     }
@@ -68,20 +62,15 @@ struct SettingsFeature: Reducer {
         /// Delegate action — parent intercepts to close the overlay.
         /// SettingsFeature itself returns `.none`.
         case dismissTapped
-        /// Child feature actions. Composed via `Scope`. The parent
-        /// handles destination navigation; the child handles its
-        /// own state machine.
-        case integrations(IntegrationsFeature.Action)
-        /// Permissions child actions — same Scope pattern.
+        /// Permissions child actions. Composed via `Scope`. The parent
+        /// handles destination navigation; the child handles its own
+        /// state machine.
         case permissions(PermissionsFeature.Action)
     }
 
     @Dependency(\.userPreferences) var preferences
 
     var body: some Reducer<State, Action> {
-        Scope(state: \.integrations, action: \.integrations) {
-            IntegrationsFeature()
-        }
         Scope(state: \.permissions, action: \.permissions) {
             PermissionsFeature()
         }
@@ -124,12 +113,6 @@ struct SettingsFeature: Reducer {
                 // Parent intercepts. Reducer is intentionally a no-op
                 // here so presentation state stays owned by the
                 // presenter (HomeFeature).
-                return .none
-
-            case .integrations:
-                // Child actions are fully handled by the IntegrationsFeature
-                // reducer scoped above. Parent passes through; no
-                // parent-side interception needed for V1.
                 return .none
 
             case .permissions:

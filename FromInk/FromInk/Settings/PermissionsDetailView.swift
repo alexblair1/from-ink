@@ -48,7 +48,7 @@ struct PermissionsDetailView: View {
                     Image(systemName: row.icon)
                         .font(.system(size: 17))
                         .foregroundStyle(ds.colors.ink2)
-                        .frame(width: 24)
+                        .frame(width: ds.layout.iconFrame)
 
                     Text(row.title)
                         .font(.system(size: 17, weight: .regular, design: .serif))
@@ -56,33 +56,44 @@ struct PermissionsDetailView: View {
 
                     Spacer()
 
-                    Text(row.statusLabel)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(row.statusColor)
-                        .kerning(0.5)
-                        .textCase(.uppercase)
+                    // Status pill — same MonoLabel treatment as every
+                    // other mono status pill in Settings
+                    // (SettingsRow attention, IntegrationAccountRow
+                    // re-auth, IntegrationPendingRow status). Keeps
+                    // the typographic family tight.
+                    MonoLabel(row.statusLabel, size: 10, color: row.statusColor)
                 }
 
+                // Body description — 13pt serif ink2 matches the
+                // canonical row secondary text (IntegrationAccountRow
+                // email, neutral SettingsRow hints). Italics is kept
+                // here intentionally — it's a descriptive sentence,
+                // not a row title.
                 Text(row.body)
                     .font(.system(size: 13, weight: .regular, design: .serif))
                     .italic()
                     .foregroundStyle(ds.colors.ink2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 24 + ds.spacing.md)
+                    .padding(.leading, bodyIndent)
 
-                Text(row.cta)
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundStyle(ds.colors.ink3)
-                    .kerning(0.4)
-                    .textCase(.uppercase)
-                    .padding(.leading, 24 + ds.spacing.md)
+                // CTA hint — MonoLabel matches the affordance grammar
+                // used by IntegrationAddAccountRow's "+ ADD ACCOUNT".
+                MonoLabel(row.cta, size: 10, color: ds.colors.ink3)
+                    .padding(.leading, bodyIndent)
             }
-            .padding(.horizontal, ds.spacing.base)
+            .padding(.horizontal, ds.spacing.lg)
             .padding(.vertical, ds.spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Indent for the body + CTA so they align with the title (past
+    /// the leading icon column). Derived from the icon frame + spacing
+    /// to keep the layout responsive to design-system changes.
+    private var bodyIndent: CGFloat {
+        ds.layout.iconFrame + ds.spacing.md
     }
 }
 

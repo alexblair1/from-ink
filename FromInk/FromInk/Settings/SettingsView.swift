@@ -37,11 +37,17 @@ struct SettingsView: View {
     private var rootList: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            // Hairline closes off the masthead so the first group
+            // header doesn't feel orphaned from the title above.
+            // Mirrors the IntegrationsListView title-strip treatment
+            // and Dispatch's header/scroll separation.
+            HairlineRule()
 
             ForEach(model.groups) { group in
                 SettingsGroupHeader(title: group.title)
+                HairlineRule()
                 ForEach(group.rows) { row in
-                    SettingsRow(model: row)
+                    SettingsRowView(model: row)
                     HairlineRule()
                 }
             }
@@ -60,7 +66,7 @@ struct SettingsView: View {
 
             IconButton("xmark", size: .footnote, color: ds.colors.ink2, action: model.onDismiss)
         }
-        .padding(.horizontal, ds.spacing.base)
+        .padding(.horizontal, ds.spacing.lg)
         .padding(.vertical, ds.spacing.md)
     }
 
@@ -75,8 +81,6 @@ struct SettingsView: View {
             OptionPickerDetailView(model: model.detailModels.handedness)
         case .themes:
             ThemesDetailView(model: model.detailModels.themes)
-        case .integrations:
-            IntegrationsListView(model: model.detailModels.integrations)
         case .permissions:
             PermissionsDetailView(model: model.detailModels.permissions)
         }
@@ -107,14 +111,13 @@ extension SettingsView {
     struct Group: Identifiable {
         let id: String          // stable key, NOT the localized title
         let title: String       // localized header text
-        let rows: [SettingsRow.Model]
+        let rows: [SettingsRowView.Model]
     }
 
     struct DetailModels {
         let appearance: OptionPickerDetailView<AppearanceSetting>.Model
         let handedness: OptionPickerDetailView<Handedness>.Model
         let themes: ThemesDetailView.Model
-        let integrations: IntegrationsListView.Model
         let permissions: PermissionsDetailView.Model
     }
 }

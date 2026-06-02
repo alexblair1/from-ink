@@ -30,34 +30,32 @@ extension SettingsView.Model {
             }
         )
 
-        // Status hints — live values for settings that have meaningful
-        // current state, nil for stubs. The design's "do I need to
-        // look in here?" principle applied: only show prose when
-        // it answers something.
-        let appearanceStatus: StatusHint = .neutral(store.appearance.label)
-        let handednessStatus: StatusHint = .neutral(store.handedness.label)
+        // Secondary text — neutral prose values that summarize the
+        // current setting at a glance (the "do I need to look in
+        // here?" answer). Nil for stubs without meaningful state.
+        let appearanceLabel = store.appearance.label
+        let handednessLabel = store.handedness.label
 
         self.groups = [
             SettingsView.Group(
                 id: "editor",
                 title: AppStrings.Settings.groupEditor,
                 rows: [
-                    SettingsRow.Model(
-                        id: .appearance,
+                    SettingsRowView.Model(
+                        id: SettingsDestination.appearance.rawValue,
                         title: AppStrings.Settings.appearance,
-                        statusHint: appearanceStatus,
+                        secondaryText: appearanceLabel,
                         onTap: { store.send(.destinationTapped(.appearance)) }
                     ),
-                    SettingsRow.Model(
-                        id: .handedness,
+                    SettingsRowView.Model(
+                        id: SettingsDestination.handedness.rawValue,
                         title: AppStrings.Settings.handedness,
-                        statusHint: handednessStatus,
+                        secondaryText: handednessLabel,
                         onTap: { store.send(.destinationTapped(.handedness)) }
                     ),
-                    SettingsRow.Model(
-                        id: .themes,
+                    SettingsRowView.Model(
+                        id: SettingsDestination.themes.rawValue,
                         title: AppStrings.Settings.themes,
-                        statusHint: nil,
                         onTap: { store.send(.destinationTapped(.themes)) }
                     ),
                 ]
@@ -66,16 +64,9 @@ extension SettingsView.Model {
                 id: "yourData",
                 title: AppStrings.Settings.groupYourData,
                 rows: [
-                    SettingsRow.Model(
-                        id: .integrations,
-                        title: AppStrings.Settings.integrations,
-                        statusHint: nil,
-                        onTap: { store.send(.destinationTapped(.integrations)) }
-                    ),
-                    SettingsRow.Model(
-                        id: .permissions,
+                    SettingsRowView.Model(
+                        id: SettingsDestination.permissions.rawValue,
                         title: AppStrings.Settings.permissions,
-                        statusHint: nil,
                         onTap: { store.send(.destinationTapped(.permissions)) }
                     ),
                 ]
@@ -98,12 +89,6 @@ extension SettingsView.Model {
         )
         let themesHeader = SettingsDetailHeader.Model(
             title: AppStrings.Settings.themes,
-            backLabel: backLabel,
-            onBack: onBack,
-            onDismiss: onDismiss
-        )
-        let integrationsHeader = SettingsDetailHeader.Model(
-            title: AppStrings.Settings.integrations,
             backLabel: backLabel,
             onBack: onBack,
             onDismiss: onDismiss
@@ -142,10 +127,6 @@ extension SettingsView.Model {
                 header: themesHeader,
                 emptyTitle: AppStrings.Settings.themesEmptyTitle,
                 emptyBody: AppStrings.Settings.themesEmptyBody
-            ),
-            integrations: IntegrationsListView.Model(
-                store: store.scope(state: \.integrations, action: \.integrations),
-                header: integrationsHeader
             ),
             permissions: PermissionsDetailView.Model(
                 store: store.scope(state: \.permissions, action: \.permissions),

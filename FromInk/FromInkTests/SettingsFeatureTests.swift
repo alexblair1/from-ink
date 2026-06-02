@@ -63,7 +63,7 @@ final class SettingsFeatureTests: XCTestCase {
     @MainActor
     func test_backTapped_clearsDestination() async {
         var seeded = SettingsFeature.State()
-        seeded.destination = .integrations
+        seeded.destination = .permissions
 
         let store = TestStore(initialState: seeded) {
             SettingsFeature()
