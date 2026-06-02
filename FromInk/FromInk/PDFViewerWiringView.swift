@@ -23,6 +23,12 @@ struct PDFViewerWiringView: View {
                 .fill(ds.colors.rule)
                 .frame(height: ds.layout.borderWidth)
             content
+            if store.isDrawingActive {
+                Rectangle()
+                    .fill(ds.colors.rule)
+                    .frame(height: ds.layout.borderWidth)
+                drawingToolbar
+            }
         }
         .background(ds.colors.paper)
         .ignoresSafeArea(.container, edges: .bottom)
@@ -36,19 +42,31 @@ struct PDFViewerWiringView: View {
 
     private var topBar: some View {
         HStack(spacing: ds.spacing.sm) {
-            Button { store.send(.dismissTapped) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(ds.colors.inkPure)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(AppStrings.Common.cancel)
+            if store.isDrawingActive {
+                drawingTopBar
+            } else if store.search.isActive {
+                Button { store.send(.dismissTapped) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(ds.colors.inkPure)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppStrings.Common.cancel)
 
-            if store.search.isActive {
                 searchFieldGroup
             } else {
+                Button { store.send(.dismissTapped) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(ds.colors.inkPure)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppStrings.Common.cancel)
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text(store.title)
                         .font(ds.typography.cardTitle)
@@ -62,6 +80,16 @@ struct PDFViewerWiringView: View {
                 }
 
                 Spacer()
+
+                Button { store.send(.drawingModeEntered) } label: {
+                    Image(systemName: "pencil.tip.crop.circle")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(ds.colors.inkPure)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppStrings.Library.drawingEnterButton)
 
                 Button { store.send(.searchToggled) } label: {
                     Image(systemName: "magnifyingglass")
@@ -77,6 +105,78 @@ struct PDFViewerWiringView: View {
         .padding(.horizontal, ds.spacing.base)
         .frame(height: 56)
         .background(ds.colors.paper)
+    }
+
+    /// Top-bar chrome during drawing mode — Cancel on the left,
+    /// Done on the right. The dismiss-the-viewer X is hidden so the
+    /// user can't accidentally close the modal mid-draw.
+    private var drawingTopBar: some View {
+        HStack(spacing: ds.spacing.sm) {
+            Button { store.send(.drawingCancelTapped) } label: {
+                Text(AppStrings.Library.drawingCancelButton)
+                    .font(ds.typography.cardTitle)
+                    .foregroundStyle(ds.colors.ink2)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            MonoLabel(pageLabel, size: 10, color: ds.colors.ink2)
+
+            Spacer()
+
+            Button { store.send(.drawingDoneTapped) } label: {
+                Text(AppStrings.Library.drawingDoneButton)
+                    .font(ds.typography.cardTitle)
+                    .foregroundStyle(ds.colors.inkPure)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Bottom toolbar shown while drawing mode is active. Pen + eraser
+    /// only for Phase 5b; 5c adds pencil, highlighter, color, width.
+    private var drawingToolbar: some View {
+        HStack(spacing: ds.spacing.base) {
+            Spacer()
+            drawingToolButton(
+                tool: .pen,
+                systemName: "pencil.tip",
+                label: AppStrings.Library.drawingToolPen
+            )
+            drawingToolButton(
+                tool: .eraser,
+                systemName: "eraser",
+                label: AppStrings.Library.drawingToolEraser
+            )
+            Spacer()
+        }
+        .padding(.horizontal, ds.spacing.base)
+        .frame(height: 56)
+        .background(ds.colors.paper)
+    }
+
+    @ViewBuilder
+    private func drawingToolButton(
+        tool: PDFDrawingTool,
+        systemName: String,
+        label: String
+    ) -> some View {
+        let isActive = store.drawingTool == tool
+        Button { store.send(.drawingToolChanged(tool)) } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(isActive ? ds.colors.paperOnInk : ds.colors.ink)
+                .frame(width: 44, height: 44)
+                .background(isActive ? ds.colors.ink : Color.clear)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     /// Search field + result counter + step chevrons + close button.
@@ -195,6 +295,12 @@ struct PDFViewerWiringView: View {
                 },
                 onCurrentMatchChanged: { index in
                     store.send(.currentMatchChanged(index))
+                },
+                isDrawingActive: store.isDrawingActive,
+                drawingTool: store.drawingTool,
+                drawingCommitTrigger: store.drawingCommitTrigger,
+                onDrawingCommitted: { bytes, bounds, pageIndex in
+                    store.send(.drawingCommitted(bytes: bytes, bounds: bounds, pageIndex: pageIndex))
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

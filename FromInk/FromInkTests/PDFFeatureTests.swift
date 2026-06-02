@@ -365,10 +365,196 @@ final class PDFFeatureTests: XCTestCase {
         }
     }
 
-    // MARK: - Search
-
     private let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
     private let secondUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
+    // MARK: - Drawing mode
+
+    @MainActor
+    func test_drawingModeEntered_setsActiveWithPenDefault() async {
+        var initial = makeState()
+        initial.drawingTool = .eraser
+        initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // Entering resets the tool to `.pen` and clears any stale
+        // commit trigger so a previous session's residue can't fire.
+        await store.send(.drawingModeEntered) {
+            $0.isDrawingActive = true
+            $0.drawingTool = .pen
+            $0.drawingCommitTrigger = nil
+        }
+    }
+
+    @MainActor
+    func test_drawingToolChanged_whileInactive_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingToolChanged(.eraser))
+    }
+
+    @MainActor
+    func test_drawingToolChanged_whileActive_updatesTool() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.drawingToolChanged(.eraser)) {
+            $0.drawingTool = .eraser
+        }
+    }
+
+    @MainActor
+    func test_drawingDoneTapped_firesCommitTrigger() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.uuid = .incrementing
+        }
+
+        await store.send(.drawingDoneTapped) {
+            $0.drawingCommitTrigger = DrawingCommitTrigger(id: self.firstUUID)
+        }
+    }
+
+    @MainActor
+    func test_drawingCancelTapped_exitsWithoutCreate() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+        initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.drawingCancelTapped) {
+            $0.isDrawingActive = false
+            $0.drawingCommitTrigger = nil
+        }
+    }
+
+    @MainActor
+    func test_drawingCommitted_emptyBytes_exitsWithoutCreate() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // Empty drawing — user entered and committed without inking.
+        await store.send(.drawingCommitted(bytes: Data(), bounds: .zero, pageIndex: 0)) {
+            $0.isDrawingActive = false
+            $0.drawingCommitTrigger = nil
+        }
+    }
+
+    @MainActor
+    func test_drawingCommitted_nonEmpty_callsStoreAndAppendsSnapshot() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+        initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
+
+        let drawingBytes = Data([0xAA, 0xBB, 0xCC])
+        let drawingBounds = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.3)
+        let now = Date(timeIntervalSince1970: 1_780_500_000)
+        let snapshot = PDFAnnotationSnapshot(
+            id: UUID(), pdfDocumentID: pdfID,
+            kind: .pencil, createdAt: now, modifiedAt: now,
+            pageIndex: 4, extractedText: "", contents: "",
+            bounds: drawingBounds, color: .blackText,
+            hasInkData: false, inkDataByteSize: nil,
+            pencilDrawing: drawingBytes
+        )
+        let captured = LockIsolated<(UUID, Int, CGRect, Data, PDFAnnotationColor, Date)?>(nil)
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.calendarContext = .fixed(now: now)
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { pdf, page, bounds, bytes, color, capturedNow in
+                    captured.setValue((pdf, page, bounds, bytes, color, capturedNow))
+                    return snapshot
+                },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+
+        await store.send(.drawingCommitted(
+            bytes: drawingBytes, bounds: drawingBounds, pageIndex: 4
+        ))
+        await store.receive(.drawingSnapshotCreated(snapshot)) {
+            $0.annotations = [snapshot]
+            $0.isDrawingActive = false
+            $0.drawingCommitTrigger = nil
+        }
+
+        let call = captured.value!
+        XCTAssertEqual(call.0, pdfID)
+        XCTAssertEqual(call.1, 4)
+        XCTAssertEqual(call.2, drawingBounds)
+        XCTAssertEqual(call.3, drawingBytes)
+        XCTAssertEqual(call.4, .blackText)
+        XCTAssertEqual(call.5, now)
+    }
+
+    @MainActor
+    func test_drawingCommitted_storeThrows_exitsWithFailure() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+        initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.annotationStore = AnnotationStore(
+                listForPDF: { _ in [] },
+                createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in
+                    throw AnnotationStoreError.pdfNotFound(pdfID: UUID())
+                },
+                delete: { _ in throw CancellationError() }
+            )
+        }
+
+        await store.send(.drawingCommitted(
+            bytes: Data([0xAA]),
+            bounds: CGRect(x: 0, y: 0, width: 0.1, height: 0.1),
+            pageIndex: 0
+        ))
+        await store.receive(.drawingCommitFailed) {
+            $0.isDrawingActive = false
+            $0.drawingCommitTrigger = nil
+        }
+    }
+
+    // MARK: - Search
 
     @MainActor
     func test_searchToggled_opensAndClosesAndClearsState() async {

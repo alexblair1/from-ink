@@ -53,6 +53,34 @@ extension AppStrings {
             value: "Remove",
             comment: "Edit-menu action that deletes the tapped PDF annotation"
         )
+
+        // MARK: - Drawing mode
+
+        static let drawingEnterButton = NSLocalizedString(
+            "library.pdfViewer.drawing.enter",
+            value: "Draw",
+            comment: "Accessibility label for the top-bar button that enters drawing mode on the open PDF"
+        )
+        static let drawingDoneButton = NSLocalizedString(
+            "library.pdfViewer.drawing.done",
+            value: "Done",
+            comment: "Button that commits the in-progress drawing and exits drawing mode"
+        )
+        static let drawingCancelButton = NSLocalizedString(
+            "library.pdfViewer.drawing.cancel",
+            value: "Cancel",
+            comment: "Button that discards the in-progress drawing and exits drawing mode"
+        )
+        static let drawingToolPen = NSLocalizedString(
+            "library.pdfViewer.drawing.tool.pen",
+            value: "Pen",
+            comment: "Accessibility label for the pen tool in the PDF drawing toolbar"
+        )
+        static let drawingToolEraser = NSLocalizedString(
+            "library.pdfViewer.drawing.tool.eraser",
+            value: "Eraser",
+            comment: "Accessibility label for the eraser tool in the PDF drawing toolbar"
+        )
         static let searchButton = NSLocalizedString(
             "library.pdfViewer.search.button",
             value: "Search PDF",

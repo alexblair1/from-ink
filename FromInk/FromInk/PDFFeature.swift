@@ -41,6 +41,23 @@ struct GotoMatchTrigger: Equatable, Sendable {
     let direction: Direction
 }
 
+/// One-shot signal asking `PDFCanvas` to serialize its mounted
+/// `PKCanvasView`'s drawing and report the bytes + bounds via
+/// `onDrawingCommitted`. The reducer fires this on `drawingDoneTapped`;
+/// the coordinator does the work imperatively because `PKDrawing`
+/// isn't Sendable.
+struct DrawingCommitTrigger: Equatable, Sendable {
+    let id: UUID
+}
+
+/// Tool selection for the modal PDF drawing toolbar. Phase 5b ships
+/// pen + eraser; pencil / highlighter / lasso land in 5c alongside
+/// color and width pickers.
+enum PDFDrawingTool: Equatable, Sendable {
+    case pen
+    case eraser
+}
+
 /// In-PDF search state. The status machine collapses six flat
 /// bool/int fields into a single discriminated union so impossible
 /// states (`count == 0 && current > 0`, `isActive == false &&
@@ -150,6 +167,22 @@ struct PDFFeature: Reducer {
         /// combinations at the type level.
         var search: PDFSearch = PDFSearch()
 
+        // MARK: - Drawing mode
+
+        /// `true` when the user is in modal drawing mode — a
+        /// `PKCanvasView` overlays the visible page and the bottom
+        /// toolbar replaces normal chrome. While active, search and
+        /// page navigation are locked.
+        var isDrawingActive: Bool = false
+        /// Active drawing tool. Resets to `.pen` on every fresh entry
+        /// into drawing mode so the tool doesn't carry stale state
+        /// across sessions.
+        var drawingTool: PDFDrawingTool = .pen
+        /// One-shot fired by `.drawingDoneTapped`. The canvas
+        /// coordinator serializes its `PKCanvasView` drawing on
+        /// receipt and dispatches `.drawingCommitted`.
+        var drawingCommitTrigger: DrawingCommitTrigger?
+
         enum LoadState: Equatable {
             case loading
             /// Bytes are loaded and ready to hand to PDFKit. Stored as
@@ -213,6 +246,35 @@ struct PDFFeature: Reducer {
         /// Coordinator reports a new visible page. State stores it for
         /// future annotation scoping; today nothing else reads it.
         case pageChanged(Int)
+
+        // MARK: - Drawing mode
+
+        /// User tapped the Draw button in the top bar. Transitions to
+        /// modal drawing mode — mounts the `PKCanvasView` overlay,
+        /// swaps in the drawing chrome.
+        case drawingModeEntered
+        /// User picked a different tool in the drawing toolbar.
+        case drawingToolChanged(PDFDrawingTool)
+        /// User tapped Done. Fires the commit trigger so the canvas
+        /// serializes its drawing.
+        case drawingDoneTapped
+        /// User tapped Cancel. Discards the in-progress drawing and
+        /// exits drawing mode without writing to SwiftData.
+        case drawingCancelTapped
+        /// Canvas reports back from the commit trigger. `bytes` is
+        /// `PKDrawing.dataRepresentation()`; `bounds` is normalized
+        /// 0..1 in the PDF page cropBox; `pageIndex` is the page the
+        /// drawing was placed on. Empty drawings (no strokes) skip
+        /// the create call and just exit drawing mode.
+        case drawingCommitted(bytes: Data, bounds: CGRect, pageIndex: Int)
+        /// `annotationStore.createPencil` succeeded. The snapshot is
+        /// appended to `state.annotations`; drawing mode exits.
+        case drawingSnapshotCreated(PDFAnnotationSnapshot)
+        /// `annotationStore.createPencil` threw. Drawing mode exits
+        /// anyway — the user's intent was to commit, and leaving the
+        /// modal up after a sync error would be more confusing than
+        /// dropping back to the document.
+        case drawingCommitFailed
 
         // MARK: - Search
 
@@ -370,6 +432,62 @@ struct PDFFeature: Reducer {
 
             case .dismissTapped:
                 // Parent owns dismiss — clears the @Presents slot.
+                return .none
+
+            // MARK: - Drawing mode
+
+            case .drawingModeEntered:
+                state.isDrawingActive = true
+                state.drawingTool = .pen
+                state.drawingCommitTrigger = nil
+                return .none
+
+            case .drawingToolChanged(let tool):
+                guard state.isDrawingActive else { return .none }
+                state.drawingTool = tool
+                return .none
+
+            case .drawingDoneTapped:
+                guard state.isDrawingActive else { return .none }
+                state.drawingCommitTrigger = DrawingCommitTrigger(id: uuid())
+                return .none
+
+            case .drawingCancelTapped:
+                state.isDrawingActive = false
+                state.drawingCommitTrigger = nil
+                return .none
+
+            case .drawingCommitted(let bytes, let bounds, let pageIndex):
+                // Empty drawing — user entered drawing mode but didn't
+                // ink anything. Just exit; no SwiftData write.
+                guard !bytes.isEmpty else {
+                    state.isDrawingActive = false
+                    state.drawingCommitTrigger = nil
+                    return .none
+                }
+                let pdfID = state.pdfID
+                let now = cal.now()
+                return .run { send in
+                    do {
+                        let snapshot = try await annotationStore.createPencil(
+                            pdfID, pageIndex, bounds, bytes, .blackText, now
+                        )
+                        await send(.drawingSnapshotCreated(snapshot))
+                    } catch {
+                        log.error("createPencil failed for pdf=\(pdfID, privacy: .public) page=\(pageIndex, privacy: .public): \(error.localizedDescription, privacy: .private)")
+                        await send(.drawingCommitFailed)
+                    }
+                }
+
+            case .drawingSnapshotCreated(let snapshot):
+                state.annotations.append(snapshot)
+                state.isDrawingActive = false
+                state.drawingCommitTrigger = nil
+                return .none
+
+            case .drawingCommitFailed:
+                state.isDrawingActive = false
+                state.drawingCommitTrigger = nil
                 return .none
 
             case .searchToggled:

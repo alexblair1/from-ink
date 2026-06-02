@@ -325,6 +325,21 @@ struct PDFCanvas: UIViewRepresentable {
     let onSearchResults: (_ count: Int, _ currentIndex: Int) -> Void
     /// Fired after a step advances the cursor. New 1-based index.
     let onCurrentMatchChanged: (Int) -> Void
+    /// Whether drawing mode is active. When `true`, the coordinator
+    /// mounts a `PKCanvasView` over the visible page and locks the
+    /// PDFView's scroll/zoom gestures. When it flips back to `false`,
+    /// the canvas is torn down.
+    let isDrawingActive: Bool
+    /// Current drawing tool. The coordinator translates this to a
+    /// `PKTool` on the mounted canvas. Changes mid-drawing don't
+    /// disturb existing strokes.
+    let drawingTool: PDFDrawingTool
+    /// One-shot — when a new id arrives the coordinator serializes
+    /// the canvas's drawing and fires `onDrawingCommitted`.
+    let drawingCommitTrigger: DrawingCommitTrigger?
+    /// Fired after commit-trigger consumption with the PKDrawing
+    /// bytes + normalized bounds + page index.
+    let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -342,7 +357,8 @@ struct PDFCanvas: UIViewRepresentable {
         context.coordinator.refreshCallbacks(
             onDelete: onAnnotationDeleteRequested,
             onSearchResults: onSearchResults,
-            onCurrentMatchChanged: onCurrentMatchChanged
+            onCurrentMatchChanged: onCurrentMatchChanged,
+            onDrawingCommitted: onDrawingCommitted
         )
 
         // First-time annotation install — updateUIView also runs the
@@ -384,13 +400,27 @@ struct PDFCanvas: UIViewRepresentable {
         context.coordinator.refreshCallbacks(
             onDelete: onAnnotationDeleteRequested,
             onSearchResults: onSearchResults,
-            onCurrentMatchChanged: onCurrentMatchChanged
+            onCurrentMatchChanged: onCurrentMatchChanged,
+            onDrawingCommitted: onDrawingCommitted
         )
 
         // Sync search-active edges. The coordinator drops its cached
         // results on the active → inactive transition so a stale
         // selection doesn't survive a close-reopen.
         context.coordinator.setSearchActive(isSearchActive)
+
+        // Sync drawing-active edges. On open: mount PKCanvasView over
+        // the visible page, lock PDFView gestures. On close: tear
+        // down. The coordinator handles the actual mount lifecycle so
+        // the SwiftUI struct stays declarative.
+        context.coordinator.setDrawingActive(isDrawingActive, tool: drawingTool, in: uiView)
+
+        // Consume a fresh drawing-commit trigger.
+        if let trigger = drawingCommitTrigger,
+           trigger.id != context.coordinator.lastConsumedCommitTriggerID {
+            context.coordinator.lastConsumedCommitTriggerID = trigger.id
+            context.coordinator.commitDrawing(in: uiView)
+        }
 
         // Reconcile annotations on every SwiftUI re-render driven by
         // state changes (annotations loaded, new highlight created).
@@ -447,6 +477,7 @@ struct PDFCanvas: UIViewRepresentable {
         var lastConsumedHighlightTriggerID: UUID?
         var lastConsumedSearchTriggerID: UUID?
         var lastConsumedGotoTriggerID: UUID?
+        var lastConsumedCommitTriggerID: UUID?
 
         /// Weak reference back to the host PDFView so the edit-menu
         /// interaction can convert page-space tap points to view-space
@@ -472,6 +503,24 @@ struct PDFCanvas: UIViewRepresentable {
         private var onDelete: ((UUID) -> Void)?
         private var onSearchResults: ((Int, Int) -> Void)?
         private var onCurrentMatchChanged: ((Int) -> Void)?
+        private var onDrawingCommitted: ((Data, CGRect, Int) -> Void)?
+
+        // MARK: - Drawing mode
+
+        /// The mounted `PKCanvasView` while drawing mode is active.
+        /// `nil` when inactive — `setDrawingActive(true, ...)` creates
+        /// and mounts; `setDrawingActive(false, ...)` removes.
+        private var drawingCanvas: PKCanvasView?
+        /// The PDF page the drawing canvas is anchored to. Captured
+        /// at mount time so the commit path can normalize the drawing
+        /// bounds against the right page's cropBox even if the user
+        /// somehow scrolled to a new page mid-draw (shouldn't happen
+        /// with the gesture lock, but the captured value is defensive).
+        private var drawingPage: PDFPage?
+        private var drawingPageIndex: Int = 0
+        /// Saved PDFView gesture state so `setDrawingActive(false, ...)`
+        /// can restore the pre-drawing-mode interaction model.
+        private var savedPDFViewInteractionEnabled: Bool = true
 
         // MARK: - Search
 
@@ -520,11 +569,13 @@ struct PDFCanvas: UIViewRepresentable {
         func refreshCallbacks(
             onDelete: @escaping (UUID) -> Void,
             onSearchResults: @escaping (Int, Int) -> Void,
-            onCurrentMatchChanged: @escaping (Int) -> Void
+            onCurrentMatchChanged: @escaping (Int) -> Void,
+            onDrawingCommitted: @escaping (Data, CGRect, Int) -> Void
         ) {
             self.onDelete = onDelete
             self.onSearchResults = onSearchResults
             self.onCurrentMatchChanged = onCurrentMatchChanged
+            self.onDrawingCommitted = onDrawingCommitted
         }
 
         /// Resets the search machinery. Called from `runSearch` on
@@ -707,6 +758,143 @@ struct PDFCanvas: UIViewRepresentable {
             selectionOwnedBySearch = true
             onCurrentMatchChanged?(currentMatchIndex + 1)
         }
+
+        // MARK: - Drawing mode
+
+        /// Tracks drawing-active edges. On false → true: mounts a
+        /// `PKCanvasView` over the currently visible page and locks
+        /// the PDFView's gestures so the user can't scroll/zoom
+        /// mid-draw. On true → false (without commit): tears the
+        /// canvas down. Tool switches while active mutate the mounted
+        /// canvas's `tool` in place — no remount.
+        private var drawingActive: Bool = false
+        func setDrawingActive(_ active: Bool, tool: PDFDrawingTool, in pdfView: PDFView) {
+            if active, !drawingActive {
+                mountDrawingCanvas(tool: tool, in: pdfView)
+            } else if !active, drawingActive {
+                teardownDrawingCanvas(in: pdfView)
+            } else if active, let canvas = drawingCanvas {
+                // Tool changed mid-draw — update in place.
+                canvas.tool = pkTool(for: tool)
+            }
+            drawingActive = active
+        }
+
+        private func mountDrawingCanvas(tool: PDFDrawingTool, in pdfView: PDFView) {
+            guard let page = pdfView.currentPage,
+                  let document = pdfView.document
+            else { return }
+
+            // Page bounds in PDF user-space — what `PKCanvasView`
+            // strokes will live in once we set the matching frame.
+            let pageBounds = page.bounds(for: .cropBox)
+            // Convert page-space rect into PDFView-local view-space
+            // for the actual subview frame.
+            let topLeftInView = pdfView.convert(
+                CGPoint(x: pageBounds.minX, y: pageBounds.maxY),
+                from: page
+            )
+            let bottomRightInView = pdfView.convert(
+                CGPoint(x: pageBounds.maxX, y: pageBounds.minY),
+                from: page
+            )
+            let frameInView = CGRect(
+                x: topLeftInView.x,
+                y: topLeftInView.y,
+                width: bottomRightInView.x - topLeftInView.x,
+                height: bottomRightInView.y - topLeftInView.y
+            )
+
+            let canvas = PKCanvasView(frame: frameInView)
+            canvas.backgroundColor = .clear
+            canvas.isOpaque = false
+            canvas.drawingPolicy = .pencilOnly
+            canvas.tool = pkTool(for: tool)
+            // PKCanvasView is itself a scroll view — disable its own
+            // pan/zoom so only the strokes are captured.
+            canvas.minimumZoomScale = 1
+            canvas.maximumZoomScale = 1
+            canvas.isScrollEnabled = false
+
+            pdfView.addSubview(canvas)
+
+            drawingCanvas = canvas
+            drawingPage = page
+            drawingPageIndex = document.index(for: page)
+
+            // Lock PDFView interaction so finger scroll can't navigate
+            // mid-draw. Pencil still reaches the overlay since
+            // PKCanvasView is the topmost view.
+            savedPDFViewInteractionEnabled = pdfView.isUserInteractionEnabled
+            pdfView.isUserInteractionEnabled = true   // keep gestures alive for the overlay
+            pdfView.documentView?.isUserInteractionEnabled = false
+        }
+
+        private func teardownDrawingCanvas(in pdfView: PDFView) {
+            drawingCanvas?.removeFromSuperview()
+            drawingCanvas = nil
+            drawingPage = nil
+            drawingPageIndex = 0
+            pdfView.documentView?.isUserInteractionEnabled = savedPDFViewInteractionEnabled
+        }
+
+        /// Triggered by `drawingCommitTrigger`. Serializes the
+        /// mounted canvas's drawing, computes normalized bounds
+        /// against the captured page, and reports the bytes via
+        /// `onDrawingCommitted`. Empty drawings still report (with
+        /// empty bytes) so the reducer can exit drawing mode
+        /// uniformly.
+        func commitDrawing(in pdfView: PDFView) {
+            guard let canvas = drawingCanvas,
+                  let page = drawingPage
+            else {
+                // Trigger arrived without a mounted canvas — defensive
+                // exit. The reducer's guard on isDrawingActive should
+                // prevent this, but report empty bytes so the
+                // reducer's `.drawingCommitted` path can still exit.
+                onDrawingCommitted?(Data(), .zero, drawingPageIndex)
+                return
+            }
+
+            let drawing = canvas.drawing
+            let pageIndex = drawingPageIndex
+
+            if drawing.strokes.isEmpty {
+                onDrawingCommitted?(Data(), .zero, pageIndex)
+                teardownDrawingCanvas(in: pdfView)
+                return
+            }
+
+            // PKCanvasView strokes live in PKCanvasView-local
+            // coordinate space. The canvas's frame matches the page's
+            // view-space bounds — so the drawing's bounds are already
+            // in page-local space, modulo a translation by the canvas
+            // origin. Use the canvas frame to recover that offset.
+            //
+            // For the normalized bounds: pull them against the page's
+            // cropBox so render-time denormalize lines up.
+            let drawingBoundsInCanvas = drawing.bounds
+            let pageBounds = page.bounds(for: .cropBox)
+            let normalized = normalize(drawingBoundsInCanvas, in: page)
+
+            let bytes = drawing.dataRepresentation()
+            log.info("Committed pencil drawing on page \(pageIndex, privacy: .public): \(bytes.count, privacy: .public) bytes, bounds \(String(describing: drawingBoundsInCanvas), privacy: .public) within page \(String(describing: pageBounds), privacy: .public)")
+
+            onDrawingCommitted?(bytes, normalized, pageIndex)
+            teardownDrawingCanvas(in: pdfView)
+        }
+
+        /// Maps our `PDFDrawingTool` to a PencilKit `PKTool`. Phase 5b
+        /// ships pen (black, 2pt) + bitmap eraser; 5c adds pencil,
+        /// highlighter, and the color / width controls.
+        private func pkTool(for tool: PDFDrawingTool) -> PKTool {
+            switch tool {
+            case .pen:
+                return PKInkingTool(.pen, color: .black, width: 2)
+            case .eraser:
+                return PKEraserTool(.bitmap)
+            }
+        }
     }
 }
 
@@ -756,6 +944,11 @@ struct PDFContent: View {
     let onSearchResults: (_ count: Int, _ currentIndex: Int) -> Void
     /// Fired after the canvas advances its match cursor.
     let onCurrentMatchChanged: (Int) -> Void
+    /// Drawing-mode pass-throughs from the wiring view.
+    let isDrawingActive: Bool
+    let drawingTool: PDFDrawingTool
+    let drawingCommitTrigger: DrawingCommitTrigger?
+    let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
 
     @State private var parseResult: ParseResult = .parsing
     /// Bumped on every highlight-button tap so `PDFCanvas` re-runs
@@ -782,24 +975,7 @@ struct PDFContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .parsed(let document):
-                ZStack(alignment: .bottomTrailing) {
-                    PDFCanvas(
-                        document: document,
-                        annotations: annotations,
-                        currentPage: $currentPage,
-                        highlightTrigger: highlightTrigger,
-                        onHighlightExtracted: onHighlightExtracted,
-                        onAnnotationDeleteRequested: onAnnotationDeleteRequested,
-                        isSearchActive: isSearchActive,
-                        searchTrigger: searchTrigger,
-                        gotoMatchTrigger: gotoMatchTrigger,
-                        onSearchResults: onSearchResults,
-                        onCurrentMatchChanged: onCurrentMatchChanged
-                    )
-
-                    highlightButton
-                        .padding(DesignSystem.standard.spacing.lg)
-                }
+                parsedBody(document: document)
 
             case .failed:
                 VStack(spacing: DesignSystem.standard.spacing.base) {
@@ -832,6 +1008,41 @@ struct PDFContent: View {
                 parseResult = .parsed(document)
             } else {
                 parseResult = .failed
+            }
+        }
+    }
+
+    /// Extracted from `body` to relieve the SwiftUI type-checker —
+    /// the inline `switch` arm with a 14-argument `PDFCanvas` plus a
+    /// conditional overlay was sitting right at the type-inference
+    /// ceiling.
+    @ViewBuilder
+    private func parsedBody(document: PDFKit.PDFDocument) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            PDFCanvas(
+                document: document,
+                annotations: annotations,
+                currentPage: $currentPage,
+                highlightTrigger: highlightTrigger,
+                onHighlightExtracted: onHighlightExtracted,
+                onAnnotationDeleteRequested: onAnnotationDeleteRequested,
+                isSearchActive: isSearchActive,
+                searchTrigger: searchTrigger,
+                gotoMatchTrigger: gotoMatchTrigger,
+                onSearchResults: onSearchResults,
+                onCurrentMatchChanged: onCurrentMatchChanged,
+                isDrawingActive: isDrawingActive,
+                drawingTool: drawingTool,
+                drawingCommitTrigger: drawingCommitTrigger,
+                onDrawingCommitted: onDrawingCommitted
+            )
+
+            // Hide the floating highlight button while in drawing
+            // mode so it doesn't compete with the bottom toolbar for
+            // taps.
+            if !isDrawingActive {
+                highlightButton
+                    .padding(DesignSystem.standard.spacing.lg)
             }
         }
     }
