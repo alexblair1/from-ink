@@ -1,6 +1,9 @@
 import Foundation
 import CoreGraphics
 import SwiftData
+import os
+
+private let log = Logger(subsystem: "com.fromink.app", category: "PDFAnnotation")
 
 /// Annotation belonging to a `ImportedPDF`. Anchors to a PDF page
 /// index rather than a `NotePage` because PDF pages don't have stable
@@ -16,13 +19,15 @@ import SwiftData
 /// payload invariant by signature. The raw `init` exists for SwiftData
 /// model identity and is **not** the recommended construction path; it
 /// permits all field combinations and the resulting record may fail
-/// `validatePayload()`.
+/// `validatePayload()`. The raw init's `createdAt` has no default —
+/// callers must source it from `CalendarContext.now()` rather than
+/// bare `Date()`.
 ///
-/// **Mutation contract.** All mutations go through `AnnotationStore`
-/// (forthcoming). The store is responsible for bumping `modifiedAt`
-/// via `CalendarContext.now()` on every write. Direct property
-/// assignment on a fetched `PDFAnnotation` will **not** automatically
-/// update `modifiedAt`, breaking CloudKit's last-writer-wins conflict
+/// **Mutation contract.** All mutations go through `AnnotationStore`.
+/// The store is responsible for bumping `modifiedAt` via
+/// `CalendarContext.now()` on every write. Direct property assignment
+/// on a fetched `PDFAnnotation` will **not** automatically update
+/// `modifiedAt`, breaking CloudKit's last-writer-wins conflict
 /// resolution. There's no `didSet` observer on `modifiedAt` because
 /// the dates EDD bans bare `Date()` outside `CalendarContext.liveValue`
 /// — the property observer can't reach the calendar dependency.
@@ -46,9 +51,9 @@ import SwiftData
 
     /// Annotation kind discriminator. Stored as raw String for CloudKit;
     /// exposed via the computed `kind` bridge below. Defaults to
-    /// `.highlight` so a row created without an explicit kind reads as
-    /// a highlight rather than crashing the rendering pipeline.
-    var kindRaw: String = AnnotationKind.highlight.rawValue
+    /// `defaultKind` so a row created without an explicit kind reads
+    /// as a highlight rather than crashing the rendering pipeline.
+    var kindRaw: String = PDFAnnotation.defaultKind.rawValue
 
     var pageIndex: Int = 0
     var extractedText: String = ""
@@ -91,20 +96,29 @@ import SwiftData
 
     var pdfDocument: ImportedPDF?
 
+    /// Single-source default kind. Factories and the property default
+    /// on `kindRaw` both reference this so a future schema rename
+    /// can't drift the default out from under existing rows.
+    static let defaultKind: AnnotationKind = .highlight
+
     /// **Internal — prefer the kind-specific factories.** This init
     /// permits all field combinations (including `kind = .highlight`
     /// with `inkData` set, which is logically broken). SwiftData
     /// requires an init signature shaped like this for model identity;
     /// callers should reach for `.highlight(...)`, `.ink(...)`, etc.
+    ///
+    /// `createdAt` has no default — bare `Date()` is banned outside
+    /// `CalendarContext.liveValue` per the dates EDD. Callers must
+    /// pass a calendar-derived value.
     init(
         id: UUID = UUID(),
-        kind: AnnotationKind = .highlight,
+        kind: AnnotationKind = PDFAnnotation.defaultKind,
         extractedText: String = "",
         pageIndex: Int = 0,
         contents: String = "",
         bounds: CGRect = .zero,
         color: PDFAnnotationColor = .yellowHighlight,
-        createdAt: Date = Date(),
+        createdAt: Date,
         pdfDocument: ImportedPDF? = nil
     ) {
         self.id = id
@@ -125,10 +139,19 @@ import SwiftData
         self.pdfDocument = pdfDocument
     }
 
-    /// Annotation kind. Falls back to `.highlight` if the raw value is
-    /// somehow unrecognized (corruption / cross-version sync race).
+    /// Annotation kind. Falls back to `defaultKind` if the raw value
+    /// is unrecognized (corruption / cross-version sync race). The
+    /// fallback is logged because masking a bad raw value silently
+    /// would hide a real schema-drift bug; the user sees the row
+    /// render as a highlight rather than nothing.
     var kind: AnnotationKind {
-        get { AnnotationKind(rawValue: kindRaw) ?? .highlight }
+        get {
+            if let kind = AnnotationKind(rawValue: kindRaw) { return kind }
+            let badID = self.id
+            let badRaw = self.kindRaw
+            log.warning("PDFAnnotation \(badID, privacy: .public) has unrecognized kindRaw=\(badRaw, privacy: .public); falling back to \(PDFAnnotation.defaultKind.rawValue, privacy: .public)")
+            return PDFAnnotation.defaultKind
+        }
         set { kindRaw = newValue.rawValue }
     }
 

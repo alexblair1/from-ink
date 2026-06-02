@@ -61,9 +61,10 @@ private func reconcileAnnotations(
         }
     }
 
-    // Phase 4a is create-only — annotations are immutable for v1.
-    // Phase 4b adds the update path here when edit-color / edit-bounds
-    // ships.
+    // Update path lands when edit-color / edit-bounds ships — today
+    // an existing annotation never changes shape, so remove+add isn't
+    // exercised on edits. New highlights flow through as adds; the
+    // delete path strips via id match.
 }
 
 /// Builds a `PDFKit.PDFAnnotation` from one of our snapshots. Returns
@@ -159,12 +160,13 @@ private func extractHighlightLines(
         // A line selection belongs to exactly one page; take the
         // first.
         guard let page = lineSelection.pages.first,
-              let pageIndex = document.index(for: page) as Int?
+              let pageIndex = document.index(for: page) as Int?,
+              let text = lineSelection.string,
+              !text.isEmpty
         else { continue }
 
         let rawBounds = lineSelection.bounds(for: page)
         let normalized = normalize(rawBounds, in: page)
-        let text = lineSelection.string ?? ""
 
         lines.append(HighlightLine(
             pageIndex: pageIndex,
@@ -217,6 +219,11 @@ struct PDFCanvas: UIViewRepresentable {
     /// "Remove" from the edit menu. Parent dispatches to
     /// `PDFFeature.deleteAnnotation(id)`.
     let onAnnotationDeleteRequested: (UUID) -> Void
+    /// Whether the parent's search affordance is open. When it flips
+    /// from `true` to `false`, the coordinator drops its cached
+    /// `[PDFSelection]` and any search-owned current selection — no
+    /// stale match-highlight survives a close-reopen.
+    let isSearchActive: Bool
     /// Latest search request. When a new id arrives, the coordinator
     /// runs `findString` on the document, caches the selections, and
     /// jumps to the first match. Stable across renders means "no new
@@ -240,10 +247,16 @@ struct PDFCanvas: UIViewRepresentable {
         view.backgroundColor = UIColor(Color.canvas)
         view.document = document
 
-        // Tell the coordinator about the host view so the edit-menu
-        // interaction has a UIView to attach to and can present the
-        // menu anchored at the tap location.
-        context.coordinator.attach(pdfView: view, onDelete: onAnnotationDeleteRequested)
+        // Tell the coordinator about the host view + the latest
+        // callbacks. `attach` updates the closure refs on every render
+        // through `refreshCallbacks` — the edit-menu interaction
+        // install only happens once.
+        context.coordinator.attach(pdfView: view)
+        context.coordinator.refreshCallbacks(
+            onDelete: onAnnotationDeleteRequested,
+            onSearchResults: onSearchResults,
+            onCurrentMatchChanged: onCurrentMatchChanged
+        )
 
         // First-time annotation install — updateUIView also runs the
         // reconcile, but on initial render the annotations array may
@@ -274,6 +287,24 @@ struct PDFCanvas: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: PDFView, context: Context) {
+        // Refresh the callback closures — `makeUIView` only fires
+        // once but `PDFCanvas` is value-typed and re-created on every
+        // SwiftUI re-render. Without this refresh, a delete tap would
+        // call the closure captured at first mount (and indirectly its
+        // store reference); promoting closures to `var` on the
+        // coordinator means a future refactor that captures scalars
+        // doesn't silently break.
+        context.coordinator.refreshCallbacks(
+            onDelete: onAnnotationDeleteRequested,
+            onSearchResults: onSearchResults,
+            onCurrentMatchChanged: onCurrentMatchChanged
+        )
+
+        // Sync search-active edges. The coordinator drops its cached
+        // results on the active → inactive transition so a stale
+        // selection doesn't survive a close-reopen.
+        context.coordinator.setSearchActive(isSearchActive)
+
         // Reconcile annotations on every SwiftUI re-render driven by
         // state changes (annotations loaded, new highlight created).
         // Diff-by-id keeps the common case cheap.
@@ -288,7 +319,8 @@ struct PDFCanvas: UIViewRepresentable {
             processHighlight(in: uiView)
         }
 
-        // Consume a fresh search trigger.
+        // Consume a fresh search trigger — runs `findString` off
+        // MainActor.
         if let trigger = searchTrigger,
            trigger.id != context.coordinator.lastConsumedSearchTriggerID {
             context.coordinator.lastConsumedSearchTriggerID = trigger.id
@@ -319,11 +351,7 @@ struct PDFCanvas: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            currentPage: $currentPage,
-            onSearchResults: onSearchResults,
-            onCurrentMatchChanged: onCurrentMatchChanged
-        )
+        Coordinator(currentPage: $currentPage)
     }
 
     @MainActor
@@ -346,16 +374,19 @@ struct PDFCanvas: UIViewRepresentable {
         /// Mail. Created lazily on first attach.
         private var editMenuInteraction: UIEditMenuInteraction?
 
-        /// Callback to surface the user's "Remove" choice back to TCA.
-        /// Re-attached on every `makeUIView` / re-render so the latest
-        /// closure (and the latest store reference) wins.
-        private var onDelete: ((UUID) -> Void)?
+        // MARK: - Callbacks (refreshed every render)
 
-        /// The annotation the user just tapped — captured here so the
-        /// menu builder in `editMenuInteraction(_:menuFor:)` can read
-        /// it without threading state through the configuration's
-        /// identifier. Cleared after the menu dismisses.
-        private var pendingAnnotationID: UUID?
+        /// All three callbacks are `var` and refreshed in
+        /// `updateUIView` via `refreshCallbacks` so a future caller
+        /// that captures scalar state from the store (not the store
+        /// itself) doesn't end up calling a closure pinned to the
+        /// first render's value. `var` over `let` is the architectural
+        /// guarantee here.
+        private var onDelete: ((UUID) -> Void)?
+        private var onSearchResults: ((Int, Int) -> Void)?
+        private var onCurrentMatchChanged: ((Int) -> Void)?
+
+        // MARK: - Search
 
         /// Search results from the last `findString` run. Coordinator
         /// owns these since `PDFSelection` is a non-Sendable reference
@@ -364,18 +395,14 @@ struct PDFCanvas: UIViewRepresentable {
         /// 0-based index into `searchSelections` for the currently
         /// anchored match. -1 when there are no results.
         private var currentMatchIndex: Int = -1
+        /// `true` when the PDFView's current selection was set by the
+        /// search machinery (via `setCurrentSelection`). Lets the
+        /// no-match cleanup path clear search-owned selections
+        /// without stomping a user-made text selection.
+        private var selectionOwnedBySearch: Bool = false
 
-        private let onSearchResults: (Int, Int) -> Void
-        private let onCurrentMatchChanged: (Int) -> Void
-
-        init(
-            currentPage: Binding<Int>,
-            onSearchResults: @escaping (Int, Int) -> Void,
-            onCurrentMatchChanged: @escaping (Int) -> Void
-        ) {
+        init(currentPage: Binding<Int>) {
             self.currentPage = currentPage
-            self.onSearchResults = onSearchResults
-            self.onCurrentMatchChanged = onCurrentMatchChanged
         }
 
         deinit {
@@ -385,18 +412,59 @@ struct PDFCanvas: UIViewRepresentable {
             NotificationCenter.default.removeObserver(self)
         }
 
-        /// Called from `PDFCanvas.makeUIView`. Caches the host view and
-        /// the latest delete callback, and installs the edit-menu
-        /// interaction on first attach. Safe to call again on re-render
-        /// — only the callback updates after first install.
-        func attach(pdfView: PDFView, onDelete: @escaping (UUID) -> Void) {
+        /// One-time install — caches the host view and adds the
+        /// `UIEditMenuInteraction`. Callable repeatedly: subsequent
+        /// calls re-point the weak `pdfView` (idempotent) but skip
+        /// re-installing the interaction.
+        func attach(pdfView: PDFView) {
             self.pdfView = pdfView
-            self.onDelete = onDelete
 
             if editMenuInteraction == nil {
                 let interaction = UIEditMenuInteraction(delegate: self)
                 pdfView.addInteraction(interaction)
                 editMenuInteraction = interaction
+            }
+        }
+
+        /// Refreshes the per-render callback closures. Called from
+        /// both `makeUIView` (first render) and `updateUIView` (every
+        /// subsequent render) so a stale closure can never persist
+        /// past one frame.
+        func refreshCallbacks(
+            onDelete: @escaping (UUID) -> Void,
+            onSearchResults: @escaping (Int, Int) -> Void,
+            onCurrentMatchChanged: @escaping (Int) -> Void
+        ) {
+            self.onDelete = onDelete
+            self.onSearchResults = onSearchResults
+            self.onCurrentMatchChanged = onCurrentMatchChanged
+        }
+
+        /// Resets the search machinery. Called from `runSearch` on
+        /// query-with-no-matches and via `setSearchActive(false)` so
+        /// the reducer's close-search path can wipe the coordinator's
+        /// cached `[PDFSelection]`.
+        func clearSearch() {
+            searchSelections = []
+            currentMatchIndex = -1
+            if selectionOwnedBySearch {
+                pdfView?.clearSelection()
+                selectionOwnedBySearch = false
+            }
+        }
+
+        /// Tracks whether the parent's search affordance is open.
+        /// Calls `clearSearch` on the open → closed edge so closing
+        /// the search bar tears down the result list and any
+        /// search-owned current selection. Idempotent across renders.
+        private var searchActive: Bool = false
+        func setSearchActive(_ active: Bool) {
+            let wasActive = searchActive
+            searchActive = active
+            if wasActive, !active {
+                clearSearch()
+                lastConsumedSearchTriggerID = nil
+                lastConsumedGotoTriggerID = nil
             }
         }
 
@@ -412,6 +480,11 @@ struct PDFCanvas: UIViewRepresentable {
         /// Filters for annotations we authored (stamped with
         /// `FromInkID`); embedded annotations from the source PDF are
         /// ignored so user "Remove" can't touch them.
+        ///
+        /// The tapped annotation's UUID rides on the
+        /// `UIEditMenuConfiguration.identifier` rather than via
+        /// instance state — that way two near-simultaneous hits can't
+        /// race against a shared `pendingAnnotationID`.
         @objc func annotationDidHit(_ notification: Notification) {
             guard let view = notification.object as? PDFView,
                   let annotation = notification.userInfo?["PDFAnnotationHit"] as? PDFKit.PDFAnnotation,
@@ -430,7 +503,6 @@ struct PDFCanvas: UIViewRepresentable {
             )
             let anchorInView = view.convert(anchorInPage, from: page)
 
-            pendingAnnotationID = id
             let config = UIEditMenuConfiguration(
                 identifier: id.uuidString as NSString,
                 sourcePoint: anchorInView
@@ -446,14 +518,20 @@ struct PDFCanvas: UIViewRepresentable {
             suggestedActions: [UIMenuElement]
         ) -> UIMenu? {
             MainActor.assumeIsolated {
-                guard let id = pendingAnnotationID else { return nil }
+                // Identifier was stamped in `annotationDidHit`. Reading
+                // here instead of instance state means two near-
+                // simultaneous hits each carry their own id through
+                // their own configuration.
+                guard let idString = configuration.identifier as? String,
+                      let id = UUID(uuidString: idString)
+                else { return nil }
+
                 let remove = UIAction(
                     title: AppStrings.Library.annotationRemoveAction,
                     image: UIImage(systemName: "trash"),
                     attributes: .destructive
                 ) { [weak self] _ in
                     self?.onDelete?(id)
-                    self?.pendingAnnotationID = nil
                 }
                 // Suggested actions cover copy/lookup/share — keep them
                 // so the menu still feels like the system one; append
@@ -462,43 +540,64 @@ struct PDFCanvas: UIViewRepresentable {
             }
         }
 
-        nonisolated func editMenuInteraction(
-            _ interaction: UIEditMenuInteraction,
-            willDismissMenuFor configuration: UIEditMenuConfiguration,
-            animator: any UIEditMenuInteractionAnimating
-        ) {
-            MainActor.assumeIsolated {
-                pendingAnnotationID = nil
-            }
-        }
-
         // MARK: - Search
 
         /// Runs `findString` against the current document and jumps the
-        /// PDFView to the first match. `findString` is synchronous in
-        /// PDFKit but fast even for large PDFs; if performance becomes
-        /// an issue we can switch to `beginFindString` and the async
-        /// `PDFViewDocumentMatchFound` notification stream.
+        /// PDFView to the first match. The find runs on a detached task
+        /// so a large-document search doesn't freeze the MainActor;
+        /// `PDFDocument.findString` is documented thread-safe. The
+        /// jump + `setCurrentSelection` hops back to MainActor.
+        ///
+        /// Search is case-insensitive AND diacritic-insensitive so
+        /// "cafe" matches "café" — what users expect from a system
+        /// reader.
         func runSearch(query: String, in pdfView: PDFView) {
             guard let document = pdfView.document else {
-                searchSelections = []
-                currentMatchIndex = -1
-                onSearchResults(0, 0)
+                clearSearch()
+                onSearchResults?(0, 0)
                 return
             }
 
-            let matches = document.findString(query, withOptions: .caseInsensitive)
+            Task { [weak self, weak pdfView] in
+                let matches = await Task.detached(priority: .userInitiated) {
+                    document.findString(
+                        query,
+                        withOptions: [.caseInsensitive, .diacriticInsensitive]
+                    )
+                }.value
+
+                guard let self, let pdfView else { return }
+                self.applySearchResults(matches, in: pdfView)
+            }
+        }
+
+        /// MainActor follow-up after the detached find. Reads-and-
+        /// writes the coordinator's per-render search state. Split
+        /// from `runSearch` so the off-actor task captures the minimum
+        /// needed.
+        private func applySearchResults(
+            _ matches: [PDFSelection],
+            in pdfView: PDFView
+        ) {
             searchSelections = matches
 
             if let first = matches.first {
                 currentMatchIndex = 0
                 pdfView.go(to: first)
                 pdfView.setCurrentSelection(first, animate: false)
-                onSearchResults(matches.count, 1)
+                selectionOwnedBySearch = true
+                onSearchResults?(matches.count, 1)
             } else {
                 currentMatchIndex = -1
-                pdfView.clearSelection()
-                onSearchResults(0, 0)
+                // Only clear if we own the selection — a user mid-
+                // text-select shouldn't lose their selection because
+                // the search bar happens to be open with a non-
+                // matching query.
+                if selectionOwnedBySearch {
+                    pdfView.clearSelection()
+                    selectionOwnedBySearch = false
+                }
+                onSearchResults?(0, 0)
             }
         }
 
@@ -518,7 +617,8 @@ struct PDFCanvas: UIViewRepresentable {
             let selection = searchSelections[currentMatchIndex]
             pdfView.go(to: selection)
             pdfView.setCurrentSelection(selection, animate: false)
-            onCurrentMatchChanged(currentMatchIndex + 1)
+            selectionOwnedBySearch = true
+            onCurrentMatchChanged?(currentMatchIndex + 1)
         }
     }
 }
@@ -556,6 +656,9 @@ struct PDFContent: View {
     /// "Remove" from the edit menu. Parent dispatches to
     /// `PDFFeature.deleteAnnotation(id)`.
     let onAnnotationDeleteRequested: (UUID) -> Void
+    /// Whether the parent's search affordance is open. Closing the
+    /// affordance signals the canvas to clear its cached results.
+    let isSearchActive: Bool
     /// Latest search request from the parent reducer. `nil` between
     /// submissions.
     let searchTrigger: SearchTrigger?
@@ -600,6 +703,7 @@ struct PDFContent: View {
                         highlightTrigger: highlightTrigger,
                         onHighlightExtracted: onHighlightExtracted,
                         onAnnotationDeleteRequested: onAnnotationDeleteRequested,
+                        isSearchActive: isSearchActive,
                         searchTrigger: searchTrigger,
                         gotoMatchTrigger: gotoMatchTrigger,
                         onSearchResults: onSearchResults,
@@ -645,12 +749,13 @@ struct PDFContent: View {
         }
     }
 
-    /// Floating highlighter button. Always enabled — Phase 4b
-    /// deliberately skips selection-state tracking (PDFView doesn't
-    /// expose a clean "selection changed" hook short of polling).
-    /// Tap with no selection is a silent no-op; tap with selection
-    /// fires the extract pipeline. Users learn the contract on first
-    /// try.
+    /// Floating highlighter button. **Known UX issue**: the button is
+    /// always tappable but requires a text selection first — tap with
+    /// no selection is a silent no-op. Phase 5 replaces this whole
+    /// affordance with toolbar-driven ink + a `UIEditMenuInteraction`
+    /// "Highlight" item on the text-selection menu (the Files /
+    /// Markup pattern). Until then, the button stays for parity with
+    /// the existing extract pipeline.
     private var highlightButton: some View {
         Button {
             highlightTrigger = HighlightTrigger(id: UUID())

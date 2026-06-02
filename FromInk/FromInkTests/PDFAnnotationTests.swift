@@ -134,7 +134,7 @@ final class PDFAnnotationTests: XCTestCase {
     /// an invalid record shape — the validator must catch it before the
     /// record reaches the renderer.
     func test_validatePayload_geometryKindWithInkData_throws() {
-        let a = PDFAnnotation(kind: .highlight, pageIndex: 0)
+        let a = PDFAnnotation(kind: .highlight, pageIndex: 0, createdAt: now)
         a.inkData = inkData
         XCTAssertThrowsError(try a.validatePayload()) { error in
             guard case let PDFAnnotationValidationError.unexpectedPayload(kind, hasInk, hasPencil) = error else {
@@ -147,34 +147,34 @@ final class PDFAnnotationTests: XCTestCase {
     }
 
     func test_validatePayload_geometryKindWithPencilDrawing_throws() {
-        let a = PDFAnnotation(kind: .square, pageIndex: 0)
+        let a = PDFAnnotation(kind: .square, pageIndex: 0, createdAt: now)
         a.pencilDrawing = pencilData
         XCTAssertThrowsError(try a.validatePayload())
     }
 
     /// `.ink` requires `inkData`. Empty / nil is a malformed record.
     func test_validatePayload_inkKindMissingInkData_throws() {
-        let a = PDFAnnotation(kind: .ink, pageIndex: 0)
+        let a = PDFAnnotation(kind: .ink, pageIndex: 0, createdAt: now)
         XCTAssertThrowsError(try a.validatePayload())
     }
 
     /// `.polygon` shares the bezier-data payload shape with `.ink` —
     /// missing `inkData` is the same kind of malformed.
     func test_validatePayload_polygonMissingInkData_throws() {
-        let a = PDFAnnotation(kind: .polygon, pageIndex: 0)
+        let a = PDFAnnotation(kind: .polygon, pageIndex: 0, createdAt: now)
         XCTAssertThrowsError(try a.validatePayload())
     }
 
     /// `.pencil` requires `pencilDrawing`. Missing payload is malformed.
     func test_validatePayload_pencilKindMissingDrawing_throws() {
-        let a = PDFAnnotation(kind: .pencil, pageIndex: 0)
+        let a = PDFAnnotation(kind: .pencil, pageIndex: 0, createdAt: now)
         XCTAssertThrowsError(try a.validatePayload())
     }
 
     /// `.pencil` must not carry `inkData` (would imply both payload
     /// types are meaningful, which violates the discriminator).
     func test_validatePayload_pencilWithInkData_throws() {
-        let a = PDFAnnotation(kind: .pencil, pageIndex: 0)
+        let a = PDFAnnotation(kind: .pencil, pageIndex: 0, createdAt: now)
         a.pencilDrawing = pencilData
         a.inkData = inkData
         XCTAssertThrowsError(try a.validatePayload())
@@ -182,7 +182,7 @@ final class PDFAnnotationTests: XCTestCase {
 
     /// `.ink` must not carry `pencilDrawing` for the same reason.
     func test_validatePayload_inkWithPencilDrawing_throws() {
-        let a = PDFAnnotation(kind: .ink, pageIndex: 0)
+        let a = PDFAnnotation(kind: .ink, pageIndex: 0, createdAt: now)
         a.inkData = inkData
         a.pencilDrawing = pencilData
         XCTAssertThrowsError(try a.validatePayload())

@@ -9,6 +9,13 @@ struct PDFViewerWiringView: View {
 
     private let ds = DesignSystem.standard
 
+    /// Focuses the search field as soon as the search affordance
+    /// opens. Without this, tapping the magnifying glass swaps the
+    /// title for the field but leaves the keyboard down — user has
+    /// to tap the field too. Bound to `store.search.isActive` so the
+    /// reducer transition drives focus.
+    @FocusState private var searchFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -20,6 +27,9 @@ struct PDFViewerWiringView: View {
         .background(ds.colors.paper)
         .ignoresSafeArea(.container, edges: .bottom)
         .onAppear { store.send(.onAppear) }
+        .onChange(of: store.search.isActive) { _, isActive in
+            searchFocused = isActive
+        }
     }
 
     // MARK: - Chrome
@@ -36,7 +46,7 @@ struct PDFViewerWiringView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(AppStrings.Common.cancel)
 
-            if store.isSearchActive {
+            if store.search.isActive {
                 searchFieldGroup
             } else {
                 VStack(alignment: .leading, spacing: 2) {
@@ -70,17 +80,19 @@ struct PDFViewerWiringView: View {
     }
 
     /// Search field + result counter + step chevrons + close button.
-    /// Rendered in place of the title when `isSearchActive`. The field
-    /// auto-focuses via `@FocusState`-on-appearance.
+    /// Rendered in place of the title when `search.isActive`. Field
+    /// focus is driven by `@FocusState` synced to `search.isActive`
+    /// via the wiring view's `.onChange(of:)` modifier.
     private var searchFieldGroup: some View {
         HStack(spacing: ds.spacing.xs) {
             TextField(
                 AppStrings.Library.searchFieldPlaceholder,
                 text: Binding(
-                    get: { store.searchQuery },
+                    get: { store.search.query },
                     set: { store.send(.searchQueryChanged($0)) }
                 )
             )
+            .focused($searchFocused)
             .textFieldStyle(.plain)
             .font(.system(size: 15))
             .foregroundStyle(ds.colors.ink)
@@ -89,7 +101,9 @@ struct PDFViewerWiringView: View {
             .autocorrectionDisabled(true)
             .textInputAutocapitalization(.never)
 
-            MonoLabel(searchCountLabel, size: 10, color: ds.colors.ink2)
+            if !searchCountLabel.isEmpty {
+                MonoLabel(searchCountLabel, size: 10, color: ds.colors.ink2)
+            }
 
             Button { store.send(.stepMatch(.previous)) } label: {
                 Image(systemName: "chevron.up")
@@ -99,7 +113,7 @@ struct PDFViewerWiringView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(store.searchResultCount == 0)
+            .disabled(store.search.resultCount == 0)
             .accessibilityLabel(AppStrings.Library.searchPreviousMatchButton)
 
             Button { store.send(.stepMatch(.next)) } label: {
@@ -110,7 +124,7 @@ struct PDFViewerWiringView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(store.searchResultCount == 0)
+            .disabled(store.search.resultCount == 0)
             .accessibilityLabel(AppStrings.Library.searchNextMatchButton)
 
             Button { store.send(.searchToggled) } label: {
@@ -125,20 +139,18 @@ struct PDFViewerWiringView: View {
         }
     }
 
-    /// "3 / 12" once a query's been submitted with results, "No matches"
-    /// once a query's been submitted with none, empty before any
-    /// submission. The disambiguator is whether the query is non-empty
-    /// AND results have been reported; pre-submit the label hides.
+    /// Counter label driven by the substate's `Status`. Empty while
+    /// the user is still typing the first query (avoids a stale "0/0"
+    /// flash); "No matches" or "3 / 12" once results have been
+    /// reported.
     private var searchCountLabel: String {
-        guard !store.searchQuery.isEmpty,
-              store.currentMatchIndex > 0 || store.searchResultCount == 0
-        else { return "" }
-        if store.searchResultCount == 0 {
+        guard store.search.hasReportedResults else { return "" }
+        if store.search.resultCount == 0 {
             return AppStrings.Library.searchNoMatches
         }
         return AppStrings.Library.searchMatchCount(
-            current: store.currentMatchIndex,
-            total: store.searchResultCount
+            current: store.search.currentMatchIndex,
+            total: store.search.resultCount
         )
     }
 
@@ -175,8 +187,9 @@ struct PDFViewerWiringView: View {
                 onAnnotationDeleteRequested: { id in
                     store.send(.deleteAnnotation(id))
                 },
-                searchTrigger: store.searchTrigger,
-                gotoMatchTrigger: store.gotoMatchTrigger,
+                isSearchActive: store.search.isActive,
+                searchTrigger: store.search.searchTrigger,
+                gotoMatchTrigger: store.search.gotoMatchTrigger,
                 onSearchResults: { count, currentIndex in
                     store.send(.searchResultsLoaded(count: count, currentIndex: currentIndex))
                 },

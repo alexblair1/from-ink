@@ -363,12 +363,16 @@ final class PDFFeatureTests: XCTestCase {
 
     // MARK: - Search
 
+    private let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+    private let secondUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
     @MainActor
     func test_searchToggled_opensAndClosesAndClearsState() async {
         var initial = makeState()
-        initial.searchQuery = "stale"
-        initial.searchResultCount = 5
-        initial.currentMatchIndex = 2
+        // Simulate a prior session with submitted results so close
+        // proves it wipes the whole substate.
+        initial.search.status = .results(query: "stale", count: 5, current: 2)
+        initial.search.searchTrigger = SearchTrigger(id: UUID(), query: "stale")
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -377,44 +381,74 @@ final class PDFFeatureTests: XCTestCase {
         }
 
         await store.send(.searchToggled) {
-            $0.isSearchActive = true
+            $0.search = PDFSearch()
         }
-        // Opening from non-empty state preserves the existing query —
-        // closing wipes it.
         await store.send(.searchToggled) {
-            $0.isSearchActive = false
-            $0.searchQuery = ""
-            $0.searchResultCount = 0
-            $0.currentMatchIndex = 0
+            $0.search.status = .typing(query: "")
+        }
+    }
+
+    /// T3 — closing search must reset both triggers back to nil so
+    /// the canvas's `lastConsumed*` ids don't keep matching old
+    /// triggers across close-reopen.
+    @MainActor
+    func test_searchToggled_close_resetsBothTriggers() async {
+        var initial = makeState()
+        initial.search.status = .results(query: "foo", count: 3, current: 1)
+        initial.search.searchTrigger = SearchTrigger(id: UUID(), query: "foo")
+        initial.search.gotoMatchTrigger = GotoMatchTrigger(id: UUID(), direction: .next)
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.searchToggled) {
+            $0.search = PDFSearch()
+        }
+        XCTAssertNil(store.state.search.searchTrigger)
+        XCTAssertNil(store.state.search.gotoMatchTrigger)
+    }
+
+    @MainActor
+    func test_searchQueryChanged_trimsAndUpdatesTypingStatus() async {
+        var initial = makeState()
+        initial.search.status = .typing(query: "")
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // Trailing whitespace gets stripped at the source so submit
+        // and clear-on-empty agree on what's empty.
+        await store.send(.searchQueryChanged("hello  ")) {
+            $0.search.status = .typing(query: "hello")
+        }
+        await store.send(.searchQueryChanged("")) {
+            $0.search.status = .typing(query: "")
         }
     }
 
     @MainActor
-    func test_searchQueryChanged_emptyClearsCount() async {
-        var initial = makeState()
-        initial.isSearchActive = true
-        initial.searchQuery = "foo"
-        initial.searchResultCount = 4
-        initial.currentMatchIndex = 1
-
-        let store = TestStore(initialState: initial) {
+    func test_searchQueryChanged_whileInactive_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
             PDFFeature()
         } withDependencies: {
             $0.notebookClient = self.makeClient()
         }
 
-        await store.send(.searchQueryChanged("")) {
-            $0.searchQuery = ""
-            $0.searchResultCount = 0
-            $0.currentMatchIndex = 0
-        }
+        // No `.searchToggled` first — search is inactive. A stray
+        // change action shouldn't transition to `.typing`.
+        await store.send(.searchQueryChanged("hello"))
     }
 
     @MainActor
     func test_searchSubmitted_emptyQuery_doesNotFireTrigger() async {
         var initial = makeState()
-        initial.isSearchActive = true
-        initial.searchQuery = "   "
+        initial.search.status = .typing(query: "")
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -422,15 +456,13 @@ final class PDFFeatureTests: XCTestCase {
             $0.notebookClient = self.makeClient()
         }
 
-        // Whitespace-only query — trimmed, falls through, no trigger.
         await store.send(.searchSubmitted)
     }
 
     @MainActor
-    func test_searchSubmitted_firesTriggerAndAcceptsResults() async {
+    func test_searchSubmitted_firesTriggerAndTransitionsOnResults() async {
         var initial = makeState()
-        initial.isSearchActive = true
-        initial.searchQuery = "hello"
+        initial.search.status = .typing(query: "hello")
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -439,24 +471,49 @@ final class PDFFeatureTests: XCTestCase {
             $0.uuid = .incrementing
         }
 
-        // First incrementing UUID is all-zeros + "...000".
-        let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
-
         await store.send(.searchSubmitted) {
-            $0.searchTrigger = SearchTrigger(id: firstUUID, query: "hello")
+            $0.search.searchTrigger = SearchTrigger(id: self.firstUUID, query: "hello")
         }
-
-        // Canvas reports back with 7 results, first one anchored.
         await store.send(.searchResultsLoaded(count: 7, currentIndex: 1)) {
-            $0.searchResultCount = 7
-            $0.currentMatchIndex = 1
+            $0.search.status = .results(query: "hello", count: 7, current: 1)
         }
     }
 
     @MainActor
-    func test_stepMatch_noResults_doesNotFireTrigger() async {
+    func test_searchResultsLoaded_zeroCount_transitionsToNoMatches() async {
         var initial = makeState()
-        initial.searchResultCount = 0
+        initial.search.status = .typing(query: "needle")
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        await store.send(.searchResultsLoaded(count: 0, currentIndex: 0)) {
+            $0.search.status = .noMatches(query: "needle")
+        }
+    }
+
+    @MainActor
+    func test_stepMatch_whileTyping_isNoOp() async {
+        var initial = makeState()
+        initial.search.status = .typing(query: "foo")
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // .typing isn't a results status — stepping has no anchor.
+        await store.send(.stepMatch(.next))
+    }
+
+    @MainActor
+    func test_stepMatch_whileNoMatches_isNoOp() async {
+        var initial = makeState()
+        initial.search.status = .noMatches(query: "foo")
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -468,10 +525,9 @@ final class PDFFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func test_stepMatch_withResults_firesTriggerAndUpdatesIndex() async {
+    func test_stepMatch_withResults_firesTriggerAndUpdatesCurrent() async {
         var initial = makeState()
-        initial.searchResultCount = 7
-        initial.currentMatchIndex = 1
+        initial.search.status = .results(query: "foo", count: 7, current: 1)
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -480,13 +536,11 @@ final class PDFFeatureTests: XCTestCase {
             $0.uuid = .incrementing
         }
 
-        let firstUUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
-
         await store.send(.stepMatch(.next)) {
-            $0.gotoMatchTrigger = GotoMatchTrigger(id: firstUUID, direction: .next)
+            $0.search.gotoMatchTrigger = GotoMatchTrigger(id: self.firstUUID, direction: .next)
         }
         await store.send(.currentMatchChanged(2)) {
-            $0.currentMatchIndex = 2
+            $0.search.status = .results(query: "foo", count: 7, current: 2)
         }
     }
 
@@ -538,12 +592,11 @@ final class PDFFeatureTests: XCTestCase {
         XCTAssertEqual(deletedID.value, target.id)
     }
 
-    /// A store-side delete failure leaves the optimistic state in
-    /// place — the snapshot's already gone from `state.annotations`.
-    /// No `.annotationDeleted` follow-up arrives, but the local state
-    /// is already consistent with the user's intent.
+    /// A store-side delete failure restores the snapshot — without
+    /// restore the user would see a phantom-deleted highlight until
+    /// the viewer reopens (no second `listForPDF` today).
     @MainActor
-    func test_deleteAnnotation_storeThrows_optimisticRemovalSticks() async {
+    func test_deleteAnnotation_storeThrows_restoresSnapshot() async {
         let now = Date(timeIntervalSince1970: 1_780_000_000)
         let target = PDFAnnotationSnapshot(
             id: UUID(), pdfDocumentID: pdfID,
@@ -567,13 +620,50 @@ final class PDFFeatureTests: XCTestCase {
                 delete: { _ in throw CancellationError() }
             )
         }
-        store.exhaustivity = .off(showSkippedAssertions: false)
 
         await store.send(.deleteAnnotation(target.id)) {
             $0.annotations = []
         }
-        // No `.annotationDeleted` action — the catch path swallows the
-        // error after logging.
+        // Failure restores the snapshot at its original sort position.
+        await store.receive(.deleteAnnotationFailed(target)) {
+            $0.annotations = [target]
+        }
+    }
+
+    /// Restore inserts at the createdAt-sorted position so the
+    /// restored snapshot lands where `listForPDF` would have placed
+    /// it — not at the end of the array.
+    @MainActor
+    func test_deleteAnnotationFailed_restoresAtSortedPosition() async {
+        let now = Date(timeIntervalSince1970: 1_780_000_000)
+        func snap(_ offset: TimeInterval, _ text: String) -> PDFAnnotationSnapshot {
+            PDFAnnotationSnapshot(
+                id: UUID(), pdfDocumentID: pdfID, kind: .highlight,
+                createdAt: now.addingTimeInterval(offset),
+                modifiedAt: now.addingTimeInterval(offset),
+                pageIndex: 0, extractedText: text, contents: "",
+                bounds: .zero, color: .yellowHighlight,
+                hasInkData: false, inkDataByteSize: nil,
+                hasPencilDrawing: false, pencilDrawingByteSize: nil
+            )
+        }
+        let older = snap(0, "older")
+        let middle = snap(10, "middle")
+        let newer = snap(20, "newer")
+        var initial = makeState()
+        initial.annotations = [older, newer]
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+
+        // Restore `middle` directly via the failure action; it should
+        // land between `older` and `newer`, not at the end.
+        await store.send(.deleteAnnotationFailed(middle)) {
+            $0.annotations = [older, middle, newer]
+        }
     }
 
     @MainActor

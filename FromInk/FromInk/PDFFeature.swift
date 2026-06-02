@@ -41,6 +41,72 @@ struct GotoMatchTrigger: Equatable, Sendable {
     let direction: Direction
 }
 
+/// In-PDF search state. The status machine collapses six flat
+/// bool/int fields into a single discriminated union so impossible
+/// states (`count == 0 && current > 0`, `isActive == false &&
+/// query.nonEmpty`) can't be expressed.
+struct PDFSearch: Equatable {
+    enum Status: Equatable {
+        /// The search affordance is closed — the top bar shows the
+        /// title, not the field.
+        case inactive
+        /// The field is open and either empty or holding an unsubmitted
+        /// draft. Submission moves to `.results` or `.noMatches`.
+        case typing(query: String)
+        /// The last submitted query returned at least one match.
+        /// `current` is 1-based to match the UI counter.
+        case results(query: String, count: Int, current: Int)
+        /// The last submitted query returned no matches.
+        case noMatches(query: String)
+    }
+
+    var status: Status = .inactive
+    /// One-shot consumed by `PDFCanvas` to run `findString`. The
+    /// coordinator dedupes by id so a stable trigger across SwiftUI
+    /// re-renders doesn't re-search.
+    var searchTrigger: SearchTrigger?
+    /// One-shot consumed by `PDFCanvas` to step the result cursor.
+    var gotoMatchTrigger: GotoMatchTrigger?
+
+    var isActive: Bool {
+        if case .inactive = status { return false }
+        return true
+    }
+
+    /// The query as displayed in the field. Empty in `.inactive`;
+    /// otherwise the latest typed or submitted query.
+    var query: String {
+        switch status {
+        case .inactive: return ""
+        case .typing(let q), .results(let q, _, _), .noMatches(let q): return q
+        }
+    }
+
+    /// 1-based current match for the counter label, or 0 when no
+    /// match is anchored.
+    var currentMatchIndex: Int {
+        if case .results(_, _, let current) = status { return current }
+        return 0
+    }
+
+    /// Total matches for the counter label, or 0 when nothing's been
+    /// submitted yet / no matches.
+    var resultCount: Int {
+        if case .results(_, let count, _) = status { return count }
+        return 0
+    }
+
+    /// Whether the counter label should render at all. Pre-submit
+    /// (no query, or `.typing` only) the label hides; once a result
+    /// status has been seen, it appears.
+    var hasReportedResults: Bool {
+        switch status {
+        case .results, .noMatches: return true
+        case .inactive, .typing: return false
+        }
+    }
+}
+
 /// Owns the open PDF viewer state. Presented as a fullScreenCover from
 /// `HomeFeature` (and, later, from a notebook page's link tap). Loads
 /// the PDF bytes once on `.onAppear` via `NotebookClient.fetchPDFData`
@@ -67,10 +133,11 @@ struct PDFFeature: Reducer {
         var currentPage: Int = 0
 
         /// Annotations owned by this PDF, loaded once on `.onAppear`.
-        /// Renders are diff-by-id reconciled in `PDFCanvas`; the
-        /// upcoming highlight-creation UI (Phase 4b) appends new
-        /// snapshots here so they render immediately without round-
-        /// tripping through a re-fetch.
+        /// New highlights from the user's selection are appended in
+        /// `.highlightCreated`; deletions strip optimistically in
+        /// `.deleteAnnotation`. The reconcile loop in `PDFCanvas`
+        /// diff-renders this array against the PDFKit annotation tree
+        /// on every state change.
         ///
         /// Annotation-load failure is non-fatal: the viewer renders
         /// the PDF without overlay annotations, with a logged warning.
@@ -78,30 +145,10 @@ struct PDFFeature: Reducer {
         /// recoverable issue (sync race, transient SwiftData hiccup).
         var annotations: [PDFAnnotationSnapshot] = []
 
-        // MARK: - Search
-
-        /// `true` when the search affordance is open — the top bar
-        /// shows the search field instead of the title. Toggled by
-        /// `.searchToggled`; clearing the field doesn't auto-close so
-        /// the user can refine without losing focus.
-        var isSearchActive: Bool = false
-        /// The live search query the user has typed. Submission (return
-        /// key) emits `.searchSubmitted` and fires the trigger.
-        var searchQuery: String = ""
-        /// Total matches the canvas found for the last submitted query.
-        /// Zero means "no matches" or "no query submitted yet" — the
-        /// label disambiguates by checking `searchQuery` non-empty.
-        var searchResultCount: Int = 0
-        /// 1-based index of the currently-anchored match (matches the
-        /// "3 / 12" label). Zero when no match is anchored.
-        var currentMatchIndex: Int = 0
-        /// One-shot trigger consumed by `PDFCanvas` to run `findString`.
-        /// `nil` resets after the canvas reports back so a re-render
-        /// during a stable trigger doesn't re-search.
-        var searchTrigger: SearchTrigger?
-        /// One-shot trigger consumed by `PDFCanvas` to advance the
-        /// internal selection cursor.
-        var gotoMatchTrigger: GotoMatchTrigger?
+        /// In-PDF search state. Substate keeps the flat-field churn
+        /// out of `PDFFeature.State` and rules out impossible
+        /// combinations at the type level.
+        var search: PDFSearch = PDFSearch()
 
         enum LoadState: Equatable {
             case loading
@@ -152,6 +199,14 @@ struct PDFFeature: Reducer {
         /// the create flow and gives the test store an explicit
         /// completion signal.
         case annotationDeleted(UUID)
+        /// Delete effect threw. Restores the snapshot to
+        /// `state.annotations` at its original sort position so the
+        /// user doesn't see a phantom-deleted highlight that
+        /// reappears later. The snapshot is the one removed in
+        /// `.deleteAnnotation`; equality includes id, so a stale
+        /// restore (e.g. user re-deleted before failure landed) is
+        /// idempotent.
+        case deleteAnnotationFailed(PDFAnnotationSnapshot)
         /// User tapped the dismiss chrome. Parent observes this via
         /// presentation action and clears its `@Presents` slot.
         case dismissTapped
@@ -280,9 +335,12 @@ struct PDFFeature: Reducer {
             case .deleteAnnotation(let id):
                 // Optimistic — strip the snapshot now so the reconcile
                 // loop removes the PDFKit annotation on the next
-                // render. If the store throws (rare; sync race), we log
-                // and let the missing record reappear on next
-                // listForPDF.
+                // render. The record we just removed is captured so
+                // the failure path can restore it (sync race, transient
+                // SwiftData hiccup). Without restore, the user would
+                // see a phantom-deleted highlight until the viewer
+                // reopens — there's no second `listForPDF` today.
+                let restoreOnFailure = state.annotations.first { $0.id == id }
                 state.annotations.removeAll { $0.id == id }
                 return .run { send in
                     do {
@@ -290,6 +348,9 @@ struct PDFFeature: Reducer {
                         await send(.annotationDeleted(id))
                     } catch {
                         log.error("annotationStore.delete failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .private)")
+                        if let restore = restoreOnFailure {
+                            await send(.deleteAnnotationFailed(restore))
+                        }
                     }
                 }
 
@@ -298,58 +359,88 @@ struct PDFFeature: Reducer {
                 // in `.deleteAnnotation`. No-op here.
                 return .none
 
+            case .deleteAnnotationFailed(let snapshot):
+                // Restore the snapshot the user thought they deleted.
+                // Inserted at its original sort position (by createdAt)
+                // so it lands where listForPDF would have placed it.
+                let index = state.annotations.firstIndex { $0.createdAt > snapshot.createdAt }
+                    ?? state.annotations.endIndex
+                state.annotations.insert(snapshot, at: index)
+                return .none
+
             case .dismissTapped:
                 // Parent owns dismiss — clears the @Presents slot.
                 return .none
 
             case .searchToggled:
-                state.isSearchActive.toggle()
-                if !state.isSearchActive {
-                    // Closing search clears the query so the next open
-                    // starts clean. Don't fire a search trigger — the
-                    // canvas's stale selections clear when the user
-                    // submits the next query or when the trigger goes
-                    // back to nil mid-render.
-                    state.searchQuery = ""
-                    state.searchResultCount = 0
-                    state.currentMatchIndex = 0
-                    state.searchTrigger = nil
-                    state.gotoMatchTrigger = nil
+                if state.search.isActive {
+                    // Close: reset the substate. Triggers go to nil so
+                    // the canvas's `lastConsumed*` ids don't keep
+                    // matching old triggers across a close-reopen.
+                    state.search = PDFSearch()
+                } else {
+                    state.search.status = .typing(query: "")
                 }
                 return .none
 
-            case .searchQueryChanged(let query):
-                state.searchQuery = query
-                // Don't fire on every keystroke — wait for return. An
-                // empty field after a non-empty one shouldn't preserve
-                // stale counts in the label.
-                if query.isEmpty {
-                    state.searchResultCount = 0
-                    state.currentMatchIndex = 0
-                }
+            case .searchQueryChanged(let raw):
+                // Trim leading/trailing whitespace at the source so
+                // the typing state and the submit guard agree on what
+                // counts as empty. An all-whitespace string is
+                // semantically empty for search purposes.
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard state.search.isActive else { return .none }
+                state.search.status = .typing(query: trimmed)
                 return .none
 
             case .searchSubmitted:
-                let query = state.searchQuery
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let query = state.search.query
                 guard !query.isEmpty else { return .none }
-                state.searchTrigger = SearchTrigger(id: uuid(), query: query)
+                // Stay in `.typing` until the canvas reports results;
+                // the typing status preserves the current query so the
+                // field doesn't appear to clear during the search.
+                state.search.searchTrigger = SearchTrigger(id: uuid(), query: query)
                 return .none
 
             case .searchResultsLoaded(let count, let currentIndex):
-                state.searchResultCount = count
-                state.currentMatchIndex = currentIndex
+                // Transition the status based on the canvas report.
+                // `query` comes from current state — the canvas doesn't
+                // round-trip it.
+                let query = state.search.query
+                guard !query.isEmpty else { return .none }
+                if count > 0 {
+                    state.search.status = .results(
+                        query: query,
+                        count: count,
+                        current: currentIndex
+                    )
+                } else {
+                    state.search.status = .noMatches(query: query)
+                }
                 return .none
 
             case .stepMatch(let direction):
-                // No-op if there's nothing to step through — guards the
-                // canvas from a spurious goto on an empty result set.
-                guard state.searchResultCount > 0 else { return .none }
-                state.gotoMatchTrigger = GotoMatchTrigger(id: uuid(), direction: direction)
+                // Only meaningful when results are anchored. Guards the
+                // canvas from a spurious goto and rejects taps on a
+                // `.typing` / `.noMatches` status.
+                guard case .results = state.search.status else { return .none }
+                state.search.gotoMatchTrigger = GotoMatchTrigger(
+                    id: uuid(),
+                    direction: direction
+                )
                 return .none
 
             case .currentMatchChanged(let index):
-                state.currentMatchIndex = index
+                // Update the anchored cursor without changing query or
+                // count. No-op if the status drifted away from
+                // `.results` between step request and reply.
+                if case .results(let query, let count, _) = state.search.status {
+                    state.search.status = .results(
+                        query: query,
+                        count: count,
+                        current: index
+                    )
+                }
                 return .none
             }
         }
