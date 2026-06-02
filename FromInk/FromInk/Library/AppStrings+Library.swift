@@ -205,7 +205,7 @@ extension AppStrings {
             return String.localizedStringWithFormat(
                 NSLocalizedString(
                     "library.importPDF.tooLarge.message",
-                    value: "This PDF is %@. From Ink syncs PDFs via iCloud, which has a %@ per-file limit. Compress the PDF first — most PDF editors can reduce image quality or remove embedded fonts.",
+                    value: "This PDF is %@. From Ink limits imports to %@ to keep things smooth on iPhone and avoid eating your iCloud storage. Compress the PDF first — most PDF editors can reduce image quality or remove embedded fonts.",
                     comment: "Alert body for oversized PDF; first %@ is actual size, second %@ is the limit"
                 ),
                 actual, cap
