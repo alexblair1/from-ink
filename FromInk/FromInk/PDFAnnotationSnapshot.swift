@@ -11,11 +11,17 @@ import CoreGraphics
 /// a fabricated UUID that looks like a real reference but silently
 /// misses on lookup.
 ///
-/// `hasInkData` / `hasPencilDrawing` are presence flags; the
-/// `inkDataByteSize` / `pencilDrawingByteSize` siblings expose payload
-/// magnitude without materializing the bytes (the snapshot stays
-/// lightweight enough to ride through a TCA state tree). Consumers
-/// that need the actual bytes round-trip via the model.
+/// `inkData` is held back from the snapshot — PDFKit raw ink isn't
+/// rendered today (Phase 4 / 5 render via `.highlight`, `.underline`,
+/// and `.pencil`). `hasInkData` + `inkDataByteSize` expose presence
+/// and magnitude.
+///
+/// `pencilDrawing` **is** carried on the snapshot for
+/// `kind == .pencil` records because the reconcile loop needs the
+/// bytes to deserialize the `PKDrawing` and render its strokes as
+/// PDFKit `.ink` paths. Pencil snapshots are heavier than other
+/// kinds by design — typical drawings are 10–100KB, which fits
+/// comfortably in a TCA state tree.
 struct PDFAnnotationSnapshot: Equatable, Identifiable, Sendable {
     let id: UUID
     let pdfDocumentID: UUID?
@@ -29,8 +35,17 @@ struct PDFAnnotationSnapshot: Equatable, Identifiable, Sendable {
     let color: PDFAnnotationColor
     let hasInkData: Bool
     let inkDataByteSize: Int?
-    let hasPencilDrawing: Bool
-    let pencilDrawingByteSize: Int?
+    /// `PKDrawing.dataRepresentation()` bytes for `.pencil` records;
+    /// nil for all other kinds. Carried on the snapshot so the
+    /// reconcile loop can render without re-fetching the model.
+    let pencilDrawing: Data?
+}
+
+// MARK: - Derived accessors
+
+extension PDFAnnotationSnapshot {
+    var hasPencilDrawing: Bool { pencilDrawing != nil }
+    var pencilDrawingByteSize: Int? { pencilDrawing?.count }
 }
 
 // MARK: - Conversion from @Model
@@ -49,7 +64,6 @@ extension PDFAnnotationSnapshot {
         self.color = model.color
         self.hasInkData = model.inkData != nil
         self.inkDataByteSize = model.inkData?.count
-        self.hasPencilDrawing = model.pencilDrawing != nil
-        self.pencilDrawingByteSize = model.pencilDrawing?.count
+        self.pencilDrawing = model.pencilDrawing
     }
 }

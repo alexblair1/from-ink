@@ -47,6 +47,28 @@ struct AnnotationStore: Sendable {
         _ now: Date
     ) async throws -> PDFAnnotationSnapshot
 
+    /// Creates a pencil annotation — `PKDrawing.dataRepresentation()`
+    /// bytes carry the strokes; `bounds` is the drawing's extent
+    /// normalized 0..1 in the PDF page cropBox so the rendered
+    /// annotation lines up across zoom levels.
+    ///
+    /// Phase 5a's read path: the reconcile loop deserializes
+    /// `pencilDrawing`, converts strokes to bezier paths, and renders
+    /// as a PDFKit `.ink` annotation. The original `PKDrawing` bytes
+    /// stay on the record so Phase 5b's edit path can re-hydrate a
+    /// `PKCanvasView` from them.
+    ///
+    /// Throws `AnnotationStoreError.pdfNotFound(pdfID:)` if the
+    /// parent row was deleted between presentation and create.
+    var createPencil: @Sendable (
+        _ pdfID: UUID,
+        _ pageIndex: Int,
+        _ bounds: CGRect,
+        _ pencilDrawing: Data,
+        _ color: PDFAnnotationColor,
+        _ now: Date
+    ) async throws -> PDFAnnotationSnapshot
+
     /// Deletes an annotation by id. No-op (no throw) if the row was
     /// already gone — the most common failure mode is a sync race and
     /// re-throwing would mask the real cause.
@@ -102,6 +124,29 @@ extension AnnotationStore: DependencyKey {
                     return PDFAnnotationSnapshot(model: annotation)
                 }
             },
+            createPencil: { pdfID, pageIndex, bounds, pencilDrawing, color, now in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    let parentDescriptor = FetchDescriptor<ImportedPDF>(
+                        predicate: #Predicate { $0.id == pdfID }
+                    )
+                    guard let parent = try ctx.fetch(parentDescriptor).first else {
+                        throw AnnotationStoreError.pdfNotFound(pdfID: pdfID)
+                    }
+                    let annotation = PDFAnnotation.pencil(
+                        pageIndex: pageIndex,
+                        bounds: bounds,
+                        pencilDrawing: pencilDrawing,
+                        color: color,
+                        createdAt: now,
+                        pdfDocument: parent
+                    )
+                    ctx.insert(annotation)
+                    try ctx.save()
+                    log.info("Created pencil id=\(annotation.id.uuidString, privacy: .public) pdf=\(pdfID, privacy: .public) page=\(pageIndex, privacy: .public) bytes=\(pencilDrawing.count, privacy: .public)")
+                    return PDFAnnotationSnapshot(model: annotation)
+                }
+            },
             delete: { annotationID in
                 try await MainActor.run {
                     let ctx = modelContext.context()
@@ -130,6 +175,7 @@ extension AnnotationStore: TestDependencyKey {
     static let testValue = AnnotationStore(
         listForPDF: { _ in throw CancellationError() },
         createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+        createPencil: { _, _, _, _, _, _ in throw CancellationError() },
         delete: { _ in throw CancellationError() }
     )
 }

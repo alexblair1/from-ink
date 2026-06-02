@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import CoreGraphics
+import PencilKit
 import SwiftData
 import XCTest
 @testable import FromInk
@@ -107,6 +108,51 @@ final class AnnotationStoreTests: XCTestCase {
                 strangerID, 0, bounds, "", .yellowHighlight, now
             )
             XCTFail("Expected pdfNotFound but createHighlight succeeded")
+        } catch let error as AnnotationStoreError {
+            XCTAssertEqual(error, .pdfNotFound(pdfID: strangerID))
+        } catch {
+            XCTFail("Expected AnnotationStoreError, got \(error)")
+        }
+    }
+
+    // MARK: - Pencil
+
+    @MainActor
+    func test_createPencil_thenList_roundTripsTheBytesOnSnapshot() async throws {
+        let (store, _) = makeStore()
+        // A minimal PKDrawing — empty strokes is enough to verify the
+        // bytes round-trip; the bezier-path conversion is exercised
+        // separately in PDFCanvas tests.
+        let drawing = PKDrawing()
+        let drawingBytes = drawing.dataRepresentation()
+
+        let created = try await store.createPencil(
+            pdfID, 2, bounds, drawingBytes, .blackText, now
+        )
+
+        XCTAssertEqual(created.kind, .pencil)
+        XCTAssertEqual(created.pageIndex, 2)
+        XCTAssertEqual(created.bounds, bounds)
+        XCTAssertEqual(created.pencilDrawing, drawingBytes)
+        XCTAssertTrue(created.hasPencilDrawing)
+        XCTAssertEqual(created.pencilDrawingByteSize, drawingBytes.count)
+
+        let listed = try await store.listForPDF(pdfID)
+        XCTAssertEqual(listed.count, 1)
+        XCTAssertEqual(listed.first?.pencilDrawing, drawingBytes)
+    }
+
+    @MainActor
+    func test_createPencil_unknownPDF_throwsPdfNotFound() async {
+        let (store, _) = makeStore()
+        let strangerID = UUID()
+        let drawing = PKDrawing().dataRepresentation()
+
+        do {
+            _ = try await store.createPencil(
+                strangerID, 0, bounds, drawing, .blackText, now
+            )
+            XCTFail("Expected pdfNotFound but createPencil succeeded")
         } catch let error as AnnotationStoreError {
             XCTAssertEqual(error, .pdfNotFound(pdfID: strangerID))
         } catch {

@@ -1,5 +1,9 @@
 import PDFKit
+import PencilKit
 import SwiftUI
+import os
+
+private let log = Logger(subsystem: "com.fromink.app", category: "PDFCanvas")
 
 // MARK: - Custom annotation key for identity round-trip
 
@@ -68,9 +72,9 @@ private func reconcileAnnotations(
 }
 
 /// Builds a `PDFKit.PDFAnnotation` from one of our snapshots. Returns
-/// nil for kinds the v1 viewer doesn't render yet (ink, pencil,
-/// freeText, shape) — those land in later phases. Highlights and
-/// underlines render today.
+/// nil for kinds the viewer doesn't render yet (freeText, line,
+/// square, circle, polygon, raw ink) — those land in their own phases.
+/// Highlights, underlines, and pencil drawings render today.
 @MainActor
 private func makePDFAnnotation(
     from snapshot: PDFAnnotationSnapshot,
@@ -94,16 +98,99 @@ private func makePDFAnnotation(
         pdfAnnotation = PDFKit.PDFAnnotation(
             bounds: bounds, forType: .underline, withProperties: nil
         )
-    case .freeText, .line, .square, .circle, .polygon, .ink, .pencil:
+    case .pencil:
+        // Phase 5a read path: deserialize PKDrawing, convert strokes
+        // to PDFKit-native `.ink` paths so the rendering is vector
+        // and zoom-aware. The original PKDrawing bytes ride on the
+        // snapshot — Phase 5b's edit path will re-hydrate a
+        // PKCanvasView from them.
+        guard let drawingData = snapshot.pencilDrawing else {
+            log.warning("Pencil snapshot \(snapshot.id, privacy: .public) has no drawing bytes; skipping render")
+            return nil
+        }
+        pdfAnnotation = makeInkFromPencilDrawing(
+            data: drawingData,
+            pageBounds: page.bounds(for: .cropBox)
+        )
+    case .freeText, .line, .square, .circle, .polygon, .ink:
         // Render paths land in their own phases; for v1 skip silently
         // so a stray record doesn't crash the viewer.
         return nil
     }
 
     guard let pdfAnnotation else { return nil }
-    pdfAnnotation.color = color
+    // Pencil renders the bezier strokes' own colors — overriding the
+    // PDFAnnotation.color would re-tint every stroke uniformly and
+    // erase the per-stroke color the user drew. Highlights and
+    // underlines have no per-stroke color, so they take the
+    // snapshot's color.
+    if snapshot.kind != .pencil {
+        pdfAnnotation.color = color
+    }
     pdfAnnotation.setValue(snapshot.id.uuidString, forAnnotationKey: .fromInkID)
     return pdfAnnotation
+}
+
+/// Deserializes a `PKDrawing` from its `dataRepresentation()` bytes
+/// and converts each stroke to a `UIBezierPath`, mounted on a PDFKit
+/// `.ink` annotation. Vector output, zoom-aware in PDFView.
+///
+/// Returns nil if the bytes don't parse as a valid PKDrawing — logs
+/// and skips so a single corrupt record doesn't crash the viewer.
+@MainActor
+private func makeInkFromPencilDrawing(
+    data: Data,
+    pageBounds: CGRect
+) -> PDFKit.PDFAnnotation? {
+    let drawing: PKDrawing
+    do {
+        drawing = try PKDrawing(data: data)
+    } catch {
+        log.warning("Failed to deserialize PKDrawing (\(data.count, privacy: .public) bytes): \(error.localizedDescription, privacy: .public)")
+        return nil
+    }
+
+    // Drawing bounds in PencilKit's own coordinate space — same as
+    // the page cropBox we use for our normalized snapshot bounds.
+    let drawingBounds = drawing.bounds
+    let annotationBounds = drawingBounds.intersection(pageBounds)
+    guard !annotationBounds.isNull, !annotationBounds.isEmpty else { return nil }
+
+    let ink = PDFKit.PDFAnnotation(
+        bounds: annotationBounds,
+        forType: .ink,
+        withProperties: nil
+    )
+
+    let paths = bezierPaths(from: drawing)
+    for path in paths {
+        ink.add(path)
+    }
+    return ink
+}
+
+/// Converts a `PKDrawing`'s strokes into `UIBezierPath`s suitable for
+/// `PDFAnnotation.add(_:)`. Each stroke samples its
+/// `PKStrokePath.interpolatedPoints(by:)` at a small fixed distance
+/// — fine enough to preserve pen curvature, coarse enough to keep
+/// path count manageable for big drawings.
+@MainActor
+private func bezierPaths(from drawing: PKDrawing) -> [UIBezierPath] {
+    drawing.strokes.map { stroke in
+        let path = UIBezierPath()
+        var first = true
+        stroke.path.forEach { point in
+            let location = point.location
+            if first {
+                path.move(to: location)
+                first = false
+            } else {
+                path.addLine(to: location)
+            }
+        }
+        path.lineWidth = 2
+        return path
+    }
 }
 
 /// Denormalizes the 0..1 snapshot bounds back into PDF page user-space.

@@ -168,7 +168,7 @@ final class PDFFeatureTests: XCTestCase {
                 bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
                 color: .yellowHighlight,
                 hasInkData: false, inkDataByteSize: nil,
-                hasPencilDrawing: false, pencilDrawingByteSize: nil
+                pencilDrawing: nil
             )
         ]
 
@@ -181,6 +181,7 @@ final class PDFFeatureTests: XCTestCase {
             $0.annotationStore = AnnotationStore(
                 listForPDF: { _ in snapshots },
                 createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
@@ -220,7 +221,7 @@ final class PDFFeatureTests: XCTestCase {
             bounds: line.bounds,
             color: .yellowHighlight,
             hasInkData: false, inkDataByteSize: nil,
-            hasPencilDrawing: false, pencilDrawingByteSize: nil
+            pencilDrawing: nil
         )
     }
 
@@ -253,6 +254,7 @@ final class PDFFeatureTests: XCTestCase {
                     captured.withValue { $0.append((pdfID, pageIndex, bounds, text, color, now)) }
                     return snapshot
                 },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
@@ -304,6 +306,7 @@ final class PDFFeatureTests: XCTestCase {
                     guard let next else { throw CancellationError() }
                     return next
                 },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
@@ -344,6 +347,7 @@ final class PDFFeatureTests: XCTestCase {
                     default: throw CancellationError()
                     }
                 },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
@@ -556,7 +560,7 @@ final class PDFFeatureTests: XCTestCase {
             bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
             color: .yellowHighlight,
             hasInkData: false, inkDataByteSize: nil,
-            hasPencilDrawing: false, pencilDrawingByteSize: nil
+            pencilDrawing: nil
         )
         let keep = PDFAnnotationSnapshot(
             id: UUID(), pdfDocumentID: pdfID,
@@ -565,7 +569,7 @@ final class PDFFeatureTests: XCTestCase {
             bounds: CGRect(x: 0.4, y: 0.2, width: 0.3, height: 0.05),
             color: .yellowHighlight,
             hasInkData: false, inkDataByteSize: nil,
-            hasPencilDrawing: false, pencilDrawingByteSize: nil
+            pencilDrawing: nil
         )
         var initial = makeState()
         initial.annotations = [target, keep]
@@ -578,6 +582,7 @@ final class PDFFeatureTests: XCTestCase {
             $0.annotationStore = AnnotationStore(
                 listForPDF: { _ in [] },
                 createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { id in deletedID.setValue(id) }
             )
         }
@@ -605,7 +610,7 @@ final class PDFFeatureTests: XCTestCase {
             bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
             color: .yellowHighlight,
             hasInkData: false, inkDataByteSize: nil,
-            hasPencilDrawing: false, pencilDrawingByteSize: nil
+            pencilDrawing: nil
         )
         var initial = makeState()
         initial.annotations = [target]
@@ -617,6 +622,7 @@ final class PDFFeatureTests: XCTestCase {
             $0.annotationStore = AnnotationStore(
                 listForPDF: { _ in [] },
                 createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
@@ -644,7 +650,7 @@ final class PDFFeatureTests: XCTestCase {
                 pageIndex: 0, extractedText: text, contents: "",
                 bounds: .zero, color: .yellowHighlight,
                 hasInkData: false, inkDataByteSize: nil,
-                hasPencilDrawing: false, pencilDrawingByteSize: nil
+                pencilDrawing: nil
             )
         }
         let older = snap(0, "older")
@@ -676,7 +682,7 @@ final class PDFFeatureTests: XCTestCase {
             bounds: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.05),
             color: .yellowHighlight,
             hasInkData: false, inkDataByteSize: nil,
-            hasPencilDrawing: false, pencilDrawingByteSize: nil
+            pencilDrawing: nil
         )
         var initial = makeState()
         initial.annotations = [existing]
@@ -690,6 +696,7 @@ final class PDFFeatureTests: XCTestCase {
             $0.annotationStore = AnnotationStore(
                 listForPDF: { _ in [] },
                 createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { id in deletedID.setValue(id) }
             )
         }
@@ -717,6 +724,7 @@ final class PDFFeatureTests: XCTestCase {
             $0.annotationStore = AnnotationStore(
                 listForPDF: { _ in throw CancellationError() },
                 createHighlight: { _, _, _, _, _, _ in throw CancellationError() },
+                createPencil: { _, _, _, _, _, _ in throw CancellationError() },
                 delete: { _ in throw CancellationError() }
             )
         }
