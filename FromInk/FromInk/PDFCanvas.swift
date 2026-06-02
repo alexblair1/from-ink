@@ -334,9 +334,16 @@ struct PDFCanvas: UIViewRepresentable {
     /// `PKTool` on the mounted canvas. Changes mid-drawing don't
     /// disturb existing strokes.
     let drawingTool: PDFDrawingTool
+    /// Current ink color for inking tools (pen, pencil, marker).
+    /// The eraser ignores it. Mutates the mounted canvas's tool in
+    /// place when changed.
+    let drawingInkColor: PDFAnnotationColor
     /// One-shot — when a new id arrives the coordinator serializes
     /// the canvas's drawing and fires `onDrawingCommitted`.
     let drawingCommitTrigger: DrawingCommitTrigger?
+    /// One-shot — when a new id arrives the coordinator calls
+    /// `undoManager.undo()` or `.redo()` on the mounted canvas.
+    let drawingUndoTrigger: DrawingUndoTrigger?
     /// Fired after commit-trigger consumption with the PKDrawing
     /// bytes + normalized bounds + page index.
     let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
@@ -413,13 +420,25 @@ struct PDFCanvas: UIViewRepresentable {
         // the visible page, lock PDFView gestures. On close: tear
         // down. The coordinator handles the actual mount lifecycle so
         // the SwiftUI struct stays declarative.
-        context.coordinator.setDrawingActive(isDrawingActive, tool: drawingTool, in: uiView)
+        context.coordinator.setDrawingActive(
+            isDrawingActive,
+            tool: drawingTool,
+            color: drawingInkColor,
+            in: uiView
+        )
 
         // Consume a fresh drawing-commit trigger.
         if let trigger = drawingCommitTrigger,
            trigger.id != context.coordinator.lastConsumedCommitTriggerID {
             context.coordinator.lastConsumedCommitTriggerID = trigger.id
             context.coordinator.commitDrawing(in: uiView)
+        }
+
+        // Consume a fresh undo / redo trigger.
+        if let trigger = drawingUndoTrigger,
+           trigger.id != context.coordinator.lastConsumedUndoTriggerID {
+            context.coordinator.lastConsumedUndoTriggerID = trigger.id
+            context.coordinator.applyUndo(direction: trigger.direction)
         }
 
         // Reconcile annotations on every SwiftUI re-render driven by
@@ -478,6 +497,7 @@ struct PDFCanvas: UIViewRepresentable {
         var lastConsumedSearchTriggerID: UUID?
         var lastConsumedGotoTriggerID: UUID?
         var lastConsumedCommitTriggerID: UUID?
+        var lastConsumedUndoTriggerID: UUID?
 
         /// Weak reference back to the host PDFView so the edit-menu
         /// interaction can convert page-space tap points to view-space
@@ -765,22 +785,31 @@ struct PDFCanvas: UIViewRepresentable {
         /// `PKCanvasView` over the currently visible page and locks
         /// the PDFView's gestures so the user can't scroll/zoom
         /// mid-draw. On true → false (without commit): tears the
-        /// canvas down. Tool switches while active mutate the mounted
-        /// canvas's `tool` in place — no remount.
+        /// canvas down. Tool + color changes while active mutate the
+        /// mounted canvas's `tool` in place — no remount.
         private var drawingActive: Bool = false
-        func setDrawingActive(_ active: Bool, tool: PDFDrawingTool, in pdfView: PDFView) {
+        func setDrawingActive(
+            _ active: Bool,
+            tool: PDFDrawingTool,
+            color: PDFAnnotationColor,
+            in pdfView: PDFView
+        ) {
             if active, !drawingActive {
-                mountDrawingCanvas(tool: tool, in: pdfView)
+                mountDrawingCanvas(tool: tool, color: color, in: pdfView)
             } else if !active, drawingActive {
                 teardownDrawingCanvas(in: pdfView)
             } else if active, let canvas = drawingCanvas {
-                // Tool changed mid-draw — update in place.
-                canvas.tool = pkTool(for: tool)
+                // Tool / color changed mid-draw — update in place.
+                canvas.tool = pkTool(for: tool, color: color)
             }
             drawingActive = active
         }
 
-        private func mountDrawingCanvas(tool: PDFDrawingTool, in pdfView: PDFView) {
+        private func mountDrawingCanvas(
+            tool: PDFDrawingTool,
+            color: PDFAnnotationColor,
+            in pdfView: PDFView
+        ) {
             guard let page = pdfView.currentPage,
                   let document = pdfView.document
             else { return }
@@ -809,7 +838,7 @@ struct PDFCanvas: UIViewRepresentable {
             canvas.backgroundColor = .clear
             canvas.isOpaque = false
             canvas.drawingPolicy = .pencilOnly
-            canvas.tool = pkTool(for: tool)
+            canvas.tool = pkTool(for: tool, color: color)
             // PKCanvasView is itself a scroll view — disable its own
             // pan/zoom so only the strokes are captured.
             canvas.minimumZoomScale = 1
@@ -884,15 +913,45 @@ struct PDFCanvas: UIViewRepresentable {
             teardownDrawingCanvas(in: pdfView)
         }
 
-        /// Maps our `PDFDrawingTool` to a PencilKit `PKTool`. Phase 5b
-        /// ships pen (black, 2pt) + bitmap eraser; 5c adds pencil,
-        /// highlighter, and the color / width controls.
-        private func pkTool(for tool: PDFDrawingTool) -> PKTool {
+        /// Maps our `(PDFDrawingTool, color)` pair to a PencilKit
+        /// `PKTool`. The marker translucently applies its color (~50%
+        /// alpha) so highlights read like a highlighter; pen and
+        /// pencil use the color opaquely. The eraser ignores color
+        /// entirely.
+        private func pkTool(
+            for tool: PDFDrawingTool,
+            color: PDFAnnotationColor
+        ) -> PKTool {
+            let uiColor = UIColor(
+                red: color.r, green: color.g, blue: color.b, alpha: color.a
+            )
             switch tool {
             case .pen:
-                return PKInkingTool(.pen, color: .black, width: 2)
+                return PKInkingTool(.pen, color: uiColor, width: 2)
+            case .pencil:
+                return PKInkingTool(.pencil, color: uiColor, width: 2)
+            case .marker:
+                // Marker is the highlighter — translucent, wide.
+                let translucent = uiColor.withAlphaComponent(0.4)
+                return PKInkingTool(.marker, color: translucent, width: 18)
             case .eraser:
                 return PKEraserTool(.bitmap)
+            }
+        }
+
+        /// Triggered by `drawingUndoTrigger`. Calls the matching
+        /// `undoManager` method on the mounted canvas. No-op if
+        /// nothing's queued or the canvas isn't mounted — the always-
+        /// tappable buttons in the toolbar are intentional; we don't
+        /// dim them in 5c (state-tracking adds complexity better
+        /// solved in 5d alongside the width picker).
+        func applyUndo(direction: DrawingUndoTrigger.Direction) {
+            guard let undoManager = drawingCanvas?.undoManager else { return }
+            switch direction {
+            case .undo:
+                if undoManager.canUndo { undoManager.undo() }
+            case .redo:
+                if undoManager.canRedo { undoManager.redo() }
             }
         }
     }
@@ -947,7 +1006,9 @@ struct PDFContent: View {
     /// Drawing-mode pass-throughs from the wiring view.
     let isDrawingActive: Bool
     let drawingTool: PDFDrawingTool
+    let drawingInkColor: PDFAnnotationColor
     let drawingCommitTrigger: DrawingCommitTrigger?
+    let drawingUndoTrigger: DrawingUndoTrigger?
     let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
 
     @State private var parseResult: ParseResult = .parsing
@@ -1033,7 +1094,9 @@ struct PDFContent: View {
                 onCurrentMatchChanged: onCurrentMatchChanged,
                 isDrawingActive: isDrawingActive,
                 drawingTool: drawingTool,
+                drawingInkColor: drawingInkColor,
                 drawingCommitTrigger: drawingCommitTrigger,
+                drawingUndoTrigger: drawingUndoTrigger,
                 onDrawingCommitted: onDrawingCommitted
             )
 

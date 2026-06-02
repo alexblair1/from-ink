@@ -50,12 +50,23 @@ struct DrawingCommitTrigger: Equatable, Sendable {
     let id: UUID
 }
 
-/// Tool selection for the modal PDF drawing toolbar. Phase 5b ships
-/// pen + eraser; pencil / highlighter / lasso land in 5c alongside
-/// color and width pickers.
+/// Tool selection for the modal PDF drawing toolbar. Phase 5c adds
+/// pencil + marker; lasso + width pickers land in 5d.
 enum PDFDrawingTool: Equatable, Sendable {
     case pen
+    case pencil
+    case marker
     case eraser
+}
+
+/// One-shot signal asking `PDFCanvas` to call `undoManager.undo()`
+/// (or `.redo()`) on the mounted `PKCanvasView`. Mirrors the
+/// trigger-id pattern used by search and commit so a stable value
+/// across re-renders doesn't re-fire.
+struct DrawingUndoTrigger: Equatable, Sendable {
+    enum Direction: Sendable { case undo, redo }
+    let id: UUID
+    let direction: Direction
 }
 
 /// In-PDF search state. The status machine collapses six flat
@@ -178,10 +189,19 @@ struct PDFFeature: Reducer {
         /// into drawing mode so the tool doesn't carry stale state
         /// across sessions.
         var drawingTool: PDFDrawingTool = .pen
+        /// Active ink color. Resets to black on every fresh entry into
+        /// drawing mode. The eraser ignores color; the marker
+        /// translucently applies it. `.blackText` is opaque so PKInk's
+        /// pen and pencil render naturally.
+        var drawingInkColor: PDFAnnotationColor = .blackText
         /// One-shot fired by `.drawingDoneTapped`. The canvas
         /// coordinator serializes its `PKCanvasView` drawing on
         /// receipt and dispatches `.drawingCommitted`.
         var drawingCommitTrigger: DrawingCommitTrigger?
+        /// One-shot fired by `.drawingUndoTapped` / `.drawingRedoTapped`.
+        /// The canvas coordinator calls the matching undoManager
+        /// method on the mounted `PKCanvasView`.
+        var drawingUndoTrigger: DrawingUndoTrigger?
 
         enum LoadState: Equatable {
             case loading
@@ -255,6 +275,14 @@ struct PDFFeature: Reducer {
         case drawingModeEntered
         /// User picked a different tool in the drawing toolbar.
         case drawingToolChanged(PDFDrawingTool)
+        /// User picked a different ink color in the drawing palette.
+        case drawingInkColorChanged(PDFAnnotationColor)
+        /// User tapped the undo or redo button in the drawing top bar.
+        /// Fires the matching trigger so the canvas's undoManager
+        /// runs imperatively. The buttons are always tappable — if
+        /// there's nothing to undo, the canvas no-ops silently.
+        case drawingUndoTapped
+        case drawingRedoTapped
         /// User tapped Done. Fires the commit trigger so the canvas
         /// serializes its drawing.
         case drawingDoneTapped
@@ -439,12 +467,29 @@ struct PDFFeature: Reducer {
             case .drawingModeEntered:
                 state.isDrawingActive = true
                 state.drawingTool = .pen
+                state.drawingInkColor = .blackText
                 state.drawingCommitTrigger = nil
+                state.drawingUndoTrigger = nil
                 return .none
 
             case .drawingToolChanged(let tool):
                 guard state.isDrawingActive else { return .none }
                 state.drawingTool = tool
+                return .none
+
+            case .drawingInkColorChanged(let color):
+                guard state.isDrawingActive else { return .none }
+                state.drawingInkColor = color
+                return .none
+
+            case .drawingUndoTapped:
+                guard state.isDrawingActive else { return .none }
+                state.drawingUndoTrigger = DrawingUndoTrigger(id: uuid(), direction: .undo)
+                return .none
+
+            case .drawingRedoTapped:
+                guard state.isDrawingActive else { return .none }
+                state.drawingUndoTrigger = DrawingUndoTrigger(id: uuid(), direction: .redo)
                 return .none
 
             case .drawingDoneTapped:
@@ -455,6 +500,7 @@ struct PDFFeature: Reducer {
             case .drawingCancelTapped:
                 state.isDrawingActive = false
                 state.drawingCommitTrigger = nil
+                state.drawingUndoTrigger = nil
                 return .none
 
             case .drawingCommitted(let bytes, let bounds, let pageIndex):
@@ -483,11 +529,13 @@ struct PDFFeature: Reducer {
                 state.annotations.append(snapshot)
                 state.isDrawingActive = false
                 state.drawingCommitTrigger = nil
+                state.drawingUndoTrigger = nil
                 return .none
 
             case .drawingCommitFailed:
                 state.isDrawingActive = false
                 state.drawingCommitTrigger = nil
+                state.drawingUndoTrigger = nil
                 return .none
 
             case .searchToggled:

@@ -107,11 +107,12 @@ struct PDFViewerWiringView: View {
         .background(ds.colors.paper)
     }
 
-    /// Top-bar chrome during drawing mode — Cancel on the left,
-    /// Done on the right. The dismiss-the-viewer X is hidden so the
-    /// user can't accidentally close the modal mid-draw.
+    /// Top-bar chrome during drawing mode — Cancel + Undo / Redo on
+    /// the left, page label centered, Done on the right. The
+    /// dismiss-the-viewer X is hidden so the user can't accidentally
+    /// close the modal mid-draw.
     private var drawingTopBar: some View {
-        HStack(spacing: ds.spacing.sm) {
+        HStack(spacing: ds.spacing.xs) {
             Button { store.send(.drawingCancelTapped) } label: {
                 Text(AppStrings.Library.drawingCancelButton)
                     .font(ds.typography.cardTitle)
@@ -120,6 +121,26 @@ struct PDFViewerWiringView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            Button { store.send(.drawingUndoTapped) } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(ds.colors.inkPure)
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(AppStrings.Library.drawingUndoButton)
+
+            Button { store.send(.drawingRedoTapped) } label: {
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(ds.colors.inkPure)
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(AppStrings.Library.drawingRedoButton)
 
             Spacer()
 
@@ -138,22 +159,35 @@ struct PDFViewerWiringView: View {
         }
     }
 
-    /// Bottom toolbar shown while drawing mode is active. Pen + eraser
-    /// only for Phase 5b; 5c adds pencil, highlighter, color, width.
+    /// Bottom toolbar shown while drawing mode is active. Tool group
+    /// on the left (pen, pencil, marker, eraser); color swatches on
+    /// the right. Width picker lands in Phase 5d.
     private var drawingToolbar: some View {
         HStack(spacing: ds.spacing.base) {
-            Spacer()
             drawingToolButton(
                 tool: .pen,
                 systemName: "pencil.tip",
                 label: AppStrings.Library.drawingToolPen
             )
             drawingToolButton(
+                tool: .pencil,
+                systemName: "pencil",
+                label: AppStrings.Library.drawingToolPencil
+            )
+            drawingToolButton(
+                tool: .marker,
+                systemName: "highlighter",
+                label: AppStrings.Library.drawingToolMarker
+            )
+            drawingToolButton(
                 tool: .eraser,
                 systemName: "eraser",
                 label: AppStrings.Library.drawingToolEraser
             )
+
             Spacer()
+
+            drawingColorPalette
         }
         .padding(.horizontal, ds.spacing.base)
         .frame(height: 56)
@@ -173,6 +207,46 @@ struct PDFViewerWiringView: View {
                 .foregroundStyle(isActive ? ds.colors.paperOnInk : ds.colors.ink)
                 .frame(width: 44, height: 44)
                 .background(isActive ? ds.colors.ink : Color.clear)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Five-swatch color picker. The eraser ignores color, so the
+    /// palette stays visible (and tappable) even when eraser is
+    /// active — the next inking tool the user picks resumes with
+    /// that color.
+    private var drawingColorPalette: some View {
+        HStack(spacing: ds.spacing.xs) {
+            colorSwatch(.blackText, label: AppStrings.Library.drawingColorBlack)
+            colorSwatch(.inkRed, label: AppStrings.Library.drawingColorRed)
+            colorSwatch(.inkBlue, label: AppStrings.Library.drawingColorBlue)
+            colorSwatch(.inkGreen, label: AppStrings.Library.drawingColorGreen)
+            colorSwatch(.inkYellow, label: AppStrings.Library.drawingColorYellow)
+        }
+    }
+
+    @ViewBuilder
+    private func colorSwatch(
+        _ color: PDFAnnotationColor,
+        label: String
+    ) -> some View {
+        let isActive = store.drawingInkColor == color
+        Button { store.send(.drawingInkColorChanged(color)) } label: {
+            Circle()
+                .fill(Color(
+                    red: color.r, green: color.g, blue: color.b, opacity: color.a
+                ))
+                .frame(width: 24, height: 24)
+                .overlay(
+                    Circle()
+                        .strokeBorder(
+                            isActive ? ds.colors.ink : ds.colors.rule,
+                            lineWidth: isActive ? 2 : ds.layout.borderWidth
+                        )
+                )
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -298,7 +372,9 @@ struct PDFViewerWiringView: View {
                 },
                 isDrawingActive: store.isDrawingActive,
                 drawingTool: store.drawingTool,
+                drawingInkColor: store.drawingInkColor,
                 drawingCommitTrigger: store.drawingCommitTrigger,
+                drawingUndoTrigger: store.drawingUndoTrigger,
                 onDrawingCommitted: { bytes, bounds, pageIndex in
                     store.send(.drawingCommitted(bytes: bytes, bounds: bounds, pageIndex: pageIndex))
                 }

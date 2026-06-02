@@ -371,10 +371,12 @@ final class PDFFeatureTests: XCTestCase {
     // MARK: - Drawing mode
 
     @MainActor
-    func test_drawingModeEntered_setsActiveWithPenDefault() async {
+    func test_drawingModeEntered_resetsToolColorAndTriggers() async {
         var initial = makeState()
         initial.drawingTool = .eraser
+        initial.drawingInkColor = .inkRed
         initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
+        initial.drawingUndoTrigger = DrawingUndoTrigger(id: UUID(), direction: .undo)
 
         let store = TestStore(initialState: initial) {
             PDFFeature()
@@ -382,12 +384,81 @@ final class PDFFeatureTests: XCTestCase {
             $0.notebookClient = self.makeClient()
         }
 
-        // Entering resets the tool to `.pen` and clears any stale
-        // commit trigger so a previous session's residue can't fire.
+        // Entering resets the tool, color, and any stale triggers so
+        // a previous session's residue can't fire.
         await store.send(.drawingModeEntered) {
             $0.isDrawingActive = true
             $0.drawingTool = .pen
+            $0.drawingInkColor = .blackText
             $0.drawingCommitTrigger = nil
+            $0.drawingUndoTrigger = nil
+        }
+    }
+
+    @MainActor
+    func test_drawingInkColorChanged_whileInactive_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingInkColorChanged(.inkRed))
+    }
+
+    @MainActor
+    func test_drawingInkColorChanged_whileActive_updatesColor() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingInkColorChanged(.inkBlue)) {
+            $0.drawingInkColor = .inkBlue
+        }
+    }
+
+    @MainActor
+    func test_drawingUndoTapped_whileInactive_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingUndoTapped)
+    }
+
+    @MainActor
+    func test_drawingUndoTapped_whileActive_firesTrigger() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.uuid = .incrementing
+        }
+        await store.send(.drawingUndoTapped) {
+            $0.drawingUndoTrigger = DrawingUndoTrigger(id: self.firstUUID, direction: .undo)
+        }
+    }
+
+    @MainActor
+    func test_drawingRedoTapped_whileActive_firesTrigger() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+            $0.uuid = .incrementing
+        }
+        await store.send(.drawingRedoTapped) {
+            $0.drawingUndoTrigger = DrawingUndoTrigger(id: self.firstUUID, direction: .redo)
         }
     }
 

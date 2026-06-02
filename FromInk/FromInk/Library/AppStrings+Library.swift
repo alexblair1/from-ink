@@ -76,10 +76,55 @@ extension AppStrings {
             value: "Pen",
             comment: "Accessibility label for the pen tool in the PDF drawing toolbar"
         )
+        static let drawingToolPencil = NSLocalizedString(
+            "library.pdfViewer.drawing.tool.pencil",
+            value: "Pencil",
+            comment: "Accessibility label for the pencil tool in the PDF drawing toolbar"
+        )
+        static let drawingToolMarker = NSLocalizedString(
+            "library.pdfViewer.drawing.tool.marker",
+            value: "Marker",
+            comment: "Accessibility label for the marker / highlighter tool in the PDF drawing toolbar"
+        )
         static let drawingToolEraser = NSLocalizedString(
             "library.pdfViewer.drawing.tool.eraser",
             value: "Eraser",
             comment: "Accessibility label for the eraser tool in the PDF drawing toolbar"
+        )
+        static let drawingUndoButton = NSLocalizedString(
+            "library.pdfViewer.drawing.undo",
+            value: "Undo",
+            comment: "Accessibility label for the undo button in the PDF drawing toolbar"
+        )
+        static let drawingRedoButton = NSLocalizedString(
+            "library.pdfViewer.drawing.redo",
+            value: "Redo",
+            comment: "Accessibility label for the redo button in the PDF drawing toolbar"
+        )
+        static let drawingColorBlack = NSLocalizedString(
+            "library.pdfViewer.drawing.color.black",
+            value: "Black ink",
+            comment: "Accessibility label for the black ink color swatch"
+        )
+        static let drawingColorRed = NSLocalizedString(
+            "library.pdfViewer.drawing.color.red",
+            value: "Red ink",
+            comment: "Accessibility label for the red ink color swatch"
+        )
+        static let drawingColorBlue = NSLocalizedString(
+            "library.pdfViewer.drawing.color.blue",
+            value: "Blue ink",
+            comment: "Accessibility label for the blue ink color swatch"
+        )
+        static let drawingColorGreen = NSLocalizedString(
+            "library.pdfViewer.drawing.color.green",
+            value: "Green ink",
+            comment: "Accessibility label for the green ink color swatch"
+        )
+        static let drawingColorYellow = NSLocalizedString(
+            "library.pdfViewer.drawing.color.yellow",
+            value: "Yellow ink",
+            comment: "Accessibility label for the yellow ink color swatch"
         )
         static let searchButton = NSLocalizedString(
             "library.pdfViewer.search.button",

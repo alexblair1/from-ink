@@ -401,6 +401,13 @@ struct PDFAnnotationColor: Equatable, Sendable {
 
     /// Opaque black — typical for text and shape annotations.
     static let blackText = PDFAnnotationColor(r: 0, g: 0, b: 0, a: 1)
+
+    // Drawing palette — five swatches the PDF drawing toolbar exposes.
+    // Tuned for high-contrast strokes over typical PDF backgrounds.
+    static let inkRed   = PDFAnnotationColor(r: 0.85, g: 0.10, b: 0.10, a: 1)
+    static let inkBlue  = PDFAnnotationColor(r: 0.10, g: 0.30, b: 0.85, a: 1)
+    static let inkGreen = PDFAnnotationColor(r: 0.10, g: 0.55, b: 0.20, a: 1)
+    static let inkYellow = PDFAnnotationColor(r: 0.95, g: 0.75, b: 0.10, a: 1)
 }
 
 // MARK: - Validation
