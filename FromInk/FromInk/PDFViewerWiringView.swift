@@ -160,38 +160,60 @@ struct PDFViewerWiringView: View {
     }
 
     /// Bottom toolbar shown while drawing mode is active. Tool group
-    /// on the left (pen, pencil, marker, eraser); color swatches on
-    /// the right. Width picker lands in Phase 5d.
+    /// on the left (pen, pencil, marker, eraser, lasso); color
+    /// swatches in the middle; width swatches on the right.
+    /// Horizontally scrollable so the iPhone narrow case doesn't
+    /// clip — iPad has room for everything inline.
     private var drawingToolbar: some View {
-        HStack(spacing: ds.spacing.base) {
-            drawingToolButton(
-                tool: .pen,
-                systemName: "pencil.tip",
-                label: AppStrings.Library.drawingToolPen
-            )
-            drawingToolButton(
-                tool: .pencil,
-                systemName: "pencil",
-                label: AppStrings.Library.drawingToolPencil
-            )
-            drawingToolButton(
-                tool: .marker,
-                systemName: "highlighter",
-                label: AppStrings.Library.drawingToolMarker
-            )
-            drawingToolButton(
-                tool: .eraser,
-                systemName: "eraser",
-                label: AppStrings.Library.drawingToolEraser
-            )
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: ds.spacing.base) {
+                drawingToolButton(
+                    tool: .pen,
+                    systemName: "pencil.tip",
+                    label: AppStrings.Library.drawingToolPen
+                )
+                drawingToolButton(
+                    tool: .pencil,
+                    systemName: "pencil",
+                    label: AppStrings.Library.drawingToolPencil
+                )
+                drawingToolButton(
+                    tool: .marker,
+                    systemName: "highlighter",
+                    label: AppStrings.Library.drawingToolMarker
+                )
+                drawingToolButton(
+                    tool: .eraser,
+                    systemName: "eraser",
+                    label: AppStrings.Library.drawingToolEraser
+                )
+                drawingToolButton(
+                    tool: .lasso,
+                    systemName: "lasso",
+                    label: AppStrings.Library.drawingToolLasso
+                )
 
-            Spacer()
+                drawingDivider
 
-            drawingColorPalette
+                drawingColorPalette
+
+                drawingDivider
+
+                drawingWidthPalette
+            }
+            .padding(.horizontal, ds.spacing.base)
         }
-        .padding(.horizontal, ds.spacing.base)
         .frame(height: 56)
         .background(ds.colors.paper)
+    }
+
+    /// Thin vertical separator between toolbar groups. Matches the
+    /// chrome rule color so it reads as quiet structure rather than
+    /// decoration.
+    private var drawingDivider: some View {
+        Rectangle()
+            .fill(ds.colors.rule)
+            .frame(width: ds.layout.borderWidth, height: 24)
     }
 
     @ViewBuilder
@@ -247,6 +269,37 @@ struct PDFViewerWiringView: View {
                         )
                 )
                 .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Three-swatch width picker. Each swatch renders a dot scaled
+    /// to its preset so the visual matches what the tool will draw.
+    /// Eraser and lasso ignore the value but the picker stays
+    /// tappable — the next inking tool resumes with the chosen width.
+    private var drawingWidthPalette: some View {
+        HStack(spacing: ds.spacing.xs) {
+            widthSwatch(.small, dotSize: 8, label: AppStrings.Library.drawingWidthSmall)
+            widthSwatch(.medium, dotSize: 14, label: AppStrings.Library.drawingWidthMedium)
+            widthSwatch(.large, dotSize: 20, label: AppStrings.Library.drawingWidthLarge)
+        }
+    }
+
+    @ViewBuilder
+    private func widthSwatch(
+        _ width: PDFDrawingInkWidth,
+        dotSize: CGFloat,
+        label: String
+    ) -> some View {
+        let isActive = store.drawingInkWidth == width
+        Button { store.send(.drawingInkWidthChanged(width)) } label: {
+            Circle()
+                .fill(ds.colors.ink)
+                .frame(width: dotSize, height: dotSize)
+                .frame(width: 44, height: 44)
+                .background(isActive ? ds.colors.ink.opacity(0.08) : Color.clear)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -373,6 +426,7 @@ struct PDFViewerWiringView: View {
                 isDrawingActive: store.isDrawingActive,
                 drawingTool: store.drawingTool,
                 drawingInkColor: store.drawingInkColor,
+                drawingInkWidth: store.drawingInkWidth,
                 drawingCommitTrigger: store.drawingCommitTrigger,
                 drawingUndoTrigger: store.drawingUndoTrigger,
                 onDrawingCommitted: { bytes, bounds, pageIndex in

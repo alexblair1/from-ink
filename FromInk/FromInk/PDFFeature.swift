@@ -50,13 +50,37 @@ struct DrawingCommitTrigger: Equatable, Sendable {
     let id: UUID
 }
 
-/// Tool selection for the modal PDF drawing toolbar. Phase 5c adds
-/// pencil + marker; lasso + width pickers land in 5d.
+/// Tool selection for the modal PDF drawing toolbar.
 enum PDFDrawingTool: Equatable, Sendable {
     case pen
     case pencil
     case marker
     case eraser
+    /// Selection tool — drags a lasso path; PKCanvasView shows its
+    /// own selection menu (Delete / Copy / Cut / Duplicate) around
+    /// enclosed strokes.
+    case lasso
+}
+
+/// Stroke width preset for inking tools. The PDF drawing toolbar
+/// exposes three sizes; underlying point values target Apple Markup's
+/// thin/medium/thick feel. The marker uses these values pre-scaled
+/// for its broader appearance.
+enum PDFDrawingInkWidth: Equatable, Sendable {
+    case small
+    case medium
+    case large
+
+    /// Points used directly for pen / pencil. Marker scales these up
+    /// in `Coordinator.pkTool` so the highlighter reads visually
+    /// thicker than the pen at the same width preset.
+    var inkPoints: Double {
+        switch self {
+        case .small: return 1
+        case .medium: return 2.5
+        case .large: return 5
+        }
+    }
 }
 
 /// One-shot signal asking `PDFCanvas` to call `undoManager.undo()`
@@ -190,10 +214,13 @@ struct PDFFeature: Reducer {
         /// across sessions.
         var drawingTool: PDFDrawingTool = .pen
         /// Active ink color. Resets to black on every fresh entry into
-        /// drawing mode. The eraser ignores color; the marker
-        /// translucently applies it. `.blackText` is opaque so PKInk's
-        /// pen and pencil render naturally.
+        /// drawing mode. The eraser and lasso ignore color; the
+        /// marker translucently applies it. `.blackText` is opaque so
+        /// PKInk's pen and pencil render naturally.
         var drawingInkColor: PDFAnnotationColor = .blackText
+        /// Active stroke width preset. Resets to `.medium` on every
+        /// fresh entry. Eraser and lasso ignore the value.
+        var drawingInkWidth: PDFDrawingInkWidth = .medium
         /// One-shot fired by `.drawingDoneTapped`. The canvas
         /// coordinator serializes its `PKCanvasView` drawing on
         /// receipt and dispatches `.drawingCommitted`.
@@ -277,6 +304,8 @@ struct PDFFeature: Reducer {
         case drawingToolChanged(PDFDrawingTool)
         /// User picked a different ink color in the drawing palette.
         case drawingInkColorChanged(PDFAnnotationColor)
+        /// User picked a different stroke width preset.
+        case drawingInkWidthChanged(PDFDrawingInkWidth)
         /// User tapped the undo or redo button in the drawing top bar.
         /// Fires the matching trigger so the canvas's undoManager
         /// runs imperatively. The buttons are always tappable — if
@@ -468,6 +497,7 @@ struct PDFFeature: Reducer {
                 state.isDrawingActive = true
                 state.drawingTool = .pen
                 state.drawingInkColor = .blackText
+                state.drawingInkWidth = .medium
                 state.drawingCommitTrigger = nil
                 state.drawingUndoTrigger = nil
                 return .none
@@ -480,6 +510,11 @@ struct PDFFeature: Reducer {
             case .drawingInkColorChanged(let color):
                 guard state.isDrawingActive else { return .none }
                 state.drawingInkColor = color
+                return .none
+
+            case .drawingInkWidthChanged(let width):
+                guard state.isDrawingActive else { return .none }
+                state.drawingInkWidth = width
                 return .none
 
             case .drawingUndoTapped:

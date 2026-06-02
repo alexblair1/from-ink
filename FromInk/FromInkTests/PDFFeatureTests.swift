@@ -371,10 +371,11 @@ final class PDFFeatureTests: XCTestCase {
     // MARK: - Drawing mode
 
     @MainActor
-    func test_drawingModeEntered_resetsToolColorAndTriggers() async {
+    func test_drawingModeEntered_resetsToolColorWidthAndTriggers() async {
         var initial = makeState()
         initial.drawingTool = .eraser
         initial.drawingInkColor = .inkRed
+        initial.drawingInkWidth = .large
         initial.drawingCommitTrigger = DrawingCommitTrigger(id: UUID())
         initial.drawingUndoTrigger = DrawingUndoTrigger(id: UUID(), direction: .undo)
 
@@ -384,14 +385,55 @@ final class PDFFeatureTests: XCTestCase {
             $0.notebookClient = self.makeClient()
         }
 
-        // Entering resets the tool, color, and any stale triggers so
+        // Entering resets tool/color/width and any stale triggers so
         // a previous session's residue can't fire.
         await store.send(.drawingModeEntered) {
             $0.isDrawingActive = true
             $0.drawingTool = .pen
             $0.drawingInkColor = .blackText
+            $0.drawingInkWidth = .medium
             $0.drawingCommitTrigger = nil
             $0.drawingUndoTrigger = nil
+        }
+    }
+
+    @MainActor
+    func test_drawingInkWidthChanged_whileInactive_isNoOp() async {
+        let store = TestStore(initialState: makeState()) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingInkWidthChanged(.large))
+    }
+
+    @MainActor
+    func test_drawingInkWidthChanged_whileActive_updatesWidth() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingInkWidthChanged(.large)) {
+            $0.drawingInkWidth = .large
+        }
+    }
+
+    @MainActor
+    func test_drawingToolChanged_acceptsLasso() async {
+        var initial = makeState()
+        initial.isDrawingActive = true
+
+        let store = TestStore(initialState: initial) {
+            PDFFeature()
+        } withDependencies: {
+            $0.notebookClient = self.makeClient()
+        }
+        await store.send(.drawingToolChanged(.lasso)) {
+            $0.drawingTool = .lasso
         }
     }
 

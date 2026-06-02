@@ -91,6 +91,26 @@ extension AppStrings {
             value: "Eraser",
             comment: "Accessibility label for the eraser tool in the PDF drawing toolbar"
         )
+        static let drawingToolLasso = NSLocalizedString(
+            "library.pdfViewer.drawing.tool.lasso",
+            value: "Lasso",
+            comment: "Accessibility label for the lasso selection tool in the PDF drawing toolbar"
+        )
+        static let drawingWidthSmall = NSLocalizedString(
+            "library.pdfViewer.drawing.width.small",
+            value: "Thin",
+            comment: "Accessibility label for the thinnest stroke width in the PDF drawing toolbar"
+        )
+        static let drawingWidthMedium = NSLocalizedString(
+            "library.pdfViewer.drawing.width.medium",
+            value: "Medium",
+            comment: "Accessibility label for the medium stroke width in the PDF drawing toolbar"
+        )
+        static let drawingWidthLarge = NSLocalizedString(
+            "library.pdfViewer.drawing.width.large",
+            value: "Thick",
+            comment: "Accessibility label for the thickest stroke width in the PDF drawing toolbar"
+        )
         static let drawingUndoButton = NSLocalizedString(
             "library.pdfViewer.drawing.undo",
             value: "Undo",

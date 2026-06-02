@@ -335,9 +335,12 @@ struct PDFCanvas: UIViewRepresentable {
     /// disturb existing strokes.
     let drawingTool: PDFDrawingTool
     /// Current ink color for inking tools (pen, pencil, marker).
-    /// The eraser ignores it. Mutates the mounted canvas's tool in
-    /// place when changed.
+    /// The eraser and lasso ignore it. Mutates the mounted canvas's
+    /// tool in place when changed.
     let drawingInkColor: PDFAnnotationColor
+    /// Current stroke width preset for inking tools. Eraser and
+    /// lasso ignore it.
+    let drawingInkWidth: PDFDrawingInkWidth
     /// One-shot — when a new id arrives the coordinator serializes
     /// the canvas's drawing and fires `onDrawingCommitted`.
     let drawingCommitTrigger: DrawingCommitTrigger?
@@ -424,6 +427,7 @@ struct PDFCanvas: UIViewRepresentable {
             isDrawingActive,
             tool: drawingTool,
             color: drawingInkColor,
+            width: drawingInkWidth,
             in: uiView
         )
 
@@ -785,22 +789,24 @@ struct PDFCanvas: UIViewRepresentable {
         /// `PKCanvasView` over the currently visible page and locks
         /// the PDFView's gestures so the user can't scroll/zoom
         /// mid-draw. On true → false (without commit): tears the
-        /// canvas down. Tool + color changes while active mutate the
-        /// mounted canvas's `tool` in place — no remount.
+        /// canvas down. Tool, color, and width changes while active
+        /// mutate the mounted canvas's `tool` in place — no remount.
         private var drawingActive: Bool = false
         func setDrawingActive(
             _ active: Bool,
             tool: PDFDrawingTool,
             color: PDFAnnotationColor,
+            width: PDFDrawingInkWidth,
             in pdfView: PDFView
         ) {
             if active, !drawingActive {
-                mountDrawingCanvas(tool: tool, color: color, in: pdfView)
+                mountDrawingCanvas(tool: tool, color: color, width: width, in: pdfView)
             } else if !active, drawingActive {
                 teardownDrawingCanvas(in: pdfView)
             } else if active, let canvas = drawingCanvas {
-                // Tool / color changed mid-draw — update in place.
-                canvas.tool = pkTool(for: tool, color: color)
+                // Tool / color / width changed mid-draw — update in
+                // place.
+                canvas.tool = pkTool(for: tool, color: color, width: width)
             }
             drawingActive = active
         }
@@ -808,6 +814,7 @@ struct PDFCanvas: UIViewRepresentable {
         private func mountDrawingCanvas(
             tool: PDFDrawingTool,
             color: PDFAnnotationColor,
+            width: PDFDrawingInkWidth,
             in pdfView: PDFView
         ) {
             guard let page = pdfView.currentPage,
@@ -838,7 +845,7 @@ struct PDFCanvas: UIViewRepresentable {
             canvas.backgroundColor = .clear
             canvas.isOpaque = false
             canvas.drawingPolicy = .pencilOnly
-            canvas.tool = pkTool(for: tool, color: color)
+            canvas.tool = pkTool(for: tool, color: color, width: width)
             // PKCanvasView is itself a scroll view — disable its own
             // pan/zoom so only the strokes are captured.
             canvas.minimumZoomScale = 1
@@ -913,29 +920,35 @@ struct PDFCanvas: UIViewRepresentable {
             teardownDrawingCanvas(in: pdfView)
         }
 
-        /// Maps our `(PDFDrawingTool, color)` pair to a PencilKit
-        /// `PKTool`. The marker translucently applies its color (~50%
-        /// alpha) so highlights read like a highlighter; pen and
-        /// pencil use the color opaquely. The eraser ignores color
-        /// entirely.
+        /// Maps our `(PDFDrawingTool, color, width)` triple to a
+        /// PencilKit `PKTool`. The marker translucently applies its
+        /// color (~40% alpha) and scales the width up so highlights
+        /// read like a highlighter; pen and pencil use the color
+        /// opaquely at the requested width. The eraser and lasso
+        /// ignore color and width entirely.
         private func pkTool(
             for tool: PDFDrawingTool,
-            color: PDFAnnotationColor
+            color: PDFAnnotationColor,
+            width: PDFDrawingInkWidth
         ) -> PKTool {
             let uiColor = UIColor(
                 red: color.r, green: color.g, blue: color.b, alpha: color.a
             )
+            let inkPoints = width.inkPoints
             switch tool {
             case .pen:
-                return PKInkingTool(.pen, color: uiColor, width: 2)
+                return PKInkingTool(.pen, color: uiColor, width: inkPoints)
             case .pencil:
-                return PKInkingTool(.pencil, color: uiColor, width: 2)
+                return PKInkingTool(.pencil, color: uiColor, width: inkPoints)
             case .marker:
-                // Marker is the highlighter — translucent, wide.
+                // Marker is the highlighter — translucent, scaled up
+                // to ~7× the ink width so highlights cover a line.
                 let translucent = uiColor.withAlphaComponent(0.4)
-                return PKInkingTool(.marker, color: translucent, width: 18)
+                return PKInkingTool(.marker, color: translucent, width: inkPoints * 7)
             case .eraser:
                 return PKEraserTool(.bitmap)
+            case .lasso:
+                return PKLassoTool()
             }
         }
 
@@ -1007,6 +1020,7 @@ struct PDFContent: View {
     let isDrawingActive: Bool
     let drawingTool: PDFDrawingTool
     let drawingInkColor: PDFAnnotationColor
+    let drawingInkWidth: PDFDrawingInkWidth
     let drawingCommitTrigger: DrawingCommitTrigger?
     let drawingUndoTrigger: DrawingUndoTrigger?
     let onDrawingCommitted: (_ bytes: Data, _ bounds: CGRect, _ pageIndex: Int) -> Void
@@ -1095,6 +1109,7 @@ struct PDFContent: View {
                 isDrawingActive: isDrawingActive,
                 drawingTool: drawingTool,
                 drawingInkColor: drawingInkColor,
+                drawingInkWidth: drawingInkWidth,
                 drawingCommitTrigger: drawingCommitTrigger,
                 drawingUndoTrigger: drawingUndoTrigger,
                 onDrawingCommitted: onDrawingCommitted
