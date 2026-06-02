@@ -22,9 +22,13 @@ implementation choice.
   `AppDependencyContainer.modelContainer` /
   `localContainer` with distinct store URLs (default store +
   `fromink-local.store`) to avoid SQLite table collisions.
-- **CloudKit is OFF in dev.** Synced container uses
-  `cloudKitDatabase: .none` today. Phase 6 flips to `.private(...)`
-  without touching the schema or models.
+- **CloudKit is OFF.** Synced container uses
+  `cloudKitDatabase: .none`. We are not deploying to CloudKit yet —
+  the goal at this stage is to keep the SwiftData schema in a
+  CloudKit-ready shape (defaults on every property, no
+  `@Attribute(.unique)`, optional relationships, externalStorage
+  for large blobs) so a future flip to `.private(...)` is a config
+  change rather than a refactor.
 - **PDF bytes use `@Attribute(.externalStorage)`.**
   `ImportedPDF.sourcePDFData` and `ImportedPDF.thumbnailData` are
   marked external. SwiftData writes the row to `default.store` and
@@ -43,12 +47,13 @@ implementation choice.
   uploads from CloudKit), user iCloud quota courtesy. Above this
   the precheck rejects with the localized "too large" alert before
   reading bytes.
-- **CloudKit at Phase 6 flip.** Schema stays. External blob files
-  auto-promote to `CKAsset` on first sync; metadata (title,
-  contentHash, byteSize, etc.) rides in the CKRecord, well under
-  the 1 MB record cap. We don't need multipart / chunked transfer —
-  CloudKit manages the asset upload opaquely. We DO need
-  `CKError` handling at save boundaries (no resumable uploads).
+- **When CloudKit is eventually turned on**, the schema doesn't
+  change. External blob files auto-promote to `CKAsset` on first
+  sync; metadata (title, contentHash, byteSize, etc.) rides in the
+  CKRecord, well under the 1 MB record cap. CloudKit manages the
+  asset upload opaquely — no multipart / chunked transfer needed.
+  `CKError` handling at save boundaries would become relevant at
+  that point but is **not** required today.
 - **The 1 MB number is the per-record cap, not a transfer limit.**
   Only bites if you cram a blob into a structured field — we don't.
   `@Attribute(.externalStorage)` sidesteps it entirely.
@@ -60,19 +65,20 @@ implementation choice.
 
 ---
 
-## PDF imports — large file handling (pre-CloudKit verification)
+## PDF imports — large file handling
 
-**Why this matters before Phase 6.** PDFs persist via SwiftData's
+**Why this matters.** PDFs persist via SwiftData's
 `@Attribute(.externalStorage)` to a `_EXTERNAL_DATA/` directory next to
-the SQLite store. When CloudKit (`cloudKitDatabase: .private(...)`)
-flips on, those external blobs auto-promote to `CKAsset` on first sync.
-We need to know — before that flip — that the current import / persist
-path handles large files without OOMing on iPhone, that blobs land
-where we expect, that failures are clean, and that the 500 MB cap in
-`ImportPDFService.maxAssetBytes` is honored end-to-end. The
-`Data(contentsOf: url)` call in `ImportPDFService.liveValue` reads the
-entire file into RAM as one allocation — that's the riskiest piece on
-RAM-constrained devices, and unit tests can't surface it.
+the SQLite store. The current import path uses
+`Data(contentsOf: url)` to materialize the whole file into RAM, which
+is the riskiest piece on RAM-constrained devices and isn't exercised
+by unit tests. We want to verify that imports work end-to-end across
+the size spectrum, that blobs actually land in external storage
+(not inline in the SQLite row), that the 500 MB cap in
+`ImportPDFService.maxAssetBytes` is honored, that deletes reclaim
+disk, and that failures leave no orphan state. These are structural-
+correctness checks against the way the app handles files on disk
+today — independent of any future sync decisions.
 
 **Fixtures.** Source a single real PDF at each tier rather than
 generating ones — synthetic PDFs don't exercise the page-parse cost.
@@ -174,7 +180,7 @@ won't surface the OOM ceiling.
 
 This is the "are we wired the way we think we are" test — confirms
 the `@Attribute(.externalStorage)` promotion is actually happening
-before we trust CloudKit to do the right thing with it later.
+so the SwiftData schema is structurally correct.
 
 1. Import any sized fixture (50 MB is fine).
 2. With the device or simulator attached, run:
@@ -196,9 +202,11 @@ before we trust CloudKit to do the right thing with it later.
   row, ~few KB, not by the PDF's full size).
 
 **If this fails:** the `.externalStorage` attribute isn't taking
-effect, and CloudKit would try to ship the bytes in the CKRecord (1 MB
-record cap → silent sync failure on any non-trivial PDF). Block the
-Phase 6 flip until resolved.
+effect, meaning bytes are being stored inline in the SQLite row.
+That's a structural defect — large files would balloon the SQLite
+file (perf hit on every fetch / save) and the schema would not be
+CloudKit-ready in the sense the data model EDD requires (inline
+fields larger than 1 MB silently break sync when sync is on).
 
 ### TC-PDF-IMPORT-07: Delete reclaims external storage
 
@@ -215,8 +223,8 @@ Phase 6 flip until resolved.
   baseline. SwiftData should cascade-delete the external blob along
   with the row.
 - If storage stays inflated: the external blob isn't being cleaned
-  up. Block Phase 6 — leaked CKAssets in iCloud would eat the user's
-  quota silently.
+  up. That's a real defect — repeated import + delete cycles would
+  eat the user's device storage with no UI signal.
 
 ### TC-PDF-IMPORT-08: Multiple consecutive large imports
 
@@ -240,10 +248,11 @@ For each TC above, capture in the run notes:
 - Pass / fail / blocked
 - Console excerpts for any unexpected output
 
-Findings that block the CloudKit flip:
+Findings that indicate a real defect to fix before continuing
+significant feature work on the PDF surface:
 - TC-06 fails (externalStorage not actually external)
 - TC-07 fails (deleted PDFs leak external blobs)
 - TC-03 crashes at the cap (OOM ceiling lower than 500 MB on
-  target devices)
+  target devices — the cap needs to come down)
 - Any TC produces unrecoverable on-disk state (corrupted SQLite,
   orphan blobs, etc.)
