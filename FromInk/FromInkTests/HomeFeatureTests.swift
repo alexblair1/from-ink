@@ -83,6 +83,8 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.wheelToggled) {
             $0.isWheelOpen = true
             $0.activeBriefTab = .calendar
+            // nowTick is paired with every dayContent fetch.
+            $0.nowTick = self.wednesday
         }
 
         await store.receive(.dayContentLoaded(injectedContent)) {
@@ -177,6 +179,8 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.dateWarpedTo(destinationSunday)) {
             $0.currentDate = destinationSunday
             $0.isWarped = true
+            // nowTick is paired with every dayContent fetch.
+            $0.nowTick = self.wednesday
         }
 
         await store.receive(.dayContentLoaded(injectedContent)) {
@@ -212,6 +216,9 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.dateWarpedTo(backToToday)) {
             $0.currentDate = backToToday
             $0.isWarped = false
+            // `nowTick` is paired with every dayContent fetch — see the
+            // invariant in `.appeared`.
+            $0.nowTick = self.wednesday
         }
 
         await store.receive(.dayContentLoaded(emptyTodayContent)) {
@@ -349,6 +356,7 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = TestClock()
             $0.dailyBriefClient = makeStubClient(
                 dayContent: { _ in DayContent(dayKey: "2026-05-13") },
                 fetchOrGenerate: {
@@ -375,6 +383,10 @@ final class HomeFeatureTests: XCTestCase {
 
         XCTAssertFalse(store.state.isWarped, "Warp must clear on overnight foreground")
         XCTAssertEqual(store.state.currentDate, self.wednesday, "currentDate must snap to today")
+        // T3: `.foregrounded` must refresh `nowTick` so the adapter
+        // sees a fresh clock reference paired with the dayContent
+        // fetch it kicked off.
+        XCTAssertEqual(store.state.nowTick, self.wednesday)
     }
 
     // MARK: - Brief tab tapping
@@ -482,6 +494,11 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
+            // `TestClock()` doesn't auto-advance, so the timer effect
+            // started by `.appeared` is created but never ticks. Tests
+            // that DO care about timer firing advance the clock
+            // explicitly.
+            $0.continuousClock = TestClock()
             $0.dailyBriefClient = makeStubClient(
                 fetch: { _ in nil },
                 fetchOrGenerate: { snapshot }
@@ -496,6 +513,10 @@ final class HomeFeatureTests: XCTestCase {
         } else {
             XCTFail("Expected loaded state")
         }
+        // T3: nowTick must be refreshed by `refreshClockState` at the
+        // top of `.appeared` so the adapter renders against a fresh
+        // clock reference, not the State.init value.
+        XCTAssertEqual(store.state.nowTick, self.wednesday)
     }
 
     /// Cache hit but the cached snapshot has empty focus + suggestion
@@ -522,6 +543,7 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = TestClock()
             $0.dailyBriefClient = makeStubClient(
                 fetch: { _ in emptyCached },
                 fetchOrGenerate: { regenerated }
@@ -554,6 +576,7 @@ final class HomeFeatureTests: XCTestCase {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = TestClock()
             $0.dailyBriefClient = makeStubClient(
                 fetch: { _ in cached },
                 fetchOrGenerate: {
@@ -656,6 +679,175 @@ final class HomeFeatureTests: XCTestCase {
             generateCalls.value, 1,
             "Three rapid calendarChanged events must coalesce into one fetchOrGenerate"
         )
+        // T3: `.calendarChanged` must refresh `nowTick` so the badge /
+        // bar predicate sees the current moment immediately, not on
+        // the next timer tick (5s later). That's the specific bug the
+        // user observed when adding a mid-day calendar event.
+        XCTAssertEqual(store.state.nowTick, self.wednesday)
+    }
+
+    // MARK: - Time-advance timer
+
+    /// One tick should refresh `state.nowTick` AND fire a `loadDayContent`.
+    /// FM path must NOT be touched — `fetchOrGenerate` is set to fatalError
+    /// (via the default stub), so a wrong-path tick would crash the test.
+    @MainActor
+    func test_timeAdvanceTick_updatesNowTickAndFiresLoadDayContent() async {
+        let injectedContent = DayContent(dayKey: "2026-05-13", eventCount: 1)
+        let fetchedDates = LockIsolated<[Date]>([])
+        let plus30s = wednesday.addingTimeInterval(30)
+
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: plus30s)
+            $0.continuousClock = ImmediateClock()
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { date in
+                    fetchedDates.withValue { $0.append(date) }
+                    return injectedContent
+                }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.timeAdvanceTick) { state in
+            state.nowTick = plus30s
+        }
+
+        await store.receive(\.dayContentLoaded)
+        XCTAssertEqual(fetchedDates.value, [wednesday])
+    }
+
+    /// While warped, tick is a no-op — warped dates have no "now"
+    /// semantics. Defense against the bar spuriously appearing on
+    /// past-day views.
+    @MainActor
+    func test_timeAdvanceTick_whileWarped_noOps() async {
+        var seeded = HomeFeature.State(currentDate: sunday)
+        seeded.isWarped = true
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = ImmediateClock()
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { _ in
+                    XCTFail("Tick must not fetch dayContent while warped")
+                    return DayContent(dayKey: "")
+                }
+            )
+        }
+
+        // No state change, no effect fired.
+        await store.send(.timeAdvanceTick)
+    }
+
+    /// While the wheel is open, tick is a no-op — the user is
+    /// scrubbing dates; live updates would be visual noise.
+    @MainActor
+    func test_timeAdvanceTick_whileWheelOpen_noOps() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.isWheelOpen = true
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = ImmediateClock()
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { _ in
+                    XCTFail("Tick must not fetch dayContent while wheel is open")
+                    return DayContent(dayKey: "")
+                }
+            )
+        }
+
+        await store.send(.timeAdvanceTick)
+    }
+
+    /// Day rollover during a continuously-foreground session: tick
+    /// must advance `currentDate` to the new day before fetching.
+    /// Verifies the `advanceCurrentDateIfDayRolled` helper fires
+    /// through the tick path.
+    @MainActor
+    func test_timeAdvanceTick_crossesMidnight_advancesCurrentDate() async {
+        // currentDate = Sunday at noon UTC. cal.now() = Wednesday.
+        // Day key differs — helper should advance.
+        let store = TestStore(initialState: HomeFeature.State(currentDate: sunday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = ImmediateClock()
+            $0.dailyBriefClient = makeStubClient(
+                dayContent: { _ in DayContent(dayKey: "2026-05-13") }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.timeAdvanceTick) { state in
+            state.currentDate = self.wednesday
+            state.nowTick = self.wednesday
+        }
+    }
+
+    /// Backgrounding tears down the timer effect — verified by sending
+    /// `.backgrounded` and then directly observing that no tick fires
+    /// on advance. The `.cancel(id:)` semantics of TCA cancel the
+    /// in-flight timer loop.
+    @MainActor
+    func test_backgrounded_cancelsTimer() async {
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = ImmediateClock()
+            $0.dailyBriefClient = makeStubClient()
+        }
+
+        // No state change, no actions received — just dispatches
+        // `.cancel(id: "homeTimeAdvance")` which is invisible to TestStore.
+        await store.send(.backgrounded)
+    }
+
+    /// End-to-end test for the actual timer mechanism: `.appeared` arms
+    /// the timer effect via `startTimeAdvanceTimer()`; advancing the
+    /// `TestClock` by the interval (5s) must cause the for-await loop
+    /// inside the effect to dispatch a `.timeAdvanceTick` action.
+    ///
+    /// Without this test, refactors to `startTimeAdvanceTimer`'s
+    /// wiring (e.g., swapping `clock.timer` for a different async
+    /// primitive) would silently break the loop while every
+    /// direct-dispatch tick test still passed.
+    @MainActor
+    func test_appeared_armsTimerThatFiresAfterInterval() async {
+        let clock = TestClock()
+        let snapshot = DailyBriefSnapshot(
+            dayKey: "2026-05-13",
+            focusText: "x",
+            suggestionText: "",
+            generatedAt: wednesday,
+            wasPersisted: true
+        )
+
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.continuousClock = clock
+            $0.dailyBriefClient = makeStubClient(
+                fetch: { _ in snapshot },
+                fetchOrGenerate: { snapshot }
+            )
+        }
+        store.exhaustivity = .off
+
+        await store.send(.appeared)
+        // 5s is the cadence pinned in `startTimeAdvanceTimer()`. If the
+        // production cadence changes, this advance value must follow.
+        await clock.advance(by: .seconds(5))
+        await store.receive(\.timeAdvanceTick)
     }
 
     // MARK: - Full wheel lifecycle
@@ -706,6 +898,8 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.wheelToggled) {
             $0.isWheelOpen = true
             $0.activeBriefTab = .calendar
+            // nowTick is paired with every dayContent fetch.
+            $0.nowTick = self.wednesday
         }
         await store.receive(.dayContentLoaded(todayContent)) {
             $0.dayContent = todayContent
@@ -715,6 +909,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.dateWarpedTo(pastSunday)) {
             $0.currentDate = pastSunday
             $0.isWarped = true
+            $0.nowTick = self.wednesday
         }
         await store.receive(.dayContentLoaded(sundayContent)) {
             $0.dayContent = sundayContent
@@ -724,6 +919,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.send(.dateWarpedTo(todayDate)) {
             $0.currentDate = todayDate
             $0.isWarped = false
+            $0.nowTick = self.wednesday
         }
         await store.receive(.dayContentLoaded(todayContent)) {
             $0.dayContent = todayContent

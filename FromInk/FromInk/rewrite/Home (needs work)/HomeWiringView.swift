@@ -58,8 +58,16 @@ struct HomeWiringView: View {
             store.send(.appeared)
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                store.send(.foregrounded)
+            // `.foregrounded` re-arms the time-advance timer + may
+            // trigger a brief regen; `.backgrounded` tears the timer
+            // down so we don't wake the device while suspended.
+            // SwiftUI fires `.inactive` between active/background
+            // transitions; treat it the same as background for timer
+            // purposes (no point firing ticks during the interstitial).
+            switch newPhase {
+            case .active:                store.send(.foregrounded)
+            case .background, .inactive: store.send(.backgrounded)
+            @unknown default:            break
             }
         }
         .fullScreenCover(
@@ -350,20 +358,30 @@ struct HomeWiringView: View {
     /// EventKit pipeline ships; for now, surface what's in the highlight.
     private func eventRowModels(from highlights: [StoredHighlight]) -> [BriefEventRow.Model] {
         // All-day events are already pinned ahead of timed events by
-        // `buildHighlights`. Preserve that ordering here — the upstream
-        // sort is the source of truth, not the index-based isNext check.
-        highlights
-            .filter { $0.category == .allDay || $0.category == .nextUp || $0.category == .upcoming }
+        // `buildHighlights`. Preserve that ordering here.
+        //
+        // Resolution of `isInProgress` + trailing badge is delegated
+        // to `EventRowResolver` — a free-function namespace that's
+        // unit-testable in isolation, in contrast to this private
+        // adapter method which is buried inside a SwiftUI view.
+        let now = store.nowTick
+        let calendar = calendarContext.userCalendar()
+        return highlights
+            .filter { $0.category == .allDay || $0.category == .upcoming }
             .enumerated()
             .map { index, h in
-                BriefEventRow.Model(
+                let (isInProgress, badge) = EventRowResolver.resolve(
+                    highlight: h,
+                    now: now,
+                    calendar: calendar
+                )
+                return BriefEventRow.Model(
                     id: "event-\(index)",
                     time: h.time,
                     title: h.title,
                     location: nil,
-                    duration: h.trailingBadge,
-                    isNext: h.category == .nextUp,
-                    nextPillLabel: HighlightCategory.nextUp.displayString,
+                    duration: badge,
+                    isInProgress: isInProgress,
                     notebookLink: nil
                 )
             }

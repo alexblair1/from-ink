@@ -218,13 +218,15 @@ final class DailyBriefClientTests: XCTestCase {
 
     func test_storedHighlight_roundTripsJSON() throws {
         let highlight = StoredHighlight(
-            category: .nextUp,
+            category: .upcoming,
             icon: "calendar",
             title: "Standup",
             time: "9:00 AM",
             trailingBadge: "In 1 h",
             sourceNotebookID: UUID(),
-            sourcePageIndex: 3
+            sourcePageIndex: 3,
+            startDate: Date(timeIntervalSince1970: 1_785_000_000),
+            endDate: Date(timeIntervalSince1970: 1_785_001_800)
         )
 
         let data = try JSONEncoder().encode([highlight])
@@ -242,7 +244,9 @@ final class DailyBriefClientTests: XCTestCase {
             time: "8:00 PM",
             trailingBadge: "In 10 h",
             sourceNotebookID: nil,
-            sourcePageIndex: nil
+            sourcePageIndex: nil,
+            startDate: nil,
+            endDate: nil
         )
 
         let data = try JSONEncoder().encode(highlight)

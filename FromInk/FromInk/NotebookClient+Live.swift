@@ -402,6 +402,20 @@ extension NotebookClient {
                     try ctx.save()
                 }
             },
+            setPageTemplate: { pageID, templateName in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
+                        throw NotebookClientError.pageNotFound(pageID)
+                    }
+                    let now = calendarContext.now()
+                    page.templateName = templateName
+                    page.modifiedAt = now
+                    page.notebook?.modifiedAt = now
+                    try ctx.save()
+                    return NotePageSnapshot(model: page)
+                }
+            },
 
             // MARK: - Page content (high frequency)
             saveDrawing: { pageID, drawingData, thumbnailData in

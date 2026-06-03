@@ -83,6 +83,7 @@ final class LibraryFeatureTests: XCTestCase {
             deletePage: { _ in throw CancellationError() },
             reindexPages: { _, _ in throw CancellationError() },
             transferPage: { _, _, _ in throw CancellationError() },
+            setPageTemplate: { _, _ in throw CancellationError() },
             saveDrawing: { _, _, _ in throw CancellationError() },
             updateOCR: { _, _ in throw CancellationError() },
             updateTypedText: { _, _ in throw CancellationError() },

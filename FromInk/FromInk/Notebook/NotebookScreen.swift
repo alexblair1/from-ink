@@ -85,7 +85,7 @@ struct NotebookScreen: View {
                         pageID: page.id,
                         pageIndex: i,
                         toolbarStore: toolbarStore,
-                        activeTemplate: store.activeTemplate,
+                        activeTemplate: page.template,
                         isCurrentPage: i == store.currentIndex,
                         onNearBottom: {
                             if store.currentIndex == i { showAddButton = true }
@@ -313,7 +313,7 @@ struct NotebookScreen: View {
             case .templatePicker:
                 TemplatePickerPanel(
                     template: Binding(
-                        get: { store.activeTemplate },
+                        get: { store.currentTemplate },
                         set: { store.send(.templateSelected($0)) }
                     ),
                     onDismiss: { toolbarStore.send(.panelDismissed) }

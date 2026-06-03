@@ -101,7 +101,7 @@ extension HomeExpandedBrief.Model {
                 "Foggy through mid-morning, clearing for the walk. Sunset at 8:01.",
             ],
             highlights: [
-                .init(icon: "calendar", label: AppStrings.Home.nextUp, text: "1:1 with Maya · 11:00 at Roastery on 4th"),
+                .init(icon: "calendar", label: AppStrings.Home.upcoming, text: "1:1 with Maya · 11:00 at Roastery on 4th"),
                 .init(icon: "checklist", label: AppStrings.Home.overdue, text: "Renew domain — fromink.app · 2 days late"),
                 .init(icon: "checklist", label: AppStrings.Home.today, text: "Ship v0.3 build to TestFlight · 5pm, flagged"),
                 .init(icon: "person.crop.circle", label: AppStrings.Home.birthday, text: "Carla Mendez turns 41 · you're seeing her at 2pm"),

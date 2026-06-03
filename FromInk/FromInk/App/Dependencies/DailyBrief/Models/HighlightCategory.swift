@@ -1,23 +1,24 @@
 import Foundation
 
-/// Semantic category for a stored highlight. Persisted as a stable string
-/// rawValue (NOT a localized display string), so cached records survive
+/// Semantic category for a stored highlight. Stable string rawValue
+/// (NOT a localized display string), so transport-layer values survive
 /// device language changes.
 ///
-/// Display strings are resolved via `AppStrings.Home.*` at render time via
+/// Display strings resolve via `AppStrings.Home.*` at render time via
 /// `displayString`.
 ///
-/// **Event categories:** `.allDay`, `.nextUp`, `.upcoming`. All-day events
-/// are always pinned ahead of timed events and never claim the
-/// "next up" slot.
+/// **Event categories:** `.allDay`, `.upcoming`. All-day events are
+/// always pinned ahead of timed events. The "in progress" state
+/// (event happening right now) is a UI concern derived at render
+/// time from `StoredHighlight.startDate`/`endDate` against `now`;
+/// it lives nowhere on the data layer.
 ///
-/// **Reminder categories:** `.overdue`, `.today`, `.anytime`. Overdue and
-/// today are time-anchored; `.anytime` covers undated reminders and
-/// reminders whose due date has no time component.
+/// **Reminder categories:** `.overdue`, `.today`, `.anytime`. Overdue
+/// and today are time-anchored; `.anytime` covers undated reminders
+/// and reminders whose due date has no time component.
 ///
 nonisolated enum HighlightCategory: String, Codable, Sendable {
     case allDay = "all_day"
-    case nextUp = "next_up"
     case upcoming = "upcoming"
 
     case overdue = "overdue"
@@ -32,7 +33,6 @@ extension HighlightCategory {
     var displayString: String {
         switch self {
         case .allDay:   AppStrings.Home.allDay
-        case .nextUp:   AppStrings.Home.nextUp
         case .upcoming: AppStrings.Home.upcoming
         case .overdue:  AppStrings.Home.overdue
         case .today:    AppStrings.Home.today

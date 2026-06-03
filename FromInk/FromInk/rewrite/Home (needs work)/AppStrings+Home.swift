@@ -62,11 +62,6 @@ static let highlights = NSLocalizedString(
             value: "Last modified",
             comment: "Notebooks sort label"
         )
-        static let nextUp = NSLocalizedString(
-            "home.nextUp",
-            value: "Next up",
-            comment: "Next event highlight label"
-        )
         static let upcoming = NSLocalizedString(
             "home.upcoming",
             value: "Upcoming",
@@ -127,10 +122,30 @@ static let highlights = NSLocalizedString(
             value: "Anytime",
             comment: "Badge / category for reminders with no specific time"
         )
+        /// Sub-minute "now" label used by `relativeTimeLabel` for
+        /// recently-modified notebook timestamps (e.g., a notebook
+        /// touched <60 seconds ago renders as this instead of "0
+        /// seconds ago"). The event-row in-progress state uses an
+        /// icon instead of this string.
         static let now = NSLocalizedString(
             "home.now",
             value: "Now",
-            comment: "Current event or recent time badge"
+            comment: "Sub-minute placeholder for notebook 'last touched' timestamps. The event-row in-progress state uses the record-dot icon, not this string."
+        )
+        /// VoiceOver label for the `record.circle.fill` badge that
+        /// marks events currently in progress. The visible indicator
+        /// is a SF Symbol; VoiceOver needs an explicit description.
+        static let eventInProgressAccessibilityLabel = NSLocalizedString(
+            "home.event.inProgress.accessibilityLabel",
+            value: "Currently in progress",
+            comment: "VoiceOver label for the record-dot icon shown on event rows where startDate <= now < endDate."
+        )
+        /// VoiceOver label for the checkmark badge that replaces the
+        /// trailing time text once an event has passed.
+        static let eventPassedAccessibilityLabel = NSLocalizedString(
+            "home.event.passed.accessibilityLabel",
+            value: "Event ended",
+            comment: "VoiceOver label for the checkmark icon shown on event rows whose endDate is in the past."
         )
         static let notebooks = NSLocalizedString(
             "home.notebooks",

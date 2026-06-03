@@ -55,6 +55,16 @@ struct HomeFeature: Reducer {
         /// brief generation. `nil` until the first `dateWarpedTo` resolves.
         var dayContent: DayContent? = nil
 
+        /// Clock reference used by the home adapter to derive time-
+        /// relative UI (currently the per-event in-progress indicator
+        /// on `BriefEventRow`). Updated by `.timeAdvanceTick` every
+        /// 60 seconds while the scene is active. Reading state for
+        /// "now" — rather than `cal.now()` directly in the adapter —
+        /// keeps SwiftUI's render path deterministic: every tick
+        /// mutates state → view body re-runs → adapter recomputes
+        /// in-progress flags against the fresh reference.
+        var nowTick: Date
+
         /// Settings overlay state. `nil` = sheet closed; non-nil =
         /// sheet presented. The optional IS the visibility flag —
         /// no parallel boolean. Driven by `@Presents` so SwiftUI's
@@ -82,7 +92,12 @@ struct HomeFeature: Reducer {
 
         init(currentDate: Date? = nil) {
             @Dependency(\.calendarContext) var cal
-            self.currentDate = currentDate ?? cal.now()
+            let resolved = currentDate ?? cal.now()
+            self.currentDate = resolved
+            // Initialize `nowTick` to the same moment as `currentDate`
+            // so the adapter's first render has a sensible "now"
+            // reference even before the first timer tick lands.
+            self.nowTick = resolved
         }
     }
 
@@ -96,6 +111,17 @@ struct HomeFeature: Reducer {
     enum Action: Equatable {
         case appeared
         case foregrounded
+        /// SwiftUI scene phase became `.background` or `.inactive`.
+        /// Tears down the time-advance timer so we don't wake the
+        /// device while suspended. The timer is re-armed by the next
+        /// `.foregrounded`.
+        case backgrounded
+        /// One tick of the once-a-minute time-advance loop. Refreshes
+        /// `state.nowTick` (drives the per-event in-progress indicator)
+        /// and re-fetches `dayContent` so `trailingBadge` strings
+        /// ("In 30 m" → "In 29 m") stay current. Stays in the FM-free
+        /// pipeline — never invokes `fetchOrGenerate`.
+        case timeAdvanceTick
         case briefLoaded(DailyBriefSnapshot?)
         case calendarChanged
         case briefRefreshed(DailyBriefSnapshot)
@@ -210,12 +236,17 @@ struct HomeFeature: Reducer {
         Reduce { state, action in
             switch action {
             case .appeared:
+                // Single-call helper: captures one `now`, conditionally
+                // advances `currentDate` if the day rolled, and writes
+                // `nowTick`. See the helper's docs for the invariant.
+                refreshClockState(&state)
                 let dayKey = cal.dayKey(state.currentDate)
                 let date = state.currentDate
                 return .merge(
                     loadBrief(forDayKey: dayKey),
                     loadDayContent(for: date),
                     observeCalendarChanges(),
+                    startTimeAdvanceTimer(),
                     .send(.library(.onAppear))
                 )
 
@@ -236,6 +267,9 @@ struct HomeFeature: Reducer {
                 }
 
                 state.currentDate = now
+                // Pair the clock reference with the dayContent fetch
+                // below — see `.appeared` for the invariant.
+                state.nowTick = now
 
                 let newDayKey = nowDayKey
                 let currentDayKey: String? = {
@@ -254,12 +288,18 @@ struct HomeFeature: Reducer {
                 let foregroundDate = state.currentDate
                 let dayContentEffect = loadDayContent(for: foregroundDate)
 
+                // (Re)arm the time-advance timer on every foreground
+                // entry. `.cancellable(cancelInFlight: true)` makes this
+                // idempotent — restart while already running just
+                // tears down the previous loop and starts a fresh one.
+                let timerEffect = startTimeAdvanceTimer()
+
                 // Only fire the FM-heavy brief regen when the day actually
                 // rolled over. Mid-day calendar changes are picked up via
                 // `.calendarChanged` (notification) plus the dayContent
                 // refresh above.
                 guard currentDayKey != newDayKey else {
-                    return dayContentEffect
+                    return .merge(dayContentEffect, timerEffect)
                 }
 
                 return .merge(
@@ -273,7 +313,8 @@ struct HomeFeature: Reducer {
                         }
                     }
                     .cancellable(id: "briefRefresh", cancelInFlight: true),
-                    dayContentEffect
+                    dayContentEffect,
+                    timerEffect
                 )
 
             case .briefLoaded(.some(let snapshot)):
@@ -287,6 +328,13 @@ struct HomeFeature: Reducer {
             case .calendarChanged:
                 // Skip while warped — would clobber the warped brief with today's.
                 guard !state.isWarped else { return .none }
+                // EventKit notifications can fire at any time, including
+                // past midnight in a continuously-foreground app. The
+                // helper advances `currentDate` AND refreshes `nowTick`
+                // with one `cal.now()` capture so an in-progress event
+                // added mid-day flips its bar immediately, not on the
+                // next timer tick.
+                refreshClockState(&state)
                 // Debounce: a Calendar.app bulk-edit fires many
                 // `EKEventStoreChanged` events in <1s. `.cancellable(
                 // cancelInFlight: true)` collapses the burst into one
@@ -321,6 +369,30 @@ struct HomeFeature: Reducer {
 
             case .briefRefreshFailed:
                 return .none
+
+            case .backgrounded:
+                // Tear down the time-advance loop while suspended so
+                // we don't wake the device for ticks the user can't
+                // see. `.foregrounded` re-arms it on return.
+                return .cancel(id: "homeTimeAdvance")
+
+            case .timeAdvanceTick:
+                // The minute-granularity clock pulse. Guarded so the
+                // path stays cheap when the view is in a state where
+                // a refresh would be visual noise.
+                //
+                // Stays FM-free: calls `loadDayContent` only. No
+                // `fetchOrGenerate`, no SwiftData write, no FM. The
+                // tick body is verified by `test_timeAdvanceTick_
+                // doesNotCallFetchOrGenerate`.
+                guard !state.isWarped else { return .none }
+                guard !state.isWheelOpen else { return .none }
+                // Helper captures one `now`, advances `currentDate`
+                // if the day rolled (catches continuously-foreground
+                // sessions crossing midnight), and writes `nowTick`
+                // so the adapter re-renders against the fresh clock.
+                refreshClockState(&state)
+                return loadDayContent(for: state.currentDate)
 
             case .briefRefreshRequested:
                 // Force regen. The single-flight coordinator in the
@@ -540,6 +612,12 @@ struct HomeFeature: Reducer {
                 // the tab body reflects the current day.
                 state.isWheelOpen = true
                 state.activeBriefTab = .calendar
+                // Helper advances `currentDate` if the day rolled
+                // (without this, opening the wheel after midnight in
+                // a continuously-foreground session would center it
+                // on yesterday) AND refreshes `nowTick` for the
+                // adapter — both with one `cal.now()` capture.
+                refreshClockState(&state)
                 return loadDayContent(for: state.currentDate)
 
             case .dateWarpedTo(let newDate):
@@ -551,6 +629,12 @@ struct HomeFeature: Reducer {
                 // today clears the flag and re-arms .foregrounded /
                 // .calendarChanged refreshes.
                 state.isWarped = !cal.isToday(newDate)
+                // Refresh clock reference. Warped views render
+                // isInProgress=false for everything (no event satisfies
+                // start <= now < end on a non-today date), but keeping
+                // the invariant intact avoids needing special-case logic
+                // in the adapter.
+                state.nowTick = cal.now()
                 // Scrubbing fires fast `fetchDayContent` only — brief
                 // generation is deferred to `wheelDismissed`. Also cancel
                 // any in-flight foreground/calendar-change refresh because
@@ -680,5 +764,69 @@ struct HomeFeature: Reducer {
             }
         }
         .cancellable(id: "homeCalendarObservation", cancelInFlight: true)
+    }
+
+    /// Tick loop that drives `state.nowTick` so the per-event
+    /// in-progress indicator + trailing badge stay accurate as time
+    /// elapses. Cancellable so `.backgrounded` can tear it down — we
+    /// don't want to wake the device for ticks the user can't see.
+    /// `.foregrounded` re-arms with `cancelInFlight: true`, so restart
+    /// is idempotent.
+    ///
+    /// **Cadence rationale (5 seconds).** EventKit doesn't notify when
+    /// an event "starts" or "ends" — only on user edits. So the bar
+    /// and badge cross start/end boundaries entirely on this tick.
+    /// At 60s the user observed a visibly stale "Now" pill on
+    /// just-ended meetings. 5s caps that lag at ~5s while still being
+    /// dirt cheap: each tick is a sub-millisecond EventKit fetch plus
+    /// an adapter recompute. Smart-scheduling (fire one tick at the
+    /// next start/end moment) would be more precise + cheaper but
+    /// adds complexity; deferred until the polling cost becomes
+    /// measurable.
+    ///
+    /// `clock.timer(interval:)` returns an `AsyncStream<Instant>` that
+    /// drains forever; the for-await loop consumes it until the effect
+    /// is cancelled. Pure suspension when no work is due.
+    private func startTimeAdvanceTimer() -> Effect<Action> {
+        .run { send in
+            for await _ in clock.timer(interval: .seconds(5)) {
+                await send(.timeAdvanceTick)
+            }
+        }
+        .cancellable(id: "homeTimeAdvance", cancelInFlight: true)
+    }
+
+    /// Refreshes time-anchored state for any action that's about to
+    /// dispatch a `loadDayContent` for "today":
+    ///
+    ///   1. Captures `cal.now()` exactly once.
+    ///   2. Advances `state.currentDate` if the device day rolled
+    ///      since it was last set (no-op while warped; warped dates
+    ///      have no live "today" semantics).
+    ///   3. Refreshes `state.nowTick` to the captured now so the
+    ///      adapter's in-progress predicate sees a clock reference
+    ///      aligned with the fetch we're about to kick off.
+    ///
+    /// **Single-`now` invariant.** Per `dates_edd.md` §3, every logical
+    /// instant should resolve through one `cal.now()` call. The
+    /// previous design called `cal.now()` twice at each site (once
+    /// inside the day-rollover helper, once for `nowTick`) — close
+    /// enough in practice but a correctness hole around midnight
+    /// microsecond boundaries. Folding into one helper closes it.
+    ///
+    /// Called at the top of `.appeared`, `.calendarChanged`,
+    /// `.timeAdvanceTick`, and `.wheelToggled` (open leg).
+    ///
+    /// **Exempt:** `.foregrounded` keeps its own path — its contract
+    /// is "unconditional refresh," which differs from the day-rolled
+    /// guard. `.dateWarpedTo` keeps a standalone `state.nowTick =
+    /// cal.now()` since `currentDate` is being set by the user's
+    /// explicit choice.
+    private func refreshClockState(_ state: inout State) {
+        let now = cal.now()
+        if !state.isWarped && cal.dayKey(state.currentDate) != cal.dayKey(now) {
+            state.currentDate = now
+        }
+        state.nowTick = now
     }
 }

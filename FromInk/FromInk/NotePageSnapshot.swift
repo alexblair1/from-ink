@@ -18,6 +18,14 @@ struct NotePageSnapshot: Equatable, Identifiable, Sendable {
     let ocrTextExcerpt: String?
     let headerCount: Int
     let linkCount: Int
+
+    /// Typed projection of `templateName`. Unrecognized strings
+    /// (e.g. legacy "blank" rows persisted before the schema lined up
+    /// with `CanvasTemplate.none.rawValue`) decode as `.none` so the
+    /// canvas always has something safe to render.
+    var template: CanvasTemplate {
+        CanvasTemplate(rawValue: templateName) ?? .none
+    }
 }
 
 // MARK: - Conversion from @Model

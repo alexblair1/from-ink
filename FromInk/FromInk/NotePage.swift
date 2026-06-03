@@ -20,7 +20,11 @@ import SwiftData
     var index: Int = 0
     var createdAt: Date = Date()
     var modifiedAt: Date = Date()
-    var templateName: String = "blank"
+    /// Per-page template selection, stored as `CanvasTemplate.rawValue`.
+    /// Default matches `CanvasTemplate.none.rawValue` so a row created
+    /// without an explicit template reads as no-template rather than
+    /// the legacy "blank" sentinel that the renderer never honored.
+    var templateName: String = CanvasTemplate.none.rawValue
 
     // Ink payload — externalStorage promotes to CKAsset on sync.
     @Attribute(.externalStorage)
@@ -58,7 +62,7 @@ import SwiftData
         id: UUID = UUID(),
         index: Int = 0,
         createdAt: Date = Date(),
-        templateName: String = "blank",
+        templateName: String = CanvasTemplate.none.rawValue,
         notebook: Notebook? = nil
     ) {
         self.id = id

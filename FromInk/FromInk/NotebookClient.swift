@@ -82,6 +82,11 @@ struct NotebookClient: Sendable {
     var deletePage: @Sendable (_ pageID: UUID) async throws -> Void
     var reindexPages: @Sendable (_ notebookID: UUID, _ orderedPageIDs: [UUID]) async throws -> Void
     var transferPage: @Sendable (_ pageID: UUID, _ destNotebookID: UUID, _ index: Int) async throws -> Void
+    /// Persists a per-page template choice. Returns the refreshed
+    /// snapshot so the reducer can update its in-memory pages array
+    /// without round-tripping through the store-change observer.
+    /// Bumps `modifiedAt` on both the page and its parent notebook.
+    var setPageTemplate: @Sendable (_ pageID: UUID, _ templateName: String) async throws -> NotePageSnapshot
 
     // MARK: - Page content (high frequency)
     /// Persists pre-encoded ink data. The Coordinator owns the
@@ -277,6 +282,7 @@ extension NotebookClient: DependencyKey {
         deletePage: { _ in throw CancellationError() },
         reindexPages: { _, _ in throw CancellationError() },
         transferPage: { _, _, _ in throw CancellationError() },
+        setPageTemplate: { _, _ in throw CancellationError() },
         saveDrawing: { _, _, _ in throw CancellationError() },
         updateOCR: { _, _ in throw CancellationError() },
         updateTypedText: { _, _ in throw CancellationError() },

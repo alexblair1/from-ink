@@ -233,7 +233,7 @@ private func _fetchDayContent(
         cal: cal
     )
     let eventRows = highlights.filter {
-        $0.category == .allDay || $0.category == .nextUp || $0.category == .upcoming
+        $0.category == .allDay || $0.category == .upcoming
     }
     let reminderRows = highlights.filter {
         $0.category == .anytime || $0.category == .overdue || $0.category == .today
@@ -697,13 +697,6 @@ private func fetchLiveCounts(
 ///   3. Anytime / undated reminders.
 ///   4. All timed reminders, sorted chronologically.
 ///
-/// `.nextUp` semantics:
-///   - Only applies when `viewingDate` is today (the pill is anchored to
-///     "right now," which doesn't exist on other days).
-///   - The first timed event whose `endDate >= now` wins it; events
-///     already ended are `.upcoming`. If no event is still ongoing or
-///     future, no event gets `.nextUp`.
-///
 /// `.overdue` semantics (reminders):
 ///   - Only applies when `viewingDate` is today. On past/future days,
 ///     "overdue" is meaningless — those reminders are just `.today`.
@@ -724,11 +717,11 @@ private func buildHighlights(
         .filter { !$0.isAllDay }
         .sorted { $0.startDate < $1.startDate }
 
-    // `.nextUp` is the first timed event with `endDate >= now` — only
-    // when viewing today. nil index = no event wins the pill.
-    let nextUpIndex: Int? = isToday
-        ? timedEvents.firstIndex(where: { $0.endDate >= now })
-        : nil
+    // The "next up" pill was dropped in favor of a per-row
+    // in-progress indicator. The in-progress check is a UI concern
+    // computed at the adapter from `startDate`/`endDate` (carried
+    // below) against the adapter's clock reference — no event-to-
+    // event coupling here, no derived state on the transport.
 
     for event in allDayEvents {
         highlights.append(
@@ -739,21 +732,33 @@ private func buildHighlights(
                 time: AppStrings.Home.allDay,
                 trailingBadge: "",
                 sourceNotebookID: nil,
-                sourcePageIndex: nil
+                sourcePageIndex: nil,
+                // All-day events have no clock-time semantics —
+                // omit start/end so the adapter's in-progress
+                // predicate naturally falls through to false.
+                startDate: nil,
+                endDate: nil
             )
         )
     }
-    for (index, event) in timedEvents.enumerated() {
-        let category: HighlightCategory = (index == nextUpIndex) ? .nextUp : .upcoming
+    for event in timedEvents {
         highlights.append(
             StoredHighlight(
-                category: category,
+                category: .upcoming,
                 icon: "calendar",
                 title: event.title,
                 time: event.startDate.formatted(.dateTime.hour().minute()),
-                trailingBadge: eventBadge(event, now: now, cal: cal),
+                // Trailing badge is derived at the adapter (against
+                // `state.nowTick`) so it stays in sync with the
+                // in-progress predicate AND advances cleanly across
+                // event start/end transitions. Storing a stale string
+                // here would only get overwritten on every adapter
+                // render anyway.
+                trailingBadge: "",
                 sourceNotebookID: nil,
-                sourcePageIndex: nil
+                sourcePageIndex: nil,
+                startDate: event.startDate,
+                endDate: event.endDate
             )
         )
     }
@@ -773,7 +778,9 @@ private func buildHighlights(
                 time: AppStrings.Home.anytime,
                 trailingBadge: "",
                 sourceNotebookID: nil,
-                sourcePageIndex: nil
+                sourcePageIndex: nil,
+                startDate: nil,
+                endDate: nil
             )
         )
     }
@@ -790,26 +797,16 @@ private func buildHighlights(
                 time: reminder.dueDate?.formatted(.dateTime.hour().minute()) ?? "",
                 trailingBadge: reminder.dueDate.map { reminderBadge($0, now: now) } ?? "",
                 sourceNotebookID: nil,
-                sourcePageIndex: nil
+                sourcePageIndex: nil,
+                // Reminders don't have a duration — no in-progress
+                // semantics. `.overdue` is encoded in the category.
+                startDate: nil,
+                endDate: nil
             )
         )
     }
 
     return highlights
-}
-
-private func eventBadge(
-    _ event: CalendarEventSnapshot,
-    now: Date,
-    cal: CalendarContext
-) -> String {
-    let userCal = cal.userCalendar()
-    let hours = userCal.dateComponents([.hour], from: event.startDate, to: event.endDate).hour ?? 0
-    if cal.isSameDay(event.startDate, now) && hours >= 23 { return AppStrings.Home.allDay }
-    let minutes = Int(event.startDate.timeIntervalSince(now) / 60)
-    if minutes <= 0 { return AppStrings.Home.now }
-    if minutes < 60 { return "In \(minutes) m" }
-    return "In \(minutes / 60) h"
 }
 
 private func reminderBadge(_ dueDate: Date, now: Date) -> String {
