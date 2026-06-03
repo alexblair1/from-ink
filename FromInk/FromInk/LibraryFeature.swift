@@ -75,6 +75,12 @@ struct LibraryFeature: Reducer {
 
         // PDF import (caller-initiated)
         case importPDFRequested(URL)
+        /// Import a PDF that's already in memory — e.g. a multi-page
+        /// scan assembled by `DocumentImportFeature` →
+        /// `PDFAssemblyService`. Same downstream pipeline as
+        /// `importPDFRequested(URL)`; differs only in how the bytes
+        /// arrived. `suggestedName` provides a fallback title.
+        case importPDFFromData(Data, suggestedName: String?)
 
         // Folder lifecycle (caller-initiated)
         case createFolderRequested(name: String, parentID: UUID?)
@@ -165,38 +171,11 @@ struct LibraryFeature: Reducer {
                 }
 
             case .importPDFRequested(let url):
-                return .run { send in
-                    do {
-                        let draft = try await importPDFService.importPDF(url)
-                        do {
-                            let snap = try await notebookClient.importPDF(draft, nil)
-                            await send(.delegate(.pdfImported(snap, wasDuplicate: false)))
-                        } catch NotebookClientError.pdfAlreadyImported(let existingID) {
-                            // Dedup hit. O(1) lookup of the existing
-                            // snapshot so the parent can navigate to it
-                            // without scanning the whole library.
-                            if let snap = try await notebookClient.fetchPDF(existingID) {
-                                await send(.delegate(.pdfImported(snap, wasDuplicate: true)))
-                            } else {
-                                // Existing row vanished between dedup
-                                // check and re-fetch (delete race).
-                                // Surface as a generic failure rather
-                                // than silently doing nothing.
-                                log.error("importPDF dedup pointed at id=\(existingID) but fetchPDF returned nil")
-                                await send(.delegate(.pdfImportFailed(
-                                    message: AppStrings.Library.importPDFInvalidMessage
-                                )))
-                            }
-                        }
-                    } catch let importError as ImportPDFError {
-                        log.error("importPDF flow failed: \(String(describing: importError))")
-                        await send(.delegate(.pdfImportFailed(message: importError.userMessage)))
-                    } catch {
-                        log.error("importPDF flow failed (unknown): \(error.localizedDescription)")
-                        await send(.delegate(.pdfImportFailed(
-                            message: AppStrings.Library.importPDFInvalidMessage
-                        )))
-                    }
+                return runImport { try await importPDFService.importPDF(url) }
+
+            case .importPDFFromData(let data, let suggestedName):
+                return runImport {
+                    try await importPDFService.importPDFFromData(data, suggestedName)
                 }
 
             case .createFolderRequested(let name, let parentID):
@@ -260,6 +239,51 @@ struct LibraryFeature: Reducer {
                 )
             } catch {
                 log.error("Default notebook seed failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Shared post-draft pipeline for both `importPDFRequested(URL)`
+    /// and `importPDFFromData(Data, suggestedName:)`. The caller
+    /// supplies the draft-producing closure (which differs only in
+    /// how it materializes the PDF bytes — security-scoped URL vs.
+    /// in-memory blob); everything from there on — SwiftData write,
+    /// duplicate handling, delegate dispatch, error mapping — is
+    /// identical and lives here.
+    private func runImport(
+        produceDraft: @escaping @Sendable () async throws -> ImportedPDFDraft
+    ) -> Effect<Action> {
+        .run { send in
+            do {
+                let draft = try await produceDraft()
+                do {
+                    let snap = try await notebookClient.importPDF(draft, nil)
+                    await send(.delegate(.pdfImported(snap, wasDuplicate: false)))
+                } catch NotebookClientError.pdfAlreadyImported(let existingID) {
+                    // Dedup hit. O(1) lookup of the existing snapshot
+                    // so the parent can navigate to it without
+                    // scanning the whole library.
+                    if let snap = try await notebookClient.fetchPDF(existingID) {
+                        await send(.delegate(.pdfImported(snap, wasDuplicate: true)))
+                    } else {
+                        // Existing row vanished between dedup check
+                        // and re-fetch (delete race). Surface as a
+                        // generic failure rather than silently doing
+                        // nothing.
+                        log.error("importPDF dedup pointed at id=\(existingID) but fetchPDF returned nil")
+                        await send(.delegate(.pdfImportFailed(
+                            message: AppStrings.Library.importPDFInvalidMessage
+                        )))
+                    }
+                }
+            } catch let importError as ImportPDFError {
+                log.error("importPDF flow failed: \(String(describing: importError))")
+                await send(.delegate(.pdfImportFailed(message: importError.userMessage)))
+            } catch {
+                log.error("importPDF flow failed (unknown): \(error.localizedDescription)")
+                await send(.delegate(.pdfImportFailed(
+                    message: AppStrings.Library.importPDFInvalidMessage
+                )))
             }
         }
     }

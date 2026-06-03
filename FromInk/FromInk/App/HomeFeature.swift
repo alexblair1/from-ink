@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import UniformTypeIdentifiers
 import os
 
 private let log = Logger(subsystem: "com.fromink.app", category: "Home")
@@ -16,7 +17,15 @@ struct HomeFeature: Reducer {
         /// "has an active tab."
         var activeBriefTab: BriefTab? = nil
         var isNewNotebookSheetOpen: Bool = false
-        var isImportPickerOpen: Bool = false
+
+        /// Document acquisition surface (file picker OR camera scan).
+        /// `nil` = the choice popover is closed; non-nil = it's
+        /// presented. Reusable: same `@Presents` + `DocumentImportFeature`
+        /// pattern can be mounted anywhere else (Notebook etc.).
+        /// Owns its own state machine; HomeFeature only intercepts
+        /// the `.delegate(.acquired)` output to route the resulting
+        /// PDF into LibraryFeature.
+        @Presents var documentImport: DocumentImportFeature.State?
 
         /// PDF-import status alert. `nil` = nothing presented. Set when a
         /// duplicate is detected (so the user can choose to open the
@@ -111,17 +120,19 @@ struct HomeFeature: Reducer {
         case notebookCreated(title: String)
         case notebookTapped(id: UUID)
 
-        // PDF import
-        /// User tapped the import-PDF button in the top bar — open the
-        /// file picker.
+        // Document acquisition — Menu items in the top bar each
+        // dispatch one of these. The choice (import vs scan) lives
+        // in the Menu chrome; this reducer just opens the correct
+        // system surface.
+        /// User tapped "Import file" in the doc-icon pull-down menu.
         case importPDFTapped
-        /// User canceled the picker or it dismissed itself. Clears
-        /// `isImportPickerOpen` so the binding stays consistent with
-        /// SwiftUI's state.
-        case importPickerDismissed
-        /// User picked a PDF; forward to LibraryFeature for the actual
-        /// import work.
-        case importPDFPicked(URL)
+        /// User tapped "Scan document" in the doc-icon pull-down menu.
+        case scanDocumentTapped
+        /// `@Presents` machinery for the document-import child.
+        /// Auto-handled by `.ifLet(\.$documentImport, ...)`; HomeFeature
+        /// only inspects `.presented(.delegate(...))` to route the
+        /// result into `LibraryFeature` (or to clear state on cancel).
+        case documentImport(PresentationAction<DocumentImportFeature.Action>)
         /// User dismissed the import alert via the OK / Cancel button
         /// or by swipe.
         case importAlertDismissed
@@ -365,16 +376,57 @@ struct HomeFeature: Reducer {
                 return .none
 
             case .importPDFTapped:
-                state.isImportPickerOpen = true
+                // Open the file picker directly. The Menu in
+                // HomeTopBar handled the choice; this is the
+                // "I want to import a file" branch.
+                state.documentImport = DocumentImportFeature.State(
+                    initialPhase: .filePicker
+                )
                 return .none
 
-            case .importPickerDismissed:
-                state.isImportPickerOpen = false
+            case .scanDocumentTapped:
+                // Open the scanner directly. Menu only offers this
+                // item when VNDocumentCameraViewController.isSupported
+                // is true, so by the time we get here scanning is
+                // guaranteed to be available.
+                state.documentImport = DocumentImportFeature.State(
+                    initialPhase: .scanning
+                )
                 return .none
 
-            case .importPDFPicked(let url):
-                state.isImportPickerOpen = false
-                return .send(.library(.importPDFRequested(url)))
+            // Child delegate: document acquired. Route into LibraryFeature
+            // using the source-appropriate entry point and clear the
+            // child presentation. Destination logic stays in Home;
+            // acquisition logic stays in DocumentImportFeature.
+            case let .documentImport(.presented(.delegate(.acquired(source, fileURL, pdfData)))):
+                state.documentImport = nil
+                switch source {
+                case .file:
+                    guard let fileURL else { return .none }
+                    return .send(.library(.importPDFRequested(fileURL)))
+                case .scan(let pageCount):
+                    guard let pdfData else { return .none }
+                    return .send(.library(.importPDFFromData(
+                        pdfData,
+                        suggestedName: AppStrings.Library.scanFallbackTitle(pageCount: pageCount)
+                    )))
+                }
+
+            // Child delegate: user cancelled the file picker / scanner
+            // or acknowledged an error. Clear the presentation so the
+            // menu can be re-opened cleanly.
+            case .documentImport(.presented(.delegate(.dismissed))):
+                state.documentImport = nil
+                return .none
+
+            // SwiftUI auto-dismiss (cover drag etc.). `.ifLet` cleared
+            // the optional already; nothing to do here.
+            case .documentImport(.dismiss):
+                return .none
+
+            // All other child actions pass through untouched.
+            case .documentImport:
+                return .none
 
             case .importAlertDismissed:
                 state.importAlert = nil
@@ -555,6 +607,9 @@ struct HomeFeature: Reducer {
         }
         .ifLet(\.$pdfViewer, action: \.pdfViewer) {
             PDFFeature()
+        }
+        .ifLet(\.$documentImport, action: \.documentImport) {
+            DocumentImportFeature()
         }
     }
 

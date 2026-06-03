@@ -240,5 +240,19 @@ extension AppStrings {
                 count
             )
         }
+
+        /// Fallback title for a scanned PDF when the assembled
+        /// document carries no embedded title. The page count gives
+        /// the user a quick visual anchor on the library card.
+        static func scanFallbackTitle(pageCount: Int) -> String {
+            String.localizedStringWithFormat(
+                NSLocalizedString(
+                    "library.importPDF.scanFallbackTitle",
+                    value: "Scanned document (%d pages)",
+                    comment: "Library card title for a scanned-source PDF that lacks an embedded title. %d is the page count."
+                ),
+                pageCount
+            )
+        }
     }
 }

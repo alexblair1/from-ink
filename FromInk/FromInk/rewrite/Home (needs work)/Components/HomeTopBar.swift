@@ -1,9 +1,16 @@
 import SwiftUI
 
-/// Sticky top bar: settings (left), wordmark (center), import-PDF + compose
-/// (right). Trailing area renders the import button to the left of compose
-/// so the right edge stays anchored on the canonical "new" action.
-/// Component view — no TCA imports.
+/// Sticky top bar: settings (left), wordmark (center), import-PDF +
+/// compose (right). The import slot is a SwiftUI `Menu` — tapping
+/// surfaces a native pull-down menu anchored to the icon with two
+/// items: "Import file" and "Scan document". Menu is the canonical
+/// cross-platform primitive for "tap a button → pick one of N
+/// actions": dropdown on iPhone/iPad, native menu on macOS, anchored
+/// everywhere, zero per-platform code.
+///
+/// Component view — no TCA imports. The Model carries two action
+/// closures and a `scanDocumentAvailable` flag; the wiring view
+/// supplies them.
 ///
 struct HomeTopBar: View {
     let model: Model
@@ -29,7 +36,24 @@ struct HomeTopBar: View {
 
             Spacer()
 
-            Button(action: model.onImportPDF) {
+            // Menu (pull-down) anchored to the doc icon. Apple HIG-
+            // compliant on every platform; arrow / dropdown chrome
+            // is system-provided.
+            Menu {
+                Button {
+                    model.onImportPDF()
+                } label: {
+                    Label(model.importFileMenuLabel, systemImage: "doc")
+                }
+
+                if model.scanDocumentAvailable {
+                    Button {
+                        model.onScanDocument()
+                    } label: {
+                        Label(model.scanDocumentMenuLabel, systemImage: "doc.viewfinder")
+                    }
+                }
+            } label: {
                 Image(systemName: model.importPDFIcon)
                     .font(.system(size: model.iconSize, weight: .regular))
                     .symbolRenderingMode(.monochrome)
@@ -37,7 +61,6 @@ struct HomeTopBar: View {
                     .frame(width: model.hitTarget, height: model.hitTarget)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
             .accessibilityLabel(model.importPDFAccessibilityLabel)
 
             Button(action: model.onCompose) {
@@ -64,9 +87,18 @@ extension HomeTopBar {
         let leadingIcon: String
         let importPDFIcon: String
         let importPDFAccessibilityLabel: String
+        let importFileMenuLabel: String
+        let scanDocumentMenuLabel: String
+        /// Hide the Scan item when VisionKit's
+        /// `VNDocumentCameraViewController.isSupported` returns
+        /// false (Simulator, certain Mac configurations). Showing a
+        /// disabled item would imply the user is one fix away from
+        /// scanning, which they're not.
+        let scanDocumentAvailable: Bool
         let trailingIcon: String
         let onSettings: () -> Void
         let onImportPDF: () -> Void
+        let onScanDocument: () -> Void
         let onCompose: () -> Void
         let titleFont: Font
         let titleColor: Color
@@ -86,16 +118,22 @@ extension HomeTopBar.Model {
     init(
         onSettings: @escaping () -> Void,
         onImportPDF: @escaping () -> Void,
+        onScanDocument: @escaping () -> Void,
         onCompose: @escaping () -> Void,
+        scanDocumentAvailable: Bool,
         ds: DesignSystem = .standard
     ) {
         self.title = AppStrings.Home.title
         self.leadingIcon = "gearshape"
         self.importPDFIcon = "doc.badge.plus"
         self.importPDFAccessibilityLabel = AppStrings.Library.importPDFButton
+        self.importFileMenuLabel = AppStrings.DocumentImport.importFileMenuItem
+        self.scanDocumentMenuLabel = AppStrings.DocumentImport.scanDocumentMenuItem
+        self.scanDocumentAvailable = scanDocumentAvailable
         self.trailingIcon = "square.and.pencil"
         self.onSettings = onSettings
         self.onImportPDF = onImportPDF
+        self.onScanDocument = onScanDocument
         self.onCompose = onCompose
         self.titleFont = ds.typography.wordmark
         self.titleColor = ds.colors.ink

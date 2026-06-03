@@ -184,9 +184,7 @@ final class LibraryFeatureTests: XCTestCase {
         let store = TestStore(initialState: LibraryFeature.State()) {
             LibraryFeature()
         } withDependencies: {
-            $0.importPDFService = ImportPDFService { _ in
-                throw ImportPDFError.tooLarge(byteCount: byteCount, limit: limit)
-            }
+            $0.importPDFService = .throwing(.tooLarge(byteCount: byteCount, limit: limit))
         }
 
         await store.send(.importPDFRequested(fileURL))
@@ -200,9 +198,7 @@ final class LibraryFeatureTests: XCTestCase {
         let store = TestStore(initialState: LibraryFeature.State()) {
             LibraryFeature()
         } withDependencies: {
-            $0.importPDFService = ImportPDFService { _ in
-                throw ImportPDFError.invalidPDF
-            }
+            $0.importPDFService = .throwing(.invalidPDF)
         }
 
         await store.send(.importPDFRequested(fileURL))
@@ -216,9 +212,7 @@ final class LibraryFeatureTests: XCTestCase {
         let store = TestStore(initialState: LibraryFeature.State()) {
             LibraryFeature()
         } withDependencies: {
-            $0.importPDFService = ImportPDFService { _ in
-                throw ImportPDFError.accessDenied
-            }
+            $0.importPDFService = .throwing(.accessDenied)
         }
 
         await store.send(.importPDFRequested(fileURL))
@@ -232,9 +226,7 @@ final class LibraryFeatureTests: XCTestCase {
         let store = TestStore(initialState: LibraryFeature.State()) {
             LibraryFeature()
         } withDependencies: {
-            $0.importPDFService = ImportPDFService { _ in
-                throw ImportPDFError.attributesUnavailable
-            }
+            $0.importPDFService = .throwing(.attributesUnavailable)
         }
 
         await store.send(.importPDFRequested(fileURL))

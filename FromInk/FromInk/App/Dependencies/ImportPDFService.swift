@@ -25,6 +25,20 @@ private let log = Logger(subsystem: "com.fromink.app", category: "ImportPDFServi
 /// can be replaced with a fixture draft in any reducer test).
 struct ImportPDFService: Sendable {
     var importPDF: @Sendable (URL) async throws -> ImportedPDFDraft
+
+    /// Sibling entry point for documents that arrive as in-memory
+    /// `Data` rather than a security-scoped URL — e.g. the multi-page
+    /// PDF assembled from a `VNDocumentCameraViewController` scan.
+    /// Skips steps 1–3 of the URL flow (no scoping, no FileManager
+    /// size guard — the caller already chose to materialize the
+    /// bytes); applies the same size cap, parse + hash + thumbnail
+    /// as the URL path so downstream behaviour (CloudKit cost,
+    /// dedupe, library cards) is identical.
+    ///
+    /// `suggestedName` becomes the fallback title when the PDF
+    /// itself carries no embedded title; pass nil to let the
+    /// service auto-name with a timestamp.
+    var importPDFFromData: @Sendable (Data, _ suggestedName: String?) async throws -> ImportedPDFDraft
 }
 
 // MARK: - Errors
@@ -93,7 +107,8 @@ extension ImportPDFService {
 // MARK: - Live
 
 extension ImportPDFService: DependencyKey {
-    static let liveValue = ImportPDFService { url in
+    static let liveValue = ImportPDFService(
+        importPDF: { url in
         // 1. Security-scoped access. Always paired with stop() via defer.
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -152,6 +167,58 @@ extension ImportPDFService: DependencyKey {
             pdfData: data,
             thumbnailData: parsed.thumbnailData
         )
+    },
+    importPDFFromData: { data, suggestedName in
+        // No security scope, no FileManager — the bytes are already
+        // in memory by the caller's choice. Same size cap as the URL
+        // path so library cards behave the same way on CloudKit.
+        guard data.count <= ImportPDFService.maxAssetBytes else {
+            log.notice("Rejecting in-memory PDF: size=\(data.count, privacy: .public) exceeds limit=\(ImportPDFService.maxAssetBytes, privacy: .public)")
+            throw ImportPDFError.tooLarge(
+                byteCount: data.count,
+                limit: ImportPDFService.maxAssetBytes
+            )
+        }
+
+        let fallback = suggestedName ?? Self.timestampedFallbackTitle()
+
+        // Parse + hash off-main in parallel (matches the URL path).
+        async let parsedPromise = Task.detached(priority: .userInitiated) {
+            ParsedPDF.parse(data: data, fallbackTitle: fallback)
+        }.value
+        async let hashPromise = Task.detached(priority: .userInitiated) {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }.value
+        let (parsed, hash) = await (parsedPromise, hashPromise)
+
+        guard let parsed else {
+            log.error("PDFKit failed to parse in-memory PDF (\(data.count, privacy: .public) bytes)")
+            throw ImportPDFError.invalidPDF
+        }
+
+        log.info("Parsed in-memory PDF: pages=\(parsed.pageCount, privacy: .public) bytes=\(data.count, privacy: .public) hash=\(String(hash.prefix(8)), privacy: .public)")
+
+        return ImportedPDFDraft(
+            title: parsed.title,
+            contentHash: hash,
+            pageCount: parsed.pageCount,
+            byteSize: data.count,
+            pdfData: data,
+            thumbnailData: parsed.thumbnailData
+        )
+    }
+    )
+}
+
+extension ImportPDFService {
+    /// Locale-aware "Scan YYYY-MM-DD HH-mm" fallback for
+    /// scan-source imports that don't carry an embedded PDF title.
+    /// File-system safe (no slashes or colons).
+    fileprivate static func timestampedFallbackTitle() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH-mm"
+        return "Scan \(formatter.string(from: Date()))"
     }
 }
 
@@ -160,14 +227,28 @@ extension ImportPDFService: DependencyKey {
 extension ImportPDFService: TestDependencyKey {
     /// Fails on any access — tests opt in by overriding with
     /// `withDependencies { $0.importPDFService = .preview(...) }`.
-    static let testValue = ImportPDFService { _ in
-        throw ImportPDFError.invalidPDF
-    }
+    static let testValue = ImportPDFService(
+        importPDF: { _ in throw ImportPDFError.invalidPDF },
+        importPDFFromData: { _, _ in throw ImportPDFError.invalidPDF }
+    )
 
     /// Convenience for previews / TestStore overrides — returns a
-    /// caller-supplied draft regardless of the URL.
+    /// caller-supplied draft regardless of source.
     static func preview(_ draft: ImportedPDFDraft) -> ImportPDFService {
-        ImportPDFService { _ in draft }
+        ImportPDFService(
+            importPDF: { _ in draft },
+            importPDFFromData: { _, _ in draft }
+        )
+    }
+
+    /// Convenience for tests that want every acquisition path to
+    /// throw the same `ImportPDFError`. Keeps test sites at one line
+    /// even after the service grew a second entry point.
+    static func throwing(_ error: ImportPDFError) -> ImportPDFService {
+        ImportPDFService(
+            importPDF: { _ in throw error },
+            importPDFFromData: { _, _ in throw error }
+        )
     }
 }
 

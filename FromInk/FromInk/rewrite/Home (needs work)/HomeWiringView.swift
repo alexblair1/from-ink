@@ -17,6 +17,11 @@ struct HomeWiringView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @Dependency(\.calendarContext) private var calendarContext
+    /// VisionKit's scanner is unavailable on Simulator and on Mac
+    /// configurations without a paired camera. The Menu in HomeTopBar
+    /// hides the Scan item when this returns false rather than
+    /// surfacing a disabled affordance.
+    @Dependency(\.documentScannerService) private var documentScannerService
 
     private let ds = DesignSystem.standard
 
@@ -86,29 +91,24 @@ struct HomeWiringView: View {
                     .transition(.opacity)
             }
         }
-        .fileImporter(
-            isPresented: Binding(
-                get: { store.isImportPickerOpen },
-                set: { newValue in
-                    // The view only ever sets this to false (user
-                    // cancellation / SwiftUI dismissing the sheet).
-                    // The reducer opens it via .importPDFTapped.
-                    if !newValue {
-                        store.send(.importPickerDismissed)
-                    }
-                }
-            ),
-            allowedContentTypes: [.pdf],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                store.send(.importPDFPicked(url))
-            case .failure:
-                // SwiftUI surfaces its own picker error; we just clear
-                // the open state so the binding stays consistent.
-                store.send(.importPickerDismissed)
+        // Document acquisition mount — invisible. The choice between
+        // file picker and scanner is handled by the Menu in HomeTopBar
+        // (anchored natively to the doc icon on every platform).
+        // Once a menu item is tapped, HomeFeature creates a
+        // `DocumentImportFeature.State` with the appropriate initial
+        // phase; this background slot mounts the wiring view, whose
+        // `.fileImporter` / `.fullScreenCover` / `.alert` modifiers
+        // activate based on phase.
+        //
+        // The `if let` form is the canonical TCA 1.10+ pattern for
+        // optional-state child views (parallel to `.sheet(item:)` but
+        // without imposing a sheet container).
+        .background {
+            if let importStore = $store.scope(
+                state: \.documentImport,
+                action: \.documentImport
+            ).wrappedValue {
+                DocumentImportWiringView(store: importStore)
             }
         }
         .alert(
@@ -233,7 +233,9 @@ struct HomeWiringView: View {
         HomeTopBar.Model(
             onSettings: { store.send(.settingsTapped) },
             onImportPDF: { store.send(.importPDFTapped) },
-            onCompose: { store.send(.newNotebookTapped) }
+            onScanDocument: { store.send(.scanDocumentTapped) },
+            onCompose: { store.send(.newNotebookTapped) },
+            scanDocumentAvailable: documentScannerService.isAvailable()
         )
     }
 
