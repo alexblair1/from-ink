@@ -9,14 +9,13 @@ import SwiftUI
 ///
 /// Header chrome shared with the other detail screens.
 ///
-/// Component view: zero TCA imports. Lifecycle wiring (`onAppear`,
-/// scene-active refresh) lives in `SettingsView+Adapter` which forwards
-/// to `PermissionsFeature`.
+/// Component view: zero TCA imports, zero DesignSystem access in
+/// `body`. Every visual value is pre-resolved on the Model in its
+/// init. Lifecycle wiring (`onAppear`, scene-active refresh) lives in
+/// `SettingsView+Adapter` which forwards to `PermissionsFeature`.
 struct PermissionsDetailView: View {
     let model: Model
     @Environment(\.scenePhase) private var scenePhase
-
-    private let ds = DesignSystem.standard
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,57 +42,49 @@ struct PermissionsDetailView: View {
     @ViewBuilder
     private func permissionRow(_ row: Row) -> some View {
         Button(action: row.onTap) {
-            VStack(alignment: .leading, spacing: ds.spacing.xs) {
-                HStack(spacing: ds.spacing.md) {
+            VStack(alignment: .leading, spacing: model.headerLineSpacing) {
+                HStack(spacing: model.titleRowSpacing) {
                     Image(systemName: row.icon)
-                        .font(.system(size: 17))
-                        .foregroundStyle(ds.colors.ink2)
-                        .frame(width: ds.layout.iconFrame)
+                        .font(model.iconFont)
+                        .foregroundStyle(model.iconColor)
+                        .frame(width: model.iconFrame)
 
                     Text(row.title)
-                        .font(.system(size: 17, weight: .regular, design: .serif))
-                        .foregroundStyle(ds.colors.ink)
+                        .font(model.titleFont)
+                        .foregroundStyle(model.titleColor)
 
                     Spacer()
 
                     // Status pill — same MonoLabel treatment as every
-                    // other mono status pill in Settings
-                    // (SettingsRow attention, IntegrationAccountRow
-                    // re-auth, IntegrationPendingRow status). Keeps
-                    // the typographic family tight.
-                    MonoLabel(row.statusLabel, size: 10, color: row.statusColor)
+                    // other mono status pill in Settings. Keeps the
+                    // typographic family tight.
+                    MonoLabel(
+                        row.statusLabel,
+                        size: model.statusSize,
+                        color: row.statusColor
+                    )
                 }
 
-                // Body description — 13pt serif ink2 matches the
-                // canonical row secondary text (IntegrationAccountRow
-                // email, neutral SettingsRow hints). Italics is kept
-                // here intentionally — it's a descriptive sentence,
-                // not a row title.
+                // Body description — italics is kept here intentionally
+                // (descriptive sentence, not a row title).
                 Text(row.body)
-                    .font(.system(size: 13, weight: .regular, design: .serif))
+                    .font(model.bodyFont)
                     .italic()
-                    .foregroundStyle(ds.colors.ink2)
+                    .foregroundStyle(model.bodyColor)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, bodyIndent)
+                    .padding(.leading, model.bodyIndent)
 
                 // CTA hint — MonoLabel matches the affordance grammar
-                // used by IntegrationAddAccountRow's "+ ADD ACCOUNT".
-                MonoLabel(row.cta, size: 10, color: ds.colors.ink3)
-                    .padding(.leading, bodyIndent)
+                // used by SettingsActionRow.
+                MonoLabel(row.cta, size: model.ctaSize, color: model.ctaColor)
+                    .padding(.leading, model.bodyIndent)
             }
-            .padding(.horizontal, ds.spacing.lg)
-            .padding(.vertical, ds.spacing.md)
+            .padding(.horizontal, model.horizontalPadding)
+            .padding(.vertical, model.verticalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    /// Indent for the body + CTA so they align with the title (past
-    /// the leading icon column). Derived from the icon frame + spacing
-    /// to keep the layout responsive to design-system changes.
-    private var bodyIndent: CGFloat {
-        ds.layout.iconFrame + ds.spacing.md
     }
 }
 
@@ -103,6 +94,25 @@ extension PermissionsDetailView {
     struct Model {
         let header: SettingsDetailHeader.Model
         let rows: [Row]
+        // Layout
+        let headerLineSpacing: CGFloat
+        let titleRowSpacing: CGFloat
+        let horizontalPadding: CGFloat
+        let verticalPadding: CGFloat
+        let iconFrame: CGFloat
+        let bodyIndent: CGFloat
+        // Typography
+        let iconFont: Font
+        let titleFont: Font
+        let bodyFont: Font
+        let statusSize: CGFloat
+        let ctaSize: CGFloat
+        // Colors
+        let iconColor: Color
+        let titleColor: Color
+        let bodyColor: Color
+        let ctaColor: Color
+        // Lifecycle
         let onAppear: () -> Void
         let onSceneBecameActive: () -> Void
     }

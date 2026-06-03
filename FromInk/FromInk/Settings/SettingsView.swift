@@ -19,8 +19,6 @@ import SwiftUI
 struct SettingsView: View {
     let model: Model
 
-    private let ds = DesignSystem.standard
-
     var body: some View {
         NavigationStack {
             rootList
@@ -59,15 +57,20 @@ struct SettingsView: View {
     private var header: some View {
         HStack {
             Text(model.title)
-                .font(.system(size: 28, weight: .regular, design: .serif))
-                .foregroundStyle(ds.colors.ink)
+                .font(model.titleFont)
+                .foregroundStyle(model.titleColor)
 
             Spacer()
 
-            IconButton("xmark", size: .footnote, color: ds.colors.ink2, action: model.onDismiss)
+            IconButton(
+                "xmark",
+                size: .footnote,
+                color: model.closeIconColor,
+                action: model.onDismiss
+            )
         }
-        .padding(.horizontal, ds.spacing.lg)
-        .padding(.vertical, ds.spacing.md)
+        .padding(.horizontal, model.headerHorizontalPadding)
+        .padding(.vertical, model.headerVerticalPadding)
     }
 
     // MARK: - Detail screens (pushed via NavigationStack)
@@ -92,6 +95,11 @@ struct SettingsView: View {
 extension SettingsView {
     struct Model {
         let title: String
+        let titleFont: Font
+        let titleColor: Color
+        let closeIconColor: Color
+        let headerHorizontalPadding: CGFloat
+        let headerVerticalPadding: CGFloat
         let groups: [Group]
         let onDismiss: () -> Void
 

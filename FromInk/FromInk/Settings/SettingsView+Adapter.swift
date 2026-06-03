@@ -6,12 +6,17 @@ import SwiftUI
 /// store shape → flat view fields. The view file is TCA-free.
 ///
 extension SettingsView.Model {
-    init(store: StoreOf<SettingsFeature>) {
+    init(store: StoreOf<SettingsFeature>, ds: DesignSystem = .standard) {
         let onDismiss: () -> Void = { store.send(.dismissTapped) }
         let onBack: () -> Void = { store.send(.backTapped) }
         let backLabel = AppStrings.Settings.title
 
         self.title = AppStrings.Settings.title
+        self.titleFont = .system(size: 28, weight: .regular, design: .serif)
+        self.titleColor = ds.colors.ink
+        self.closeIconColor = ds.colors.ink2
+        self.headerHorizontalPadding = ds.spacing.lg
+        self.headerVerticalPadding = ds.spacing.md
         self.onDismiss = onDismiss
 
         // Binding that drives NavigationStack's
@@ -143,7 +148,8 @@ extension PermissionsDetailView.Model {
     /// Each row carries its current status label/color, a CTA hint, and
     /// a tap closure routed to the right child action. `onAppear` and
     /// `onSceneBecameActive` keep the rows live across navigation and
-    /// system-Settings round-trips.
+    /// system-Settings round-trips. All visuals resolve here, in the
+    /// init, off `DesignSystem` — the view reads only flat fields.
     init(
         store: StoreOf<PermissionsFeature>,
         header: SettingsDetailHeader.Model,
@@ -177,6 +183,26 @@ extension PermissionsDetailView.Model {
             ),
         ]
 
+        // Layout
+        self.headerLineSpacing = ds.spacing.xs
+        self.titleRowSpacing = ds.spacing.md
+        self.horizontalPadding = ds.spacing.lg
+        self.verticalPadding = ds.spacing.md
+        self.iconFrame = ds.layout.iconFrame
+        // Body + CTA align past the leading icon column.
+        self.bodyIndent = ds.layout.iconFrame + ds.spacing.md
+        // Typography
+        self.iconFont = .system(size: 17)
+        self.titleFont = .system(size: 17, weight: .regular, design: .serif)
+        self.bodyFont = .system(size: 13, weight: .regular, design: .serif)
+        self.statusSize = 10
+        self.ctaSize = 10
+        // Colors
+        self.iconColor = ds.colors.ink2
+        self.titleColor = ds.colors.ink
+        self.bodyColor = ds.colors.ink2
+        self.ctaColor = ds.colors.ink3
+        // Lifecycle
         self.onAppear = { store.send(.appeared) }
         self.onSceneBecameActive = { store.send(.sceneBecameActive) }
     }

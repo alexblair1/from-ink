@@ -18,22 +18,17 @@ import SwiftUI
 /// For multi-line rows with leading icons (Permissions), use the
 /// dedicated component in `PermissionsDetailView`.
 ///
-/// Component view: zero state, zero TCA.
+/// Component view: zero state, zero TCA, zero DesignSystem access.
+/// Every visual value is pre-resolved on the Model in its init.
 ///
 struct SettingsRowView: View {
     let model: Model
 
-    private let ds = DesignSystem.standard
-
     var body: some View {
         Button(action: model.onTap) {
-            HStack(spacing: ds.spacing.sm) {
+            HStack(spacing: model.contentSpacing) {
                 Text(model.title)
-                    .font(.system(
-                        size: 17,
-                        weight: model.titleIsBold ? .medium : .regular,
-                        design: .serif
-                    ))
+                    .font(model.titleFont)
                     .foregroundStyle(model.titleColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -42,14 +37,14 @@ struct SettingsRowView: View {
 
                 trailing
 
-                if model.showsChevron {
+                if let chevron = model.chevron {
                     Image(systemName: "chevron.forward")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(ds.colors.ink3)
+                        .font(chevron.font)
+                        .foregroundStyle(chevron.color)
                 }
             }
-            .padding(.horizontal, ds.spacing.lg)
-            .frame(minHeight: ds.layout.hitTarget)
+            .padding(.horizontal, model.horizontalPadding)
+            .frame(minHeight: model.minHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -63,13 +58,13 @@ struct SettingsRowView: View {
     @ViewBuilder
     private var trailing: some View {
         if let badge = model.statusBadge {
-            MonoLabel(badge.text, size: 10, color: badge.color)
+            MonoLabel(badge.text, size: badge.size, color: badge.color)
                 .lineLimit(1)
                 .truncationMode(.tail)
         } else if let secondary = model.secondaryText {
             Text(secondary)
-                .font(.system(size: 13, weight: .regular, design: .serif))
-                .foregroundStyle(ds.colors.ink2)
+                .font(model.secondaryFont)
+                .foregroundStyle(model.secondaryColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
@@ -84,44 +79,27 @@ extension SettingsRowView {
         /// builds these from destinations, account IDs, etc.
         let id: String
         let title: String
-        /// Bold variant — used by IntegrationAccountRow's "this is
-        /// the default" treatment. Defaults to false; the adapter
-        /// flips it only when meaningful.
-        let titleIsBold: Bool
-        /// Title color — defaults to `ink`. The pending row uses
-        /// `ink2` to signal "this row is in flight, not yet
-        /// committed content."
+        let titleFont: Font
         let titleColor: Color
-        /// Prose secondary text — 13pt serif ink2. Mutually exclusive
-        /// with `statusBadge`.
+        /// Prose secondary text — mutually exclusive with `statusBadge`.
         let secondaryText: String?
+        let secondaryFont: Font
+        let secondaryColor: Color
         /// Mono status pill — overrides `secondaryText` when present.
         let statusBadge: StatusBadge?
-        /// Whether to render a trailing chevron. Account rows that
-        /// open detail navigation use it; in-flight pending rows
-        /// don't.
-        let showsChevron: Bool
+        /// Trailing chevron config, or `nil` to suppress.
+        let chevron: Chevron?
+        let contentSpacing: CGFloat
+        let horizontalPadding: CGFloat
+        let minHeight: CGFloat
         let onTap: () -> Void
+    }
 
-        init(
-            id: String,
-            title: String,
-            titleIsBold: Bool = false,
-            titleColor: Color = ColorTokens.standard.ink,
-            secondaryText: String? = nil,
-            statusBadge: StatusBadge? = nil,
-            showsChevron: Bool = true,
-            onTap: @escaping () -> Void
-        ) {
-            self.id = id
-            self.title = title
-            self.titleIsBold = titleIsBold
-            self.titleColor = titleColor
-            self.secondaryText = secondaryText
-            self.statusBadge = statusBadge
-            self.showsChevron = showsChevron
-            self.onTap = onTap
-        }
+    /// Chevron visual config — pre-resolved so the view doesn't pick
+    /// font weight or color itself.
+    struct Chevron: Equatable {
+        let font: Font
+        let color: Color
     }
 
     /// A mono status pill at the trailing edge of the row. Color
@@ -131,5 +109,48 @@ extension SettingsRowView {
     struct StatusBadge: Equatable {
         let text: String
         let color: Color
+        let size: CGFloat
+    }
+}
+
+// MARK: - Model init (resolves visuals from DesignSystem)
+
+extension SettingsRowView.Model {
+    /// Convenience init — callers pass semantic inputs (title text,
+    /// `titleIsBold`, secondary text / badge, whether to show the
+    /// chevron) and this init resolves every visual value off
+    /// `DesignSystem`. The view sees only the resolved fields.
+    init(
+        id: String,
+        title: String,
+        titleIsBold: Bool = false,
+        secondaryText: String? = nil,
+        statusBadge: SettingsRowView.StatusBadge? = nil,
+        showsChevron: Bool = true,
+        onTap: @escaping () -> Void,
+        ds: DesignSystem = .standard
+    ) {
+        self.id = id
+        self.title = title
+        self.titleFont = .system(
+            size: 17,
+            weight: titleIsBold ? .medium : .regular,
+            design: .serif
+        )
+        self.titleColor = ds.colors.ink
+        self.secondaryText = secondaryText
+        self.secondaryFont = .system(size: 13, weight: .regular, design: .serif)
+        self.secondaryColor = ds.colors.ink2
+        self.statusBadge = statusBadge
+        self.chevron = showsChevron
+            ? SettingsRowView.Chevron(
+                font: .system(size: 12, weight: .medium),
+                color: ds.colors.ink3
+            )
+            : nil
+        self.contentSpacing = ds.spacing.sm
+        self.horizontalPadding = ds.spacing.lg
+        self.minHeight = ds.layout.hitTarget
+        self.onTap = onTap
     }
 }
