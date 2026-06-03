@@ -240,6 +240,8 @@ struct HomeWiringView: View {
     private var topBarModel: HomeTopBar.Model {
         HomeTopBar.Model(
             onSettings: { store.send(.settingsTapped) },
+            onFocusModeToggled: { store.send(.focusModeToggled) },
+            isFocusMode: store.isFocusMode,
             onImportPDF: { store.send(.importPDFTapped) },
             onScanDocument: { store.send(.scanDocumentTapped) },
             onCompose: { store.send(.newNotebookTapped) },
@@ -295,7 +297,8 @@ struct HomeWiringView: View {
             tabSection: buildTabSection(),
             nonFocalOpacity: store.isWheelOpen ? 0 : 1.0,
             nonFocalIsInteractive: !store.isWheelOpen,
-            isWheelMode: store.isWheelOpen
+            isWheelMode: store.isWheelOpen,
+            isFocusMode: store.isFocusMode
         )
     }
 

@@ -36,6 +36,22 @@ struct HomeTopBar: View {
 
             Spacer()
 
+            // Focus-mode toggle. Eye / eye.slash semantic: open eye =
+            // "everything is visible" (off, tap to enter focus), slash
+            // eye = "things hidden" (on, tap to exit). Lives between
+            // the masthead and the document Menu so the right-edge
+            // anchor stays on the canonical compose icon.
+            Button(action: model.onFocusModeToggled) {
+                Image(systemName: model.focusModeIcon)
+                    .font(.system(size: model.iconSize, weight: .regular))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(model.iconColor)
+                    .frame(width: model.hitTarget, height: model.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.focusModeAccessibilityLabel)
+
             // Menu (pull-down) anchored to the doc icon. Apple HIG-
             // compliant on every platform; arrow / dropdown chrome
             // is system-provided.
@@ -95,8 +111,14 @@ extension HomeTopBar {
         /// disabled item would imply the user is one fix away from
         /// scanning, which they're not.
         let scanDocumentAvailable: Bool
+        /// `eye` when focus mode is OFF (tap to enter), `eye.slash`
+        /// when focus mode is ON (tap to exit). Resolved on the
+        /// Model so the view stays declarative.
+        let focusModeIcon: String
+        let focusModeAccessibilityLabel: String
         let trailingIcon: String
         let onSettings: () -> Void
+        let onFocusModeToggled: () -> Void
         let onImportPDF: () -> Void
         let onScanDocument: () -> Void
         let onCompose: () -> Void
@@ -117,6 +139,8 @@ extension HomeTopBar {
 extension HomeTopBar.Model {
     init(
         onSettings: @escaping () -> Void,
+        onFocusModeToggled: @escaping () -> Void,
+        isFocusMode: Bool,
         onImportPDF: @escaping () -> Void,
         onScanDocument: @escaping () -> Void,
         onCompose: @escaping () -> Void,
@@ -130,8 +154,13 @@ extension HomeTopBar.Model {
         self.importFileMenuLabel = AppStrings.DocumentImport.importFileMenuItem
         self.scanDocumentMenuLabel = AppStrings.DocumentImport.scanDocumentMenuItem
         self.scanDocumentAvailable = scanDocumentAvailable
+        self.focusModeIcon = isFocusMode ? "eye.slash" : "eye"
+        self.focusModeAccessibilityLabel = isFocusMode
+            ? AppStrings.Home.focusModeExitAccessibilityLabel
+            : AppStrings.Home.focusModeEnterAccessibilityLabel
         self.trailingIcon = "square.and.pencil"
         self.onSettings = onSettings
+        self.onFocusModeToggled = onFocusModeToggled
         self.onImportPDF = onImportPDF
         self.onScanDocument = onScanDocument
         self.onCompose = onCompose

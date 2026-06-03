@@ -293,5 +293,23 @@ static let highlights = NSLocalizedString(
             value: "Refresh brief",
             comment: "VoiceOver custom action name + long-press hint for forcing a daily-brief regeneration."
         )
+
+        /// VoiceOver label for the eye button in the home top bar when
+        /// focus mode is OFF (open eye). Tapping enters focus mode, which
+        /// hides the editor's note and the calendar/reminders tab strip.
+        static let focusModeEnterAccessibilityLabel = NSLocalizedString(
+            "home.focus.enter.accessibilityLabel",
+            value: "Enter focus mode",
+            comment: "VoiceOver label for the open-eye button that collapses the daily brief and tab section on the home screen."
+        )
+
+        /// VoiceOver label for the eye button in the home top bar when
+        /// focus mode is ON (eye with slash). Tapping exits focus mode
+        /// and restores the editor's note + tab strip.
+        static let focusModeExitAccessibilityLabel = NSLocalizedString(
+            "home.focus.exit.accessibilityLabel",
+            value: "Exit focus mode",
+            comment: "VoiceOver label for the slashed-eye button that restores the daily brief and tab section on the home screen."
+        )
     }
 }

@@ -443,6 +443,68 @@ final class HomeFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - focusModeToggled
+    //
+    // Focus mode hides the editor's note + tab strip via the wiring
+    // view's resolution of `isFocusMode` into the HomeDailyBrief model
+    // (`showsEditorsNote` / `showsTabSection`). The reducer's job is
+    // narrow: flip the flag and collapse any expanded tab so the user
+    // doesn't return to a stale tab body when focus is later disabled.
+
+    @MainActor
+    func test_focusModeToggled_fromOff_setsFocusModeOn() async {
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.focusModeToggled) {
+            $0.isFocusMode = true
+        }
+    }
+
+    @MainActor
+    func test_focusModeToggled_fromOn_setsFocusModeOff() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.isFocusMode = true
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.focusModeToggled) {
+            $0.isFocusMode = false
+        }
+    }
+
+    /// Entering focus mode must collapse any expanded brief tab — the
+    /// tab section is removed from the view tree while focus is on, so
+    /// leaving `activeBriefTab` populated would re-reveal that tab the
+    /// moment focus is exited (feels like a state leak across the
+    /// focus boundary).
+    @MainActor
+    func test_focusModeToggled_collapsesActiveBriefTab() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.activeBriefTab = .reminders
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.focusModeToggled) {
+            $0.isFocusMode = true
+            $0.activeBriefTab = nil
+        }
+    }
+
     // MARK: - Settings integration
 
     /// Pins the load-bearing contract that

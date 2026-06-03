@@ -48,6 +48,11 @@ struct HomeFeature: Reducer {
         /// `.foregrounded` and `.calendarChanged` are no-ops — they target
         /// "today's" brief and would clobber the warp.
         var isWarped: Bool = false
+        /// Focus mode hides the editor's note + the calendar tab body
+        /// so the home screen reduces to the masthead + notebook shelf.
+        /// User-toggled via the eye / eye.slash button in the top bar.
+        /// Ephemeral — does not persist across app launches.
+        var isFocusMode: Bool = false
         var searchText: String = ""
 
         /// Fast, FM-free snapshot of the day's events/reminders/birthdays.
@@ -141,6 +146,10 @@ struct HomeFeature: Reducer {
         /// new tab.
         case briefTabTapped(BriefTab)
         case settingsTapped
+        /// User tapped the eye / eye.slash button in the top bar.
+        /// Toggles `isFocusMode` and collapses any active brief tab so
+        /// the user returns to a clean expanded state on exit.
+        case focusModeToggled
         case newNotebookTapped
         case newNotebookDismissed
         case notebookCreated(title: String)
@@ -418,6 +427,16 @@ struct HomeFeature: Reducer {
                 // `@Presents` + `.ifLet` wires the child reducer
                 // and handles framework auto-dismiss for free.
                 state.settings = SettingsFeature.State()
+                return .none
+
+            case .focusModeToggled:
+                state.isFocusMode.toggle()
+                // Collapse any expanded tab so the view returns to a
+                // clean tab-strip state when focus mode is later
+                // disabled. Without this, exiting focus would re-reveal
+                // whichever tab body was last active, which feels like
+                // a state leak across the focus boundary.
+                state.activeBriefTab = nil
                 return .none
 
             // Child's delegate dismiss (user tapped X). Clear the

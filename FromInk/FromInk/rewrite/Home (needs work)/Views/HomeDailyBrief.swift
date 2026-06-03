@@ -116,6 +116,7 @@ struct HomeDailyBrief: View {
             }
 
             BriefTabSection(model: model.tabSection)
+                .padding(.top, model.tabSectionTopPadding)
                 .opacity(model.tabSectionOpacity)
                 .allowsHitTesting(model.tabSectionIsInteractive)
                 .accessibilityHidden(!model.tabSectionIsInteractive)
@@ -226,6 +227,11 @@ extension HomeDailyBrief {
         /// gets a scrim — its own tap handlers stay live.
         let tabSectionOpacity: Double
         let tabSectionIsInteractive: Bool
+        /// Top padding above the tab strip. Non-zero only when the
+        /// editor's note above is hidden — the editor's note normally
+        /// supplies the gap via its own `.padding(.bottom, ruleSpacing)`,
+        /// so we'd double up if we paid it from both sides.
+        let tabSectionTopPadding: CGFloat
 
         /// Long-press gesture handler on the editor's note region.
         /// `nil` disables the gesture entirely. Used to invoke a manual
@@ -259,6 +265,7 @@ extension HomeDailyBrief.Model {
         nonFocalOpacity: Double = 1.0,
         nonFocalIsInteractive: Bool = true,
         isWheelMode: Bool = false,
+        isFocusMode: Bool = false,
         ds: DesignSystem = .standard
     ) {
         self.metaRow = metaRow
@@ -299,20 +306,33 @@ extension HomeDailyBrief.Model {
         self.metaRowIsInteractive = isWheelMode ? false : nonFocalIsInteractive
         self.metaRowScrimAction = onScrimTap
 
-        // Hide the editor's note when either:
+        // Hide the editor's note when any of:
         //  • wheel mode is active (the wheel is the focal surface)
+        //  • focus mode is active (user explicitly collapsed the brief)
         //  • there are no paragraphs (Foundation Models couldn't
         //    produce a brief — see `localization_edd.md §5`).
         // The tabs below continue rendering events / reminders /
         // birthdays regardless; the editor's note is editorial
         // commentary, not the data itself.
-        self.showsEditorsNote = !isWheelMode && !editorsNote.paragraphs.isEmpty
+        self.showsEditorsNote = !isWheelMode && !isFocusMode && !editorsNote.paragraphs.isEmpty
         self.editorsNoteOpacity = nonFocalOpacity
         self.editorsNoteIsInteractive = nonFocalIsInteractive
         self.editorsNoteScrimAction = onScrimTap
 
+        // Tab strip stays visible in focus mode — `HomeFeature` resets
+        // `activeBriefTab` to nil on the focus toggle, so the section
+        // renders in its collapsed (tab-strip-only) form. The user can
+        // still tap a tab to expand its body while focused; only the
+        // editor's note above is removed.
         self.tabSectionOpacity = isWheelMode ? 1.0 : nonFocalOpacity
         self.tabSectionIsInteractive = isWheelMode ? true : nonFocalIsInteractive
+        // When the editor's note above is hidden (focus mode, FM-empty
+        // brief, etc.), the masthead's small `innerSpacing` top padding
+        // is the only thing separating the date from the tab strip —
+        // they collide. Pay the same `ruleSpacing` the editor's note
+        // would have paid as its bottom padding so the optical gap is
+        // identical with or without the editorial.
+        self.tabSectionTopPadding = self.showsEditorsNote ? 0 : ds.spacing.lg
 
         // Refresh gesture: disabled in wheel mode (the wheel + Done↑ is
         // the only focal interaction there). Otherwise wired through so
