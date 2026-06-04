@@ -737,7 +737,10 @@ private func buildHighlights(
                 // omit start/end so the adapter's in-progress
                 // predicate naturally falls through to false.
                 startDate: nil,
-                endDate: nil
+                endDate: nil,
+                localIdentifier: event.localIdentifier.isEmpty ? nil : event.localIdentifier,
+                externalIdentifier: event.externalIdentifier,
+                hasRecurrenceRules: event.hasRecurrenceRules
             )
         )
     }
@@ -758,7 +761,10 @@ private func buildHighlights(
                 sourceNotebookID: nil,
                 sourcePageIndex: nil,
                 startDate: event.startDate,
-                endDate: event.endDate
+                endDate: event.endDate,
+                localIdentifier: event.localIdentifier.isEmpty ? nil : event.localIdentifier,
+                externalIdentifier: event.externalIdentifier,
+                hasRecurrenceRules: event.hasRecurrenceRules
             )
         )
     }
@@ -780,7 +786,10 @@ private func buildHighlights(
                 sourceNotebookID: nil,
                 sourcePageIndex: nil,
                 startDate: nil,
-                endDate: nil
+                endDate: nil,
+                localIdentifier: reminder.localIdentifier.isEmpty ? nil : reminder.localIdentifier,
+                externalIdentifier: reminder.externalIdentifier,
+                hasRecurrenceRules: false
             )
         )
     }
@@ -801,7 +810,10 @@ private func buildHighlights(
                 // Reminders don't have a duration — no in-progress
                 // semantics. `.overdue` is encoded in the category.
                 startDate: nil,
-                endDate: nil
+                endDate: nil,
+                localIdentifier: reminder.localIdentifier.isEmpty ? nil : reminder.localIdentifier,
+                externalIdentifier: reminder.externalIdentifier,
+                hasRecurrenceRules: false
             )
         )
     }

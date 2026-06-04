@@ -21,6 +21,16 @@ struct BriefEventRow: View {
     let model: Model
 
     var body: some View {
+        Button(action: model.onTap) {
+            rowContent
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(model.accessibilityHint)
+    }
+
+    private var rowContent: some View {
         // Outer HStack uses `.top` alignment so the bar fills the
         // full row height while the inner content keeps its
         // `.firstTextBaseline` alignment intact.
@@ -156,6 +166,15 @@ extension BriefEventRow {
         /// suppressed. The section header below already supplies its own
         /// top rule; stacking both produced a visible "double divider."
         let hidesBottomRule: Bool
+        /// Whole-row tap. The wiring view resolves this to either
+        /// `.eventRowTapped(identifier)` when the row carries an EK
+        /// identifier, or a no-op closure when it doesn't (synthesized
+        /// highlights have no EK source to act on).
+        let onTap: () -> Void
+        /// VoiceOver hint — describes what happens on tap. Localized
+        /// upstream; varies by linked/unlinked state ("opens linked
+        /// notebook" vs. "shows actions for this event").
+        let accessibilityHint: String
 
         // Layout (pre-resolved from DesignSystem)
         let columnGap: CGFloat
@@ -212,6 +231,8 @@ extension BriefEventRow.Model {
         isInProgress: Bool,
         notebookLink: NotebookLink?,
         hidesBottomRule: Bool = false,
+        onTap: @escaping () -> Void = {},
+        accessibilityHint: String = "",
         ds: DesignSystem = .standard
     ) {
         self.id = id
@@ -222,6 +243,8 @@ extension BriefEventRow.Model {
         self.isInProgress = isInProgress
         self.notebookLink = notebookLink
         self.hidesBottomRule = hidesBottomRule
+        self.onTap = onTap
+        self.accessibilityHint = accessibilityHint
 
         // Spec values from the React `Notebook Tabs - Dark Mode`
         // event row: 64pt time column, 14pt gap, 11pt vertical

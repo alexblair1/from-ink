@@ -99,6 +99,21 @@ struct HomeWiringView: View {
                     .transition(.opacity)
             }
         }
+        .overlay {
+            if let sheet = store.eventActionSheet {
+                EventActionSheetView(model: eventActionSheetModel(for: sheet))
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if let pickerStore = $store.scope(
+                state: \.notebookPicker,
+                action: \.notebookPicker
+            ).wrappedValue {
+                NotebookPickerWiringView(store: pickerStore)
+                    .transition(.opacity)
+            }
+        }
         // Document acquisition mount — invisible. The choice between
         // file picker and scanner is handled by the Menu in HomeTopBar
         // (anchored natively to the doc icon on every platform).
@@ -369,6 +384,7 @@ struct HomeWiringView: View {
         // adapter method which is buried inside a SwiftUI view.
         let now = store.nowTick
         let calendar = calendarContext.userCalendar()
+        let linkLookup = store.linkLookup
         return highlights
             .filter { $0.category == .allDay || $0.category == .upcoming }
             .enumerated()
@@ -378,6 +394,40 @@ struct HomeWiringView: View {
                     now: now,
                     calendar: calendar
                 )
+
+                // Linked-notebook visual signal. The existing
+                // `notebookLink` pill below the event title carries
+                // the notebook title; pageLabel is left blank in V1
+                // (page-level affordance comes with the page-resolver
+                // PR). pageIndex is a layout placeholder; the actual
+                // navigation uses `link.pageID` via HomeFeature.
+                let link: CalendarItemLink.Snapshot? = {
+                    guard let identifier = h.localIdentifier else { return nil }
+                    return linkLookup[identifier]
+                }()
+                let notebookLink: BriefEventRow.Model.NotebookLink? = link.map { snap in
+                    BriefEventRow.Model.NotebookLink(
+                        notebookTitle: snap.notebookTitle,
+                        pageLabel: "",
+                        notebookID: snap.notebookID ?? UUID(),
+                        pageIndex: 0
+                    )
+                }
+
+                // Tap behavior: forward to `eventRowTapped` with the
+                // identifier when one exists. Highlights with no EK
+                // source (synthesized from notebook content, future)
+                // get a no-op closure so the row still renders but
+                // doesn't pretend to do anything on tap.
+                let identifier = h.localIdentifier
+                let tapHandler: () -> Void = {
+                    guard let id = identifier else { return }
+                    store.send(.eventRowTapped(identifier: id))
+                }
+                let hint = link == nil
+                    ? AppStrings.EventActionSheet.unlinkedRowAccessibilityHint
+                    : AppStrings.EventActionSheet.linkedRowAccessibilityHint
+
                 return BriefEventRow.Model(
                     id: "event-\(index)",
                     time: h.time,
@@ -385,7 +435,9 @@ struct HomeWiringView: View {
                     location: nil,
                     duration: badge,
                     isInProgress: isInProgress,
-                    notebookLink: nil
+                    notebookLink: notebookLink,
+                    onTap: tapHandler,
+                    accessibilityHint: identifier == nil ? "" : hint
                 )
             }
     }
@@ -555,5 +607,84 @@ struct HomeWiringView: View {
     private func firstSentence(of text: String) -> String {
         guard let range = text.range(of: ".", options: .literal) else { return text }
         return String(text[text.startIndex...range.lowerBound])
+    }
+
+    // MARK: - Event action sheet
+
+    private func eventActionSheetModel(
+        for sheet: EventActionSheetState
+    ) -> EventActionSheetView.Model {
+        let ds = DesignSystem.standard
+        let isLinked = sheet.linkedNotebook != nil
+        return EventActionSheetView.Model(
+            title: isLinked
+                ? AppStrings.EventActionSheet.linkedTitle
+                : AppStrings.EventActionSheet.unlinkedTitle,
+            subtitle: sheet.hasRecurrenceRules
+                ? AppStrings.EventActionSheet.recurringSeriesCopy
+                : nil,
+            actions: eventActionSheetActions(for: sheet, ds: ds),
+            onDismiss: { store.send(.eventActionDismissed) },
+            onScrimTap: { store.send(.eventActionDismissed) },
+            dismissAccessibilityLabel: AppStrings.EventActionSheet.dismissAction,
+            cardWidth: 360,
+            cardBackground: ds.colors.paper,
+            cardBorderColor: ds.colors.ink,
+            cardBorderWidth: ds.layout.borderWidth,
+            scrimColor: ds.colors.ink.opacity(ds.layout.scrimOpacity),
+            titleFont: .system(size: 14, weight: .medium, design: .monospaced),
+            titleColor: ds.colors.ink2,
+            subtitleFont: .system(size: 12, weight: .regular, design: .serif),
+            subtitleColor: ds.colors.ink3,
+            subtitleHorizontalPadding: ds.spacing.lg,
+            subtitleVerticalPadding: ds.spacing.sm,
+            headerHorizontalPadding: ds.spacing.sm,
+            headerHeight: ds.spacing.xxl,
+            dismissIconSize: ds.layout.dismissIconSize,
+            dismissFrame: ds.layout.dismissHitTarget,
+            dismissIconColor: ds.colors.ink2
+        )
+    }
+
+    private func eventActionSheetActions(
+        for sheet: EventActionSheetState,
+        ds: DesignSystem
+    ) -> [EventActionSheetActionRow.Model] {
+        if let linked = sheet.linkedNotebook {
+            return [
+                .init(
+                    label: AppStrings.EventActionSheet.openLinkedNotebook(linked.notebookTitle),
+                    iconSystemName: "book.closed.fill",
+                    onTap: { store.send(.eventActionOpenLinkedNotebookTapped) },
+                    ds: ds
+                ),
+                .init(
+                    label: AppStrings.EventActionSheet.openInCalendar,
+                    iconSystemName: "calendar",
+                    onTap: { store.send(.eventActionOpenInCalendarTapped) },
+                    ds: ds
+                )
+            ]
+        }
+        return [
+            .init(
+                label: AppStrings.EventActionSheet.createNotebookFromEvent,
+                iconSystemName: "plus.rectangle.on.rectangle",
+                onTap: { store.send(.eventActionCreateTapped) },
+                ds: ds
+            ),
+            .init(
+                label: AppStrings.EventActionSheet.linkToExistingNotebook,
+                iconSystemName: "link",
+                onTap: { store.send(.eventActionLinkTapped) },
+                ds: ds
+            ),
+            .init(
+                label: AppStrings.EventActionSheet.openInCalendar,
+                iconSystemName: "calendar",
+                onTap: { store.send(.eventActionOpenInCalendarTapped) },
+                ds: ds
+            )
+        ]
     }
 }

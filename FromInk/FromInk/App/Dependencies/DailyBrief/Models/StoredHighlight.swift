@@ -33,4 +33,54 @@ struct StoredHighlight: Codable, Equatable, Sendable {
     /// Raw event end moment. Same optionality + derivation rules as
     /// `startDate`.
     let endDate: Date?
+    /// EventKit identifier — `EKEvent.eventIdentifier` for events and
+    /// `EKCalendarItem.calendarItemIdentifier` for reminders. Used by
+    /// the home adapter to look up an existing `CalendarItemLink`
+    /// (signaling the linked-notebook visual treatment + driving the
+    /// row tap to either "open notebook" or "present action sheet").
+    /// Nil for synthesized highlights (no EK source — e.g., the future
+    /// "this highlight came from a notebook" path).
+    let localIdentifier: String?
+    /// `EKCalendarItem.calendarItemExternalIdentifier`. Used when
+    /// creating a `CalendarItemLink` so the validator can heal stale
+    /// local identifiers without losing the link. Same nullability
+    /// semantics as `localIdentifier`.
+    let externalIdentifier: String?
+    /// True when the underlying EKEvent has recurrence rules.
+    /// Surfaces in the Create/Link confirmation copy as "this notebook
+    /// will cover all instances of this meeting." Always false for
+    /// reminders (they use a different recurrence model).
+    let hasRecurrenceRules: Bool
+
+    /// Explicit init with defaults for the EK-identifier fields so
+    /// pre-existing callers / fixtures don't have to thread the new
+    /// arguments at every construction site. Snapshot-based highlights
+    /// without an EK source naturally produce `nil` / `false`.
+    init(
+        category: HighlightCategory,
+        icon: String,
+        title: String,
+        time: String,
+        trailingBadge: String,
+        sourceNotebookID: UUID?,
+        sourcePageIndex: Int?,
+        startDate: Date?,
+        endDate: Date?,
+        localIdentifier: String? = nil,
+        externalIdentifier: String? = nil,
+        hasRecurrenceRules: Bool = false
+    ) {
+        self.category = category
+        self.icon = icon
+        self.title = title
+        self.time = time
+        self.trailingBadge = trailingBadge
+        self.sourceNotebookID = sourceNotebookID
+        self.sourcePageIndex = sourcePageIndex
+        self.startDate = startDate
+        self.endDate = endDate
+        self.localIdentifier = localIdentifier
+        self.externalIdentifier = externalIdentifier
+        self.hasRecurrenceRules = hasRecurrenceRules
+    }
 }

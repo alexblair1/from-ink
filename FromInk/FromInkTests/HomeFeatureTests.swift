@@ -90,6 +90,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(injectedContent)) {
             $0.dayContent = injectedContent
         }
+        await store.receive(\.linkLookupRefreshed)
 
         XCTAssertEqual(
             capturedDate.value, wednesday,
@@ -186,6 +187,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(injectedContent)) {
             $0.dayContent = injectedContent
         }
+        await store.receive(\.linkLookupRefreshed)
 
         XCTAssertEqual(
             capturedDate.value, destinationSunday,
@@ -224,6 +226,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(emptyTodayContent)) {
             $0.dayContent = emptyTodayContent
         }
+        await store.receive(\.linkLookupRefreshed)
     }
 
     // MARK: - wheelDismissed
@@ -778,6 +781,7 @@ final class HomeFeatureTests: XCTestCase {
         }
 
         await store.receive(\.dayContentLoaded)
+        await store.receive(\.linkLookupRefreshed)
         XCTAssertEqual(fetchedDates.value, [wednesday])
     }
 
@@ -966,6 +970,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(todayContent)) {
             $0.dayContent = todayContent
         }
+        await store.receive(\.linkLookupRefreshed)
 
         // 2. Scrub to Sunday — dayContent updates, no generation.
         await store.send(.dateWarpedTo(pastSunday)) {
@@ -976,6 +981,7 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(sundayContent)) {
             $0.dayContent = sundayContent
         }
+        await store.receive(\.linkLookupRefreshed)
 
         // 3. Scrub back to today.
         await store.send(.dateWarpedTo(todayDate)) {
@@ -986,11 +992,213 @@ final class HomeFeatureTests: XCTestCase {
         await store.receive(.dayContentLoaded(todayContent)) {
             $0.dayContent = todayContent
         }
+        await store.receive(\.linkLookupRefreshed)
 
         // 4. Close wheel — wheelDismissed fires; today already has a brief.
         await store.send(.wheelToggled) {
             $0.isWheelOpen = false
         }
         await store.receive(.wheelDismissed)
+    }
+
+    // MARK: - Calendar item linking (PR3)
+    //
+    // The brief row tap dispatches `.eventRowTapped(identifier:)`. Linked
+    // events resolve their notebook ID via `state.linkLookup` and open
+    // the notebook directly (no sheet); unlinked events present the
+    // action sheet. These tests pin both branches plus the lookup-
+    // refresh path that fires alongside every `dayContentLoaded`.
+
+    @MainActor
+    func test_eventRowTapped_linked_opensNotebookDirectly() async {
+        let notebookID = UUID()
+        let linkSnapshot = CalendarItemLink.Snapshot(
+            id: UUID(),
+            localIdentifier: "ek-event-1",
+            externalIdentifier: nil,
+            kind: .event,
+            source: .linked,
+            notebookID: notebookID,
+            notebookTitle: "Quarterly Planning",
+            pageID: nil,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.linkLookup = ["ek-event-1": linkSnapshot]
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.eventRowTapped(identifier: "ek-event-1")) {
+            $0.notebook = NotebookFeature.State(
+                notebookID: notebookID,
+                notebookTitle: "Quarterly Planning"
+            )
+        }
+    }
+
+    @MainActor
+    func test_eventRowTapped_unlinked_presentsActionSheet() async {
+        // Seed an event in dayContent so the sheet can pull title +
+        // recurrence flag from the matching highlight. Without this
+        // seeding the sheet still presents but with empty fields.
+        let highlight = StoredHighlight(
+            category: .upcoming,
+            icon: "calendar",
+            title: "Product Review",
+            time: "10:00",
+            trailingBadge: "",
+            sourceNotebookID: nil,
+            sourcePageIndex: nil,
+            startDate: nil,
+            endDate: nil,
+            localIdentifier: "ek-event-1",
+            externalIdentifier: "ext-1",
+            hasRecurrenceRules: true
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.dayContent = DayContent(
+            dayKey: "2026-05-13",
+            events: [highlight],
+            reminders: [],
+            birthdays: [],
+            eventCount: 1,
+            reminderCount: 0,
+            birthdayCount: 0
+        )
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.eventRowTapped(identifier: "ek-event-1")) {
+            $0.eventActionSheet = EventActionSheetState(
+                identifier: "ek-event-1",
+                externalIdentifier: "ext-1",
+                kind: .event,
+                eventTitle: "Product Review",
+                hasRecurrenceRules: true,
+                linkedNotebook: nil
+            )
+        }
+    }
+
+    @MainActor
+    func test_eventActionDismissed_clearsSheet() async {
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.eventActionSheet = EventActionSheetState(
+            identifier: "ek-event-1",
+            externalIdentifier: nil,
+            kind: .event,
+            eventTitle: "x",
+            hasRecurrenceRules: false,
+            linkedNotebook: nil
+        )
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.eventActionDismissed) {
+            $0.eventActionSheet = nil
+        }
+    }
+
+    @MainActor
+    func test_eventActionLinkTapped_capturesContext_andPresentsPicker() async {
+        // Link path: action sheet clears, pending context captures the
+        // EK identifiers + kind, picker presentation appears.
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.eventActionSheet = EventActionSheetState(
+            identifier: "ek-event-1",
+            externalIdentifier: "ext-1",
+            kind: .event,
+            eventTitle: "Product Review",
+            hasRecurrenceRules: false,
+            linkedNotebook: nil
+        )
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.eventActionLinkTapped) {
+            $0.eventActionSheet = nil
+            $0.pendingLinkContext = .init(
+                identifier: "ek-event-1",
+                externalIdentifier: "ext-1",
+                kind: .event,
+                eventTitle: "Product Review"
+            )
+            $0.notebookPicker = NotebookPickerFeature.State()
+        }
+    }
+
+    @MainActor
+    func test_notebookPicker_delegateDismissed_clearsPicker_andContext() async {
+        // Picker dismiss path: state.notebookPicker → nil and the
+        // pending EK context drops so a subsequent re-open starts
+        // fresh. The reducer arm runs before the framework's
+        // `.dismiss` integration tears the optional down, so the
+        // explicit assertion below pins both fields.
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.notebookPicker = NotebookPickerFeature.State()
+        seeded.pendingLinkContext = .init(
+            identifier: "ek-event-1",
+            externalIdentifier: nil,
+            kind: .event,
+            eventTitle: "x"
+        )
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+            $0.notebookClient = .throwing
+        }
+
+        await store.send(.notebookPicker(.presented(.delegate(.dismissed)))) {
+            $0.notebookPicker = nil
+            $0.pendingLinkContext = nil
+        }
+    }
+
+    @MainActor
+    func test_linkLookupRefreshed_updatesStateLookup() async {
+        let snap = CalendarItemLink.Snapshot(
+            id: UUID(),
+            localIdentifier: "ek-event-1",
+            externalIdentifier: nil,
+            kind: .event,
+            source: .linked,
+            notebookID: UUID(),
+            notebookTitle: "n",
+            pageID: nil,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.linkLookupRefreshed(["ek-event-1": snap])) {
+            $0.linkLookup = ["ek-event-1": snap]
+        }
     }
 }

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import UIKit
 import UniformTypeIdentifiers
 import os
 
@@ -94,6 +95,38 @@ struct HomeFeature: Reducer {
         /// `notebook` in practice — the UI surfaces only emit one at
         /// a time.
         @Presents var pdfViewer: PDFFeature.State?
+
+        /// `CalendarItemLink.Snapshot` keyed by `localIdentifier` for
+        /// every visible event in `dayContent`. Refreshed alongside
+        /// `dayContent` so the brief adapter can resolve the
+        /// linked-notebook visual + tap behavior in O(1) per row.
+        /// Empty until first refresh; a key being absent means
+        /// "unlinked," not "unknown."
+        var linkLookup: [String: CalendarItemLink.Snapshot] = [:]
+
+        /// Branded overlay shown when the user taps an event row.
+        /// Drives Create / Link / Open-in-Calendar (unlinked) or
+        /// Open-linked-notebook / Open-in-Calendar (linked). Pure-data
+        /// presentation — no child reducer.
+        @Presents var eventActionSheet: EventActionSheetState?
+
+        /// Notebook picker presented from the action sheet's "Link to
+        /// existing" path. Modelled as a child feature so its phase
+        /// state machine + notebook/page loads stay encapsulated.
+        @Presents var notebookPicker: NotebookPickerFeature.State?
+
+        /// EK-side context captured at the moment the picker is opened
+        /// so the link-creation effect can stamp the right identifiers
+        /// + recurrence flag without re-fetching. Cleared when the
+        /// picker dismisses.
+        var pendingLinkContext: PendingLinkContext? = nil
+
+        struct PendingLinkContext: Equatable {
+            let identifier: String
+            let externalIdentifier: String?
+            let kind: CalendarItemKind
+            let eventTitle: String
+        }
 
         init(currentDate: Date? = nil) {
             @Dependency(\.calendarContext) var cal
@@ -227,6 +260,72 @@ struct HomeFeature: Reducer {
         /// Presented notebook child. Same `@Presents` machinery as
         /// `settings` — `.dismiss` is auto-handled by `.ifLet`.
         case notebook(PresentationAction<NotebookFeature.Action>)
+
+        // MARK: - Calendar item linking
+
+        /// User tapped a brief event row. `identifier` is the EK
+        /// `eventIdentifier`. If a link exists, the reducer opens the
+        /// linked notebook directly. Otherwise it presents the event
+        /// action sheet.
+        case eventRowTapped(identifier: String)
+
+        /// Result of the `lookupBatch` query that follows every
+        /// `dayContentLoaded`. Carries `localIdentifier ->` snapshot
+        /// for every event whose link exists. The dictionary form
+        /// matches the adapter's hot-path read shape.
+        case linkLookupRefreshed([String: CalendarItemLink.Snapshot])
+
+        /// Action-sheet button: Create a new notebook from the event
+        /// and link them. Effect chains create → link → navigate.
+        case eventActionCreateTapped
+        /// Action-sheet button: Link the event to an existing notebook
+        /// via the picker. Effect dismisses the sheet, captures the EK
+        /// context, presents `notebookPicker`.
+        case eventActionLinkTapped
+        /// Action-sheet button: Hand off to Apple Calendar for the
+        /// underlying event (V1: opens Calendar.app to today via
+        /// `calshow://`; specific-event deep link is follow-up).
+        case eventActionOpenInCalendarTapped
+        /// Action-sheet button (linked variant): Open the linked
+        /// notebook. Same path as a direct linked-row tap.
+        case eventActionOpenLinkedNotebookTapped
+        /// Action-sheet dismiss (X button or scrim tap).
+        case eventActionDismissed
+        /// `@Presents` machinery for the action sheet. Used only for
+        /// SwiftUI dismiss-gesture parity (`.dismiss`); no child
+        /// reducer because the sheet has no internal state machine.
+        case eventActionSheet(PresentationAction<EventActionSheetState>)
+
+        /// Notebook picker child. The reducer scopes `\.notebookPicker`
+        /// and intercepts `.presented(.delegate(.selected(...)))` to
+        /// create the link + navigate, and `.presented(.delegate(.dismissed))`
+        /// to clear the picker.
+        case notebookPicker(PresentationAction<NotebookPickerFeature.Action>)
+
+        /// Result of the create-notebook + create-link chain triggered
+        /// by `.eventActionCreateTapped`. Reducer opens the freshly
+        /// minted notebook and refreshes `linkLookup`.
+        case notebookCreatedFromEvent(
+            notebookID: UUID,
+            notebookTitle: String,
+            link: CalendarItemLink.Snapshot
+        )
+
+        /// Result of the create-link chain triggered by the picker's
+        /// `.selected` delegate. Reducer opens the linked notebook and
+        /// refreshes `linkLookup`.
+        case linkCreated(
+            notebookID: UUID,
+            notebookTitle: String,
+            link: CalendarItemLink.Snapshot
+        )
+
+        /// Both link-creation paths swallow service errors at the
+        /// effect boundary; this action is the catch-all for telemetry
+        /// + dismiss-the-sheet so the user isn't stranded. The error
+        /// description is logged, not surfaced — the failure is rare
+        /// enough that "tap again" is acceptable V1 recovery.
+        case linkCreationFailed
     }
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
@@ -237,6 +336,8 @@ struct HomeFeature: Reducer {
     /// regenerations. Injected so tests can advance time with
     /// `TestClock.advance(by:)`.
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.calendarItemLinkService) var linkService
+    @Dependency(\.notebookClient) var notebookClient
 
     var body: some Reducer<State, Action> {
         Scope(state: \.library, action: \.library) {
@@ -665,6 +766,143 @@ struct HomeFeature: Reducer {
 
             case .dayContentLoaded(let content):
                 state.dayContent = content
+                // Refresh `linkLookup` for the events newly in view —
+                // a single batched query keyed by `localIdentifier`,
+                // even when the user has zero links. Reminders go in
+                // the same batch under their own kind in PR4.
+                let eventIDs = (content.events + content.reminders)
+                    .compactMap { $0.localIdentifier }
+                return refreshLinkLookup(eventIdentifiers: eventIDs)
+
+            case .linkLookupRefreshed(let lookup):
+                state.linkLookup = lookup
+                return .none
+
+            // MARK: - Calendar item linking
+
+            case .eventRowTapped(let identifier):
+                if let link = state.linkLookup[identifier],
+                   let notebookID = link.notebookID {
+                    // Linked row: open the notebook directly. The
+                    // unlinked path's action sheet would just be an
+                    // extra tap here.
+                    let title = link.notebookTitle
+                    state.notebook = NotebookFeature.State(
+                        notebookID: notebookID,
+                        notebookTitle: title
+                    )
+                    return .none
+                }
+                // Unlinked row: present the action sheet. Find the
+                // matching highlight so the sheet has the event title
+                // and recurrence flag.
+                let highlight = (state.dayContent?.events ?? [])
+                    .first { $0.localIdentifier == identifier }
+                state.eventActionSheet = EventActionSheetState(
+                    identifier: identifier,
+                    externalIdentifier: highlight?.externalIdentifier,
+                    kind: .event,
+                    eventTitle: highlight?.title ?? "",
+                    hasRecurrenceRules: highlight?.hasRecurrenceRules ?? false,
+                    linkedNotebook: nil
+                )
+                return .none
+
+            case .eventActionCreateTapped:
+                guard let sheet = state.eventActionSheet else { return .none }
+                state.eventActionSheet = nil
+                return createNotebookAndLink(from: sheet)
+
+            case .eventActionLinkTapped:
+                guard let sheet = state.eventActionSheet else { return .none }
+                // Capture the EK context so the picker's `.selected`
+                // delegate has everything the link-creation effect
+                // needs without re-fetching.
+                state.pendingLinkContext = .init(
+                    identifier: sheet.identifier,
+                    externalIdentifier: sheet.externalIdentifier,
+                    kind: sheet.kind,
+                    eventTitle: sheet.eventTitle
+                )
+                state.eventActionSheet = nil
+                state.notebookPicker = NotebookPickerFeature.State()
+                return .none
+
+            case .eventActionOpenInCalendarTapped:
+                state.eventActionSheet = nil
+                // Calendar.app deep-link by event identifier isn't a
+                // documented URL scheme; `calshow://` opens to today,
+                // which is still a useful hand-off for a one-tap
+                // "show me this in my real calendar" affordance.
+                // Specific-event navigation is follow-up.
+                return .run { _ in
+                    guard let url = URL(string: "calshow://") else { return }
+                    await UIApplication.shared.open(url)
+                }
+
+            case .eventActionOpenLinkedNotebookTapped:
+                if let linked = state.eventActionSheet?.linkedNotebook {
+                    state.eventActionSheet = nil
+                    state.notebook = NotebookFeature.State(
+                        notebookID: linked.notebookID,
+                        notebookTitle: linked.notebookTitle
+                    )
+                }
+                return .none
+
+            case .eventActionDismissed:
+                state.eventActionSheet = nil
+                return .none
+
+            // SwiftUI auto-dismiss (cover drag etc.). `.ifLet` cleared
+            // the optional already.
+            case .eventActionSheet:
+                return .none
+
+            // Picker: user picked a notebook + page. Create the link
+            // for the pending EK context, dismiss the picker, and open
+            // the chosen notebook.
+            case let .notebookPicker(.presented(.delegate(.selected(notebookID, page)))):
+                guard let ctx = state.pendingLinkContext else {
+                    state.notebookPicker = nil
+                    return .none
+                }
+                state.notebookPicker = nil
+                state.pendingLinkContext = nil
+                return createLinkFromPicker(
+                    context: ctx,
+                    notebookID: notebookID,
+                    page: page
+                )
+
+            case .notebookPicker(.presented(.delegate(.dismissed))):
+                state.notebookPicker = nil
+                state.pendingLinkContext = nil
+                return .none
+
+            case .notebookPicker:
+                return .none
+
+            case let .notebookCreatedFromEvent(notebookID, notebookTitle, link):
+                state.linkLookup[link.localIdentifier] = link
+                state.notebook = NotebookFeature.State(
+                    notebookID: notebookID,
+                    notebookTitle: notebookTitle
+                )
+                return .none
+
+            case let .linkCreated(notebookID, notebookTitle, link):
+                state.linkLookup[link.localIdentifier] = link
+                state.notebook = NotebookFeature.State(
+                    notebookID: notebookID,
+                    notebookTitle: notebookTitle
+                )
+                return .none
+
+            case .linkCreationFailed:
+                // Logged inside the effect; nothing to surface to the
+                // user here. The sheet is already gone — they can tap
+                // again to retry.
                 return .none
 
             case .wheelDismissed:
@@ -714,6 +952,14 @@ struct HomeFeature: Reducer {
         .ifLet(\.$documentImport, action: \.documentImport) {
             DocumentImportFeature()
         }
+        .ifLet(\.$notebookPicker, action: \.notebookPicker) {
+            NotebookPickerFeature()
+        }
+        // The action sheet has no child reducer — `@Presents` + a no-op
+        // `ifLet`-shaped equivalent isn't needed because we never
+        // forward child actions, only intercept dismiss. SwiftUI's
+        // dismiss-gesture parity is achieved by the wiring view
+        // observing `state.eventActionSheet`.
     }
 
     // MARK: - Effects
@@ -847,5 +1093,106 @@ struct HomeFeature: Reducer {
             state.currentDate = now
         }
         state.nowTick = now
+    }
+
+    /// Fires the batched `lookupBatch` query for the visible event
+    /// identifiers. Cancellable so a rapid sequence of
+    /// `dayContentLoaded`s (e.g., during a wheel scrub) collapses to
+    /// one in-flight query.
+    private func refreshLinkLookup(eventIdentifiers: [String]) -> Effect<Action> {
+        .run { send in
+            let dict = await linkService.lookupBatch(eventIdentifiers, .event)
+            await send(.linkLookupRefreshed(dict))
+        }
+        .cancellable(id: "homeLinkLookup", cancelInFlight: true)
+    }
+
+    /// Create-from-event chain: mint a new notebook, write the link
+    /// record, dispatch `.notebookCreatedFromEvent` on success or
+    /// `.linkCreationFailed` on either step's throw.
+    private func createNotebookAndLink(
+        from sheet: EventActionSheetState
+    ) -> Effect<Action> {
+        let identifier = sheet.identifier
+        let externalIdentifier = sheet.externalIdentifier
+        let kind = sheet.kind
+        let title = sheet.eventTitle.isEmpty
+            ? AppStrings.Common.untitled
+            : sheet.eventTitle
+        return .run { send in
+            do {
+                let notebook = try await notebookClient.createNotebook(
+                    title, nil, .notebook
+                )
+                let link = try await linkService.create(
+                    identifier,
+                    externalIdentifier,
+                    kind,
+                    notebook.id,
+                    nil,
+                    .createdFromItem
+                )
+                await send(.notebookCreatedFromEvent(
+                    notebookID: notebook.id,
+                    notebookTitle: notebook.title,
+                    link: link
+                ))
+            } catch {
+                log.error("createNotebookAndLink failed: \(error.localizedDescription)")
+                await send(.linkCreationFailed)
+            }
+        }
+    }
+
+    /// Link-from-picker chain: write the link record for the picked
+    /// notebook + page. `SelectedPage.lastEdited` maps to a `nil`
+    /// `pageID` (caller resolves "last edited" at navigation time);
+    /// `.existing(id)` maps to the picked id; `.new` mints a fresh
+    /// page first, then links to that.
+    private func createLinkFromPicker(
+        context: State.PendingLinkContext,
+        notebookID: UUID,
+        page: NotebookPickerFeature.SelectedPage
+    ) -> Effect<Action> {
+        .run { send in
+            do {
+                let resolvedPageID: UUID?
+                switch page {
+                case .lastEdited:
+                    resolvedPageID = nil
+                case .existing(let pageID):
+                    resolvedPageID = pageID
+                case .new:
+                    let page = try await notebookClient.createPage(
+                        notebookID, CanvasTemplate.none.rawValue
+                    )
+                    resolvedPageID = page.id
+                }
+
+                let link = try await linkService.create(
+                    context.identifier,
+                    context.externalIdentifier,
+                    context.kind,
+                    notebookID,
+                    resolvedPageID,
+                    .linked
+                )
+
+                // Look up the notebook title so the navigation header
+                // renders the right name. The picker carried it on
+                // the snapshot but the value didn't ride the delegate.
+                let title = (try? await notebookClient.fetchNotebook(notebookID))?
+                    .notebook.title ?? AppStrings.Common.untitled
+
+                await send(.linkCreated(
+                    notebookID: notebookID,
+                    notebookTitle: title,
+                    link: link
+                ))
+            } catch {
+                log.error("createLinkFromPicker failed: \(error.localizedDescription)")
+                await send(.linkCreationFailed)
+            }
+        }
     }
 }
