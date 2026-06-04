@@ -76,6 +76,18 @@ struct HomeWiringView: View {
             NotebookScreen(store: notebookStore)
         }
         .fullScreenCover(
+            item: $store.scope(state: \.libraryBrowse, action: \.libraryBrowse)
+        ) { browseStore in
+            LibraryBrowseView(
+                store: browseStore,
+                // Dismiss path clears the parent's @Presents optional.
+                // `PresentationAction.dismiss` is the documented
+                // primitive — fires the .ifLet's auto-clear, same as
+                // SwiftUI's swipe-to-dismiss.
+                onDismiss: { store.send(.libraryBrowse(.dismiss)) }
+            )
+        }
+        .fullScreenCover(
             item: $store.scope(state: \.pdfViewer, action: \.pdfViewer)
         ) { pdfStore in
             PDFViewerWiringView(store: pdfStore)
@@ -497,7 +509,10 @@ struct HomeWiringView: View {
 
 
     private var shelfModel: HomeNotebookShelf.Model {
-        HomeNotebookShelf.Model(notebooks: notebookCards)
+        HomeNotebookShelf.Model(
+            notebooks: notebookCards,
+            onViewAllTapped: { store.send(.libraryBrowseRequested) }
+        )
     }
 
     private var notebookCards: [HomeNotebookShelf.NotebookCardModel] {

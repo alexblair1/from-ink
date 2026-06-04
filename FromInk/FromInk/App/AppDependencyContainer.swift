@@ -137,6 +137,10 @@ final class AppDependencyContainer {
         )
     }()
 
+    private(set) lazy var librarySearchService: LibrarySearchService = {
+        LibrarySearchService.live(notebookClient: notebookClient)
+    }()
+
     private(set) lazy var calendarItemLinkService: CalendarItemLinkService = {
         let ctxDep = syncedModelContext
         let cal = calendarContext
@@ -176,6 +180,7 @@ final class AppDependencyContainer {
         deps.backgroundTokenRefresh = backgroundTokenRefresh
         deps.dailyBriefClient = dailyBriefClient
         deps.notebookClient = notebookClient
+        deps.librarySearchService = librarySearchService
         deps.calendarItemLinkService = calendarItemLinkService
         deps.calendarItemLinkValidator = calendarItemLinkValidator
         // Pin real clocks at the install boundary. The unit test target

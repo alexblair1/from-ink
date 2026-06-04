@@ -152,6 +152,21 @@ static let highlights = NSLocalizedString(
             value: "Notebooks",
             comment: "Notebooks shelf section title"
         )
+
+        /// Mono-uppercase affordance shown in the notebooks shelf header
+        /// next to the sort label. Tapping opens the full-screen library
+        /// browse surface.
+        static let viewAll = NSLocalizedString(
+            "home.viewAll",
+            value: "VIEW ALL ↗",
+            comment: "Tappable label in the notebooks shelf that opens the full-screen library browse view."
+        )
+
+        static let viewAllAccessibilityLabel = NSLocalizedString(
+            "home.viewAll.accessibilityLabel",
+            value: "View all library content",
+            comment: "VoiceOver label for the View All affordance in the notebooks shelf header."
+        )
         static let recentPDFs = NSLocalizedString(
             "home.recentPDFs",
             value: "Recent PDFs",

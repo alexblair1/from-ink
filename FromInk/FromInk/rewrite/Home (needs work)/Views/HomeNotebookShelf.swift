@@ -19,7 +19,15 @@ struct HomeNotebookShelf: View {
                     showsTopRule: false
                 ),
                 trailing: {
-                    MonoLabel(model.sortLabel, color: model.sortLabelColor)
+                    HStack(spacing: model.trailingSpacing) {
+                        MonoLabel(model.sortLabel, color: model.sortLabelColor)
+                        Button(action: model.onViewAllTapped) {
+                            MonoLabel(model.viewAllLabel, color: model.viewAllLabelColor)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(model.viewAllAccessibilityLabel)
+                    }
                 }
             )
             .padding(.horizontal, model.outerPadding)
@@ -79,6 +87,9 @@ extension HomeNotebookShelf {
         let sectionTitle: String
         let notebookCount: Int
         let sortLabel: String
+        let viewAllLabel: String
+        let viewAllAccessibilityLabel: String
+        let onViewAllTapped: () -> Void
         let notebooks: [NotebookCardModel]
         let cardSpacing: CGFloat
         let cardInnerSpacing: CGFloat
@@ -89,7 +100,9 @@ extension HomeNotebookShelf {
         let titleFont: Font
         let outerPadding: CGFloat
         let scrollVerticalPadding: CGFloat
+        let trailingSpacing: CGFloat
         let sortLabelColor: Color
+        let viewAllLabelColor: Color
         let spineColor: Color
         let cardFillColor: Color
         let cardBorderColor: Color
@@ -110,11 +123,15 @@ extension HomeNotebookShelf {
 extension HomeNotebookShelf.Model {
     init(
         notebooks: [HomeNotebookShelf.NotebookCardModel],
+        onViewAllTapped: @escaping () -> Void = {},
         ds: DesignSystem = .standard
     ) {
         self.sectionTitle = AppStrings.Home.notebooks
         self.notebookCount = notebooks.count
         self.sortLabel = "\(AppStrings.Home.lastModified) ↓"
+        self.viewAllLabel = AppStrings.Home.viewAll
+        self.viewAllAccessibilityLabel = AppStrings.Home.viewAllAccessibilityLabel
+        self.onViewAllTapped = onViewAllTapped
         self.notebooks = notebooks
         self.cardSpacing = ds.layout.notebookCardSpacing
         self.cardInnerSpacing = ds.spacing.sm
@@ -125,7 +142,12 @@ extension HomeNotebookShelf.Model {
         self.titleFont = ds.typography.cardTitle
         self.outerPadding = ds.spacing.lg
         self.scrollVerticalPadding = ds.spacing.base
+        self.trailingSpacing = ds.spacing.md
         self.sortLabelColor = ds.colors.ink2
+        // Same ink as the sort label — they're peer affordances in the
+        // same trailing slot. Differentiation is by behavior (tap vs.
+        // passive), not color.
+        self.viewAllLabelColor = ds.colors.ink2
         self.spineColor = ds.colors.ink
         self.cardFillColor = ds.colors.paper
         self.cardBorderColor = ds.colors.rule

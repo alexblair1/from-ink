@@ -129,6 +129,12 @@ struct HomeFeature: Reducer {
         /// picker dismisses.
         var pendingLinkContext: PendingLinkContext? = nil
 
+        /// Full-screen library browse surface (notebooks + folders + PDFs
+        /// with search). Reuses `LibrarySearchFeature` — the same machine
+        /// the future notebook-picker-with-search variant will scope. The
+        /// browse-specific chrome lives in `LibraryBrowseView`.
+        @Presents var libraryBrowse: LibrarySearchFeature.State?
+
         struct PendingLinkContext: Equatable {
             let identifier: String
             let externalIdentifier: String?
@@ -345,6 +351,19 @@ struct HomeFeature: Reducer {
         /// description is logged, not surfaced — the failure is rare
         /// enough that "tap again" is acceptable V1 recovery.
         case linkCreationFailed
+
+        // MARK: - Library browse
+
+        /// User tapped "VIEW ALL" in the notebook shelf header. Mints
+        /// a fresh `LibrarySearchFeature.State` so the browse surface
+        /// starts in a clean state every time (no leftover query from
+        /// a previous open).
+        case libraryBrowseRequested
+        /// `@Presents` machinery for the browse child. The reducer
+        /// scopes `\.libraryBrowse` so the search feature's body runs
+        /// and intercepts `.presented(.delegate(.resultSelected(...)))`
+        /// to route the tap into the right child presentation.
+        case libraryBrowse(PresentationAction<LibrarySearchFeature.Action>)
     }
 
     @Dependency(\.dailyBriefClient) var dailyBriefClient
@@ -960,6 +979,43 @@ struct HomeFeature: Reducer {
                 // again to retry.
                 return .none
 
+            // MARK: - Library browse
+
+            case .libraryBrowseRequested:
+                state.libraryBrowse = LibrarySearchFeature.State()
+                return .none
+
+            // Result selected → route by kind. Notebook and PDF cases
+            // mirror the existing shelf-tap presentation paths;
+            // folder taps are intentionally inert in V1 (browsing
+            // into a folder is a future enhancement that needs its
+            // own navigation state).
+            case let .libraryBrowse(.presented(.delegate(.resultSelected(result)))):
+                state.libraryBrowse = nil
+                switch result {
+                case .notebook(let snap):
+                    state.notebook = NotebookFeature.State(
+                        notebookID: snap.id,
+                        notebookTitle: snap.title
+                    )
+                case .pdf(let snap):
+                    state.pdfViewer = PDFFeature.State(
+                        pdfID: snap.id,
+                        title: snap.title,
+                        pageCount: snap.pageCount
+                    )
+                case .folder:
+                    // No-op for V1. A future "open folder" path would
+                    // push a folder-detail destination here.
+                    break
+                }
+                return .none
+
+            case .libraryBrowse:
+                // `.ifLet` clears the @Presents optional on framework
+                // dismiss (sheet drag, etc.). Pass-through.
+                return .none
+
             case .wheelDismissed:
                 // Brief generation only fires if the settled day has no
                 // brief in state. SwiftData cache hits are absorbed by
@@ -1009,6 +1065,9 @@ struct HomeFeature: Reducer {
         }
         .ifLet(\.$notebookPicker, action: \.notebookPicker) {
             NotebookPickerFeature()
+        }
+        .ifLet(\.$libraryBrowse, action: \.libraryBrowse) {
+            LibrarySearchFeature()
         }
         // The action sheet has no child reducer — `@Presents` + a no-op
         // `ifLet`-shaped equivalent isn't needed because we never

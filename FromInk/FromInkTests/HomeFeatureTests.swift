@@ -1300,4 +1300,83 @@ final class HomeFeatureTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Library browse (PR5)
+
+    @MainActor
+    func test_libraryBrowseRequested_presentsSearchFeature() async {
+        let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.libraryBrowseRequested) {
+            $0.libraryBrowse = LibrarySearchFeature.State()
+        }
+    }
+
+    @MainActor
+    func test_libraryBrowse_notebookSelected_clearsBrowse_andPresentsNotebook() async {
+        let snap = NotebookSnapshot(
+            id: UUID(),
+            title: "Quarterly Planning",
+            createdAt: Date(timeIntervalSince1970: 0),
+            modifiedAt: Date(timeIntervalSince1970: 0),
+            coverColorHex: "#FAFAF8",
+            isPinned: false,
+            isArchived: false,
+            sortOrder: 0,
+            notebookType: .notebook,
+            folderID: nil,
+            pageCount: 4,
+            firstPageThumbnailData: nil,
+            tagIDs: []
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.libraryBrowse = LibrarySearchFeature.State()
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.libraryBrowse(.presented(.delegate(.resultSelected(.notebook(snap)))))) {
+            $0.libraryBrowse = nil
+            $0.notebook = NotebookFeature.State(
+                notebookID: snap.id,
+                notebookTitle: "Quarterly Planning"
+            )
+        }
+    }
+
+    @MainActor
+    func test_libraryBrowse_folderSelected_isNoOp() async {
+        // Folder navigation isn't implemented in V1; the reducer
+        // clears the browse presentation but doesn't push anything.
+        let folder = FolderSnapshot(
+            id: UUID(),
+            name: "Inbox",
+            createdAt: Date(timeIntervalSince1970: 0),
+            sortOrder: 0,
+            parentID: nil,
+            notebookCount: 3
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.libraryBrowse = LibrarySearchFeature.State()
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.libraryBrowse(.presented(.delegate(.resultSelected(.folder(folder)))))) {
+            $0.libraryBrowse = nil
+        }
+    }
 }
