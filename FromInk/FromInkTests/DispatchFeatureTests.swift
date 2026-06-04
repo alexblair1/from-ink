@@ -59,7 +59,13 @@ final class DispatchFeatureTests: XCTestCase {
             fetchEventDraft: fetchEventDraft,
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
 
         return TestStore(
@@ -510,7 +516,13 @@ final class DispatchFeatureTests: XCTestCase {
                     createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
                     createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
                     fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
-                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                    deleteEvent: { _ in }, deleteReminder: { _ in },
+                    resolveCalendarItem: { localID, externalID, _ in
+                        CalendarItemResolution(
+                            localIdentifier: localID,
+                            externalIdentifier: externalID
+                        )
+                    }
                 )
                 $0.locationSearchService = LocationSearchService(
                     suggestions: { _ in AsyncStream { $0.finish() } },
@@ -569,7 +581,13 @@ final class DispatchFeatureTests: XCTestCase {
                     createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
                     createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
                     fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
-                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                    deleteEvent: { _ in }, deleteReminder: { _ in },
+                    resolveCalendarItem: { localID, externalID, _ in
+                        CalendarItemResolution(
+                            localIdentifier: localID,
+                            externalIdentifier: externalID
+                        )
+                    }
                 )
                 $0.locationSearchService = LocationSearchService(
                     suggestions: { _ in AsyncStream { $0.finish() } },
@@ -609,7 +627,13 @@ final class DispatchFeatureTests: XCTestCase {
                     createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
                     createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
                     fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
-                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                    deleteEvent: { _ in }, deleteReminder: { _ in },
+                    resolveCalendarItem: { localID, externalID, _ in
+                        CalendarItemResolution(
+                            localIdentifier: localID,
+                            externalIdentifier: externalID
+                        )
+                    }
                 )
                 $0.locationSearchService = LocationSearchService(
                     suggestions: { _ in AsyncStream { $0.finish() } },
@@ -649,7 +673,13 @@ final class DispatchFeatureTests: XCTestCase {
                     createEvent: { _ in "event-id" }, updateEvent: { _, _ in },
                     createReminder: { _ in "reminder-id" }, updateReminder: { _, _ in },
                     fetchEventDraft: { _ in nil }, fetchReminderDraft: { _ in nil },
-                    deleteEvent: { _ in }, deleteReminder: { _ in }
+                    deleteEvent: { _ in }, deleteReminder: { _ in },
+                    resolveCalendarItem: { localID, externalID, _ in
+                        CalendarItemResolution(
+                            localIdentifier: localID,
+                            externalIdentifier: externalID
+                        )
+                    }
                 )
                 $0.locationSearchService = LocationSearchService(
                     suggestions: { _ in AsyncStream { $0.finish() } },
@@ -1232,7 +1262,13 @@ final class DispatchFeatureTests: XCTestCase {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
 
         let store = TestStore(
@@ -1289,7 +1325,13 @@ final class DispatchFeatureTests: XCTestCase {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
 
         let store = TestStore(
@@ -1513,7 +1555,13 @@ final class DispatchFeatureTests: XCTestCase {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
     }
 }

@@ -67,7 +67,13 @@ final class DailyBriefClientTests: XCTestCase {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
     }
 
@@ -450,7 +456,13 @@ final class DailyBriefClientTests: XCTestCase {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
 
         let client = DailyBriefClient.live(

@@ -137,6 +137,25 @@ final class AppDependencyContainer {
         )
     }()
 
+    private(set) lazy var calendarItemLinkService: CalendarItemLinkService = {
+        let ctxDep = syncedModelContext
+        let cal = calendarContext
+        return CalendarItemLinkService.live(
+            context: { @MainActor in ctxDep.context() },
+            now: { cal.now() }
+        )
+    }()
+
+    private(set) lazy var calendarItemLinkValidator: CalendarItemLinkValidator = {
+        let brief = dailyBriefClient
+        return CalendarItemLinkValidator.live(
+            linkService: calendarItemLinkService,
+            eventKit: eventKitService,
+            calendarChanges: { brief.calendarChanges() },
+            clock: ContinuousClock()
+        )
+    }()
+
     // MARK: - Factories
 
     static func live() -> AppDependencyContainer { AppDependencyContainer() }
@@ -157,6 +176,8 @@ final class AppDependencyContainer {
         deps.backgroundTokenRefresh = backgroundTokenRefresh
         deps.dailyBriefClient = dailyBriefClient
         deps.notebookClient = notebookClient
+        deps.calendarItemLinkService = calendarItemLinkService
+        deps.calendarItemLinkValidator = calendarItemLinkValidator
     }
 
     // MARK: - SwiftUI bridge

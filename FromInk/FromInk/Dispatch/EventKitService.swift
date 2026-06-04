@@ -13,6 +13,18 @@ struct CalendarEventSnapshot: Sendable, Equatable {
     /// events get separate UX treatment — pinned to the top of the day's
     /// list and ineligible for the "next up" slot.
     let isAllDay: Bool
+    /// `EKEvent.eventIdentifier`. Shared across all occurrences of a
+    /// recurring series, so a single `CalendarItemLink` covers the
+    /// whole series. May change if the event is moved between calendars
+    /// — `externalIdentifier` is the durable fallback.
+    let localIdentifier: String
+    /// `EKCalendarItem.calendarItemExternalIdentifier`. Stable across
+    /// devices via iCloud / CalDAV. Nil for purely-local calendars.
+    let externalIdentifier: String?
+    /// True when the underlying EKEvent has at least one recurrence
+    /// rule. Drives the "this notebook will cover all instances of this
+    /// meeting" copy on the Create / Link confirmation.
+    let hasRecurrenceRules: Bool
 }
 
 struct ReminderSnapshot: Sendable, Equatable {
@@ -22,6 +34,13 @@ struct ReminderSnapshot: Sendable, Equatable {
     /// date at all (`dueDateComponents == nil`) or a due date with no
     /// `hour` component. Matches Apple's "Today, anytime" semantics.
     let isAllDay: Bool
+    /// `EKCalendarItem.calendarItemIdentifier`. EKReminder uses the
+    /// shared calendar-item identifier rather than a reminder-specific
+    /// one. Same staleness rules as event `localIdentifier`.
+    let localIdentifier: String
+    /// `EKCalendarItem.calendarItemExternalIdentifier`. Same semantics
+    /// as on `CalendarEventSnapshot`.
+    let externalIdentifier: String?
 }
 
 /// Sendable view of an EKCalendar. `id` is `calendarIdentifier`,
@@ -180,6 +199,39 @@ struct EventKitService: Sendable {
 
     var deleteEvent: @Sendable (EventKitIdentifier) async throws -> Void
     var deleteReminder: @Sendable (EventKitIdentifier) async throws -> Void
+
+    /// Resolve a calendar item by its identifier with external-ID
+    /// fallback. Used by `CalendarItemLinkValidator` to detect orphan
+    /// links + auto-heal stale `localIdentifier`s (e.g., when the user
+    /// moves an event to a different calendar — EventKit issues a new
+    /// local ID, but `calendarItemExternalIdentifier` carries over).
+    ///
+    /// Returns `nil` when neither the local ID nor the external ID
+    /// resolves to a live EK record — at which point the link is
+    /// genuinely orphaned and should be deleted.
+    ///
+    /// Resolution semantics:
+    /// 1. Try `event(withIdentifier:)` / `calendarItem(withIdentifier:)`
+    ///    on `localID`. If found → return its current `localIdentifier`
+    ///    and `externalIdentifier`.
+    /// 2. Else if `externalID` is non-nil, try
+    ///    `calendarItems(withExternalIdentifier:)`. If exactly one
+    ///    survivor → return its current identifiers (caller can rewrite
+    ///    the stored `localIdentifier` if it changed).
+    /// 3. Else → return `nil`.
+    var resolveCalendarItem: @Sendable (
+        _ localID: String,
+        _ externalID: String?,
+        _ kind: CalendarItemKind
+    ) async -> CalendarItemResolution?
+}
+
+/// Result of a successful EK lookup — the identifiers as they currently
+/// exist on the record. Callers compare with the stored values to detect
+/// whether `localIdentifier` needs to be rewritten on the link.
+struct CalendarItemResolution: Sendable, Equatable {
+    let localIdentifier: String
+    let externalIdentifier: String?
 }
 
 // MARK: - Errors
@@ -224,7 +276,10 @@ extension EventKitService: DependencyKey {
                         startDate: $0.startDate,
                         endDate: $0.endDate,
                         calendarTitle: $0.calendar?.title ?? "",
-                        isAllDay: $0.isAllDay
+                        isAllDay: $0.isAllDay,
+                        localIdentifier: $0.eventIdentifier ?? "",
+                        externalIdentifier: $0.calendarItemExternalIdentifier,
+                        hasRecurrenceRules: !($0.recurrenceRules ?? []).isEmpty
                     )
                 }
         }
@@ -260,7 +315,9 @@ extension EventKitService: DependencyKey {
                             return ReminderSnapshot(
                                 title: reminder.title ?? "",
                                 dueDate: components?.date,
-                                isAllDay: isAllDay
+                                isAllDay: isAllDay,
+                                localIdentifier: reminder.calendarItemIdentifier,
+                                externalIdentifier: reminder.calendarItemExternalIdentifier
                             )
                         }
                     continuation.resume(returning: snapshots)
@@ -428,6 +485,56 @@ extension EventKitService: DependencyKey {
                     throw EventKitWriteError.recordNotFound
                 }
                 try store.remove(reminder, commit: true)
+            },
+            resolveCalendarItem: { localID, externalID, kind in
+                // Drop EK's in-memory cache before every resolution.
+                // The validator is invoked on `EKEventStoreChanged`, so
+                // by definition something has changed — we want the
+                // post-change state, not a cached pre-change snapshot.
+                store.reset()
+
+                // 1. Direct local lookup. For events the dedicated API
+                //    is `event(withIdentifier:)`; for reminders we use
+                //    the generic `calendarItem(withIdentifier:)`.
+                switch kind {
+                case .event:
+                    if let event = store.event(withIdentifier: localID) {
+                        return CalendarItemResolution(
+                            localIdentifier: event.eventIdentifier ?? localID,
+                            externalIdentifier: event.calendarItemExternalIdentifier
+                        )
+                    }
+                case .reminder:
+                    if let item = store.calendarItem(withIdentifier: localID) {
+                        return CalendarItemResolution(
+                            localIdentifier: item.calendarItemIdentifier,
+                            externalIdentifier: item.calendarItemExternalIdentifier
+                        )
+                    }
+                }
+
+                // 2. External-ID fallback. Returns 0..N items; we treat
+                //    1 as a successful resolution. 0 = orphan, >1 = the
+                //    external ID matches multiple records (rare, happens
+                //    with detached recurring instances) and we abstain
+                //    rather than guess which one the user meant.
+                guard let externalID, !externalID.isEmpty else { return nil }
+                let matches = store.calendarItems(withExternalIdentifier: externalID)
+                    .filter { item in
+                        switch kind {
+                        case .event:    return item is EKEvent
+                        case .reminder: return item is EKReminder
+                        }
+                    }
+                guard matches.count == 1, let item = matches.first else { return nil }
+                let resolvedLocalID: String = {
+                    if let event = item as? EKEvent { return event.eventIdentifier ?? "" }
+                    return item.calendarItemIdentifier
+                }()
+                return CalendarItemResolution(
+                    localIdentifier: resolvedLocalID,
+                    externalIdentifier: item.calendarItemExternalIdentifier
+                )
             }
         )
     }
@@ -438,12 +545,17 @@ extension EventKitService: DependencyKey {
             startDate: Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
             endDate: Calendar.current.date(bySettingHour: 11, minute: 0, second: 0, of: Date())!,
             calendarTitle: "Work",
-            isAllDay: false
+            isAllDay: false,
+            localIdentifier: "test-event-id",
+            externalIdentifier: "test-event-external-id",
+            hasRecurrenceRules: false
         )
         let cannedReminder = ReminderSnapshot(
             title: "Follow up with Sarah",
             dueDate: Date(),
-            isAllDay: false
+            isAllDay: false,
+            localIdentifier: "test-reminder-id",
+            externalIdentifier: "test-reminder-external-id"
         )
 
         let cannedCalendar = CalendarSnapshot(
@@ -478,7 +590,16 @@ extension EventKitService: DependencyKey {
             fetchEventDraft: { _ in nil },
             fetchReminderDraft: { _ in nil },
             deleteEvent: { _ in },
-            deleteReminder: { _ in }
+            deleteReminder: { _ in },
+            // Default `testValue` posture: every link is alive. Tests
+            // that need orphan behavior replace this with the dependency
+            // override pattern (`withDependencies { $0.eventKitService = ... }`).
+            resolveCalendarItem: { localID, externalID, _ in
+                CalendarItemResolution(
+                    localIdentifier: localID,
+                    externalIdentifier: externalID
+                )
+            }
         )
     }
 }

@@ -15,6 +15,7 @@ struct AppFeature: Reducer {
     }
 
     @Dependency(\.oauthService) var oauthService
+    @Dependency(\.calendarItemLinkValidator) var calendarItemLinkValidator
 
     var body: some Reducer<State, Action> {
         Scope(state: \.bootstrap, action: \.bootstrap) {
@@ -29,7 +30,16 @@ struct AppFeature: Reducer {
                     homeState.briefState = .loaded(brief)
                 }
                 state.home = homeState
-                return .none
+                // Long-lived background subscription that reconciles
+                // `CalendarItemLink` records against EventKit on every
+                // calendar-change notification. Drains forever; the
+                // cancellable ID ensures `cancelInFlight: true` would
+                // tear down a duplicate if `bootCompleted` ever fired
+                // twice (it shouldn't, but defense-in-depth).
+                return .run { _ in
+                    await calendarItemLinkValidator.observeAndReconcile()
+                }
+                .cancellable(id: "calendarItemLinkValidator", cancelInFlight: true)
 
             case .bootstrap(.delegate(.bootFailed)):
                 return .none

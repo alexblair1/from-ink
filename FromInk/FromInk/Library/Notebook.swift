@@ -48,6 +48,14 @@ import SwiftData
     @Relationship(inverse: \Tag.notebooks)
     var tags: [Tag]? = []
 
+    /// Calendar item links pointing at this notebook. Cascade-delete:
+    /// removing a notebook removes its link records. The reverse is NOT
+    /// true — deleting a link never deletes the notebook. The brief's
+    /// orphan-link validator relies on this asymmetry to honor the
+    /// "notebooks survive event deletion" requirement.
+    @Relationship(deleteRule: .cascade, inverse: \CalendarItemLink.notebook)
+    var calendarLinks: [CalendarItemLink]? = []
+
     init(
         id: UUID = UUID(),
         title: String = "Untitled",
