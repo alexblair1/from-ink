@@ -416,20 +416,30 @@ final class ToolbarFeatureTests: XCTestCase {
 
     // MARK: - Forwarded Actions
 
-    func test_undoTapped_noStateChange() async {
+    /// `.undoTapped` flips the request flag the canvas observes to
+    /// drive an actual undo on its imperative `PKCanvasView`. The
+    /// parent reducer clears the flag via `.undoAcknowledged` once
+    /// the work is dispatched. The test asserts the flip — the
+    /// acknowledge half is covered in its own arm.
+    func test_undoTapped_setsUndoRequested() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-        await store.send(.undoTapped)
+        await store.send(.undoTapped) {
+            $0.isUndoRequested = true
+        }
     }
 
-    func test_redoTapped_noStateChange() async {
+    /// Mirror of `undoTapped` for the redo half.
+    func test_redoTapped_setsRedoRequested() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(),
             reducer: { ToolbarFeature() }
         )
-        await store.send(.redoTapped)
+        await store.send(.redoTapped) {
+            $0.isRedoRequested = true
+        }
     }
 
     func test_analyzeTapped_noStateChange() async {

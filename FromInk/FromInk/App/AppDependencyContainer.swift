@@ -178,6 +178,16 @@ final class AppDependencyContainer {
         deps.notebookClient = notebookClient
         deps.calendarItemLinkService = calendarItemLinkService
         deps.calendarItemLinkValidator = calendarItemLinkValidator
+        // Pin real clocks at the install boundary. The unit test target
+        // hosts the FromInk app, so its launch sequence (HomeFeature
+        // timer, validator) runs against whatever `\.continuousClock`
+        // resolves to. Without this override the host launch hits
+        // `UnimplementedClock.now / .sleep` and surfaces noise in
+        // unrelated tests — see "Testing gotchas" in swift-dependencies.
+        // Per-test `TestStore` scopes still override these independently,
+        // so unit tests retain full control of time.
+        deps.continuousClock = ContinuousClock()
+        deps.suspendingClock = SuspendingClock()
     }
 
     // MARK: - SwiftUI bridge
