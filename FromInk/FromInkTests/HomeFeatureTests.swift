@@ -1004,7 +1004,7 @@ final class HomeFeatureTests: XCTestCase {
     // MARK: - Calendar item linking (PR3)
     //
     // The brief row tap dispatches `.eventRowTapped(identifier:)`. Linked
-    // events resolve their notebook ID via `state.linkLookup` and open
+    // events resolve their notebook ID via state.eventLinkLookup and open
     // the notebook directly (no sheet); unlinked events present the
     // action sheet. These tests pin both branches plus the lookup-
     // refresh path that fires alongside every `dayContentLoaded`.
@@ -1024,7 +1024,7 @@ final class HomeFeatureTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 0)
         )
         var seeded = HomeFeature.State(currentDate: wednesday)
-        seeded.linkLookup = ["ek-event-1": linkSnapshot]
+        seeded.eventLinkLookup = ["ek-event-1": linkSnapshot]
 
         let store = TestStore(initialState: seeded) {
             HomeFeature()
@@ -1178,8 +1178,8 @@ final class HomeFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func test_linkLookupRefreshed_updatesStateLookup() async {
-        let snap = CalendarItemLink.Snapshot(
+    func test_linkLookupRefreshed_updatesBothDictionaries() async {
+        let eventSnap = CalendarItemLink.Snapshot(
             id: UUID(),
             localIdentifier: "ek-event-1",
             externalIdentifier: nil,
@@ -1190,6 +1190,17 @@ final class HomeFeatureTests: XCTestCase {
             pageID: nil,
             createdAt: Date(timeIntervalSince1970: 0)
         )
+        let reminderSnap = CalendarItemLink.Snapshot(
+            id: UUID(),
+            localIdentifier: "ek-reminder-1",
+            externalIdentifier: nil,
+            kind: .reminder,
+            source: .linked,
+            notebookID: UUID(),
+            notebookTitle: "r",
+            pageID: nil,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
         let store = TestStore(initialState: HomeFeature.State(currentDate: wednesday)) {
             HomeFeature()
         } withDependencies: {
@@ -1197,8 +1208,96 @@ final class HomeFeatureTests: XCTestCase {
             $0.dailyBriefClient = .testValue
         }
 
-        await store.send(.linkLookupRefreshed(["ek-event-1": snap])) {
-            $0.linkLookup = ["ek-event-1": snap]
+        await store.send(.linkLookupRefreshed(
+            events: ["ek-event-1": eventSnap],
+            reminders: ["ek-reminder-1": reminderSnap]
+        )) {
+            $0.eventLinkLookup = ["ek-event-1": eventSnap]
+            $0.reminderLinkLookup = ["ek-reminder-1": reminderSnap]
+        }
+    }
+
+    // MARK: - Reminder row tap (PR4 parity)
+
+    @MainActor
+    func test_reminderRowTapped_linked_opensNotebookDirectly() async {
+        let notebookID = UUID()
+        let linkSnapshot = CalendarItemLink.Snapshot(
+            id: UUID(),
+            localIdentifier: "ek-reminder-1",
+            externalIdentifier: nil,
+            kind: .reminder,
+            source: .linked,
+            notebookID: notebookID,
+            notebookTitle: "Grocery list",
+            pageID: nil,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.reminderLinkLookup = ["ek-reminder-1": linkSnapshot]
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.reminderRowTapped(identifier: "ek-reminder-1")) {
+            $0.notebook = NotebookFeature.State(
+                notebookID: notebookID,
+                notebookTitle: "Grocery list"
+            )
+        }
+    }
+
+    @MainActor
+    func test_reminderRowTapped_unlinked_presentsActionSheet_asReminderKind() async {
+        // The sheet's `kind` field drives the wiring view's
+        // create-from-reminder + open-in-reminders label resolution.
+        // Pinning the kind on the state is enough — the view-layer
+        // labels are exercised via snapshot/UI later.
+        let highlight = StoredHighlight(
+            category: .today,
+            icon: "checkmark.circle",
+            title: "Take out trash",
+            time: "5:00 PM",
+            trailingBadge: "Inbox",
+            sourceNotebookID: nil,
+            sourcePageIndex: nil,
+            startDate: nil,
+            endDate: nil,
+            localIdentifier: "ek-reminder-1",
+            externalIdentifier: "ext-r-1",
+            hasRecurrenceRules: false
+        )
+        var seeded = HomeFeature.State(currentDate: wednesday)
+        seeded.dayContent = DayContent(
+            dayKey: "2026-05-13",
+            events: [],
+            reminders: [highlight],
+            birthdays: [],
+            eventCount: 0,
+            reminderCount: 1,
+            birthdayCount: 0
+        )
+
+        let store = TestStore(initialState: seeded) {
+            HomeFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: wednesday)
+            $0.dailyBriefClient = .testValue
+        }
+
+        await store.send(.reminderRowTapped(identifier: "ek-reminder-1")) {
+            $0.eventActionSheet = EventActionSheetState(
+                identifier: "ek-reminder-1",
+                externalIdentifier: "ext-r-1",
+                kind: .reminder,
+                eventTitle: "Take out trash",
+                hasRecurrenceRules: false,
+                linkedNotebook: nil
+            )
         }
     }
 }

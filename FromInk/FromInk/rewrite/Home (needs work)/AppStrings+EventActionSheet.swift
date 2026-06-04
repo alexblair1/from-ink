@@ -24,10 +24,16 @@ extension AppStrings {
             comment: "Action-row label that mints a new notebook prefilled with the event's title and links them."
         )
 
+        static let createNotebookFromReminder = NSLocalizedString(
+            "eventActionSheet.action.createNotebookFromReminder",
+            value: "Create notebook from reminder",
+            comment: "Action-row label that mints a new notebook prefilled with the reminder's title and links them."
+        )
+
         static let linkToExistingNotebook = NSLocalizedString(
             "eventActionSheet.action.linkToExisting",
             value: "Link to existing notebook",
-            comment: "Action-row label that opens the notebook picker so the user can attach the event to a notebook they already own."
+            comment: "Action-row label that opens the notebook picker so the user can attach the calendar item to a notebook they already own."
         )
 
         // MARK: - Action rows (linked)
@@ -50,6 +56,12 @@ extension AppStrings {
             "eventActionSheet.action.openInCalendar",
             value: "Open in Calendar",
             comment: "Action-row label that hands off to Apple Calendar for the underlying event."
+        )
+
+        static let openInReminders = NSLocalizedString(
+            "eventActionSheet.action.openInReminders",
+            value: "Open in Reminders",
+            comment: "Action-row label that hands off to Apple Reminders for the underlying reminder."
         )
 
         // MARK: - Confirmation copy

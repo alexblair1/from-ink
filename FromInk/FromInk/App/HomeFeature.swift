@@ -102,7 +102,15 @@ struct HomeFeature: Reducer {
         /// linked-notebook visual + tap behavior in O(1) per row.
         /// Empty until first refresh; a key being absent means
         /// "unlinked," not "unknown."
-        var linkLookup: [String: CalendarItemLink.Snapshot] = [:]
+        ///
+        /// Events and reminders are split because EventKit gives them
+        /// distinct identifier spaces — an `EKEvent.eventIdentifier`
+        /// and an `EKReminder.calendarItemIdentifier` could (in rare
+        /// cases) collide as strings, and the `lookupBatch` query is
+        /// scoped to a single `CalendarItemKind`. One dict per kind
+        /// keeps the lookup unambiguous and the adapter reads cheap.
+        var eventLinkLookup: [String: CalendarItemLink.Snapshot] = [:]
+        var reminderLinkLookup: [String: CalendarItemLink.Snapshot] = [:]
 
         /// Branded overlay shown when the user taps an event row.
         /// Drives Create / Link / Open-in-Calendar (unlinked) or
@@ -269,11 +277,22 @@ struct HomeFeature: Reducer {
         /// action sheet.
         case eventRowTapped(identifier: String)
 
-        /// Result of the `lookupBatch` query that follows every
-        /// `dayContentLoaded`. Carries `localIdentifier ->` snapshot
-        /// for every event whose link exists. The dictionary form
-        /// matches the adapter's hot-path read shape.
-        case linkLookupRefreshed([String: CalendarItemLink.Snapshot])
+        /// User tapped a brief reminder row. Same routing logic as
+        /// `.eventRowTapped` but the link lookup goes through
+        /// `reminderLinkLookup` and the sheet's labels render the
+        /// reminder variants.
+        case reminderRowTapped(identifier: String)
+
+        /// Result of the two `lookupBatch` queries that follow every
+        /// `dayContentLoaded` — one per kind. Carries
+        /// `localIdentifier ->` snapshot for every event AND every
+        /// reminder whose link exists. The reducer writes the two
+        /// halves into `eventLinkLookup` / `reminderLinkLookup` in
+        /// one state mutation.
+        case linkLookupRefreshed(
+            events: [String: CalendarItemLink.Snapshot],
+            reminders: [String: CalendarItemLink.Snapshot]
+        )
 
         /// Action-sheet button: Create a new notebook from the event
         /// and link them. Effect chains create → link → navigate.
@@ -766,22 +785,27 @@ struct HomeFeature: Reducer {
 
             case .dayContentLoaded(let content):
                 state.dayContent = content
-                // Refresh `linkLookup` for the events newly in view —
-                // a single batched query keyed by `localIdentifier`,
-                // even when the user has zero links. Reminders go in
-                // the same batch under their own kind in PR4.
-                let eventIDs = (content.events + content.reminders)
-                    .compactMap { $0.localIdentifier }
-                return refreshLinkLookup(eventIdentifiers: eventIDs)
+                // Refresh both link lookups for the items newly in
+                // view. Events and reminders use distinct identifier
+                // spaces, so we fire two `lookupBatch` queries — they
+                // run concurrently inside the effect so the wall-clock
+                // cost is one round-trip's worth.
+                let eventIDs = content.events.compactMap { $0.localIdentifier }
+                let reminderIDs = content.reminders.compactMap { $0.localIdentifier }
+                return refreshLinkLookup(
+                    eventIdentifiers: eventIDs,
+                    reminderIdentifiers: reminderIDs
+                )
 
-            case .linkLookupRefreshed(let lookup):
-                state.linkLookup = lookup
+            case let .linkLookupRefreshed(events, reminders):
+                state.eventLinkLookup = events
+                state.reminderLinkLookup = reminders
                 return .none
 
             // MARK: - Calendar item linking
 
             case .eventRowTapped(let identifier):
-                if let link = state.linkLookup[identifier],
+                if let link = state.eventLinkLookup[identifier],
                    let notebookID = link.notebookID {
                     // Linked row: open the notebook directly. The
                     // unlinked path's action sheet would just be an
@@ -808,6 +832,31 @@ struct HomeFeature: Reducer {
                 )
                 return .none
 
+            case .reminderRowTapped(let identifier):
+                if let link = state.reminderLinkLookup[identifier],
+                   let notebookID = link.notebookID {
+                    state.notebook = NotebookFeature.State(
+                        notebookID: notebookID,
+                        notebookTitle: link.notebookTitle
+                    )
+                    return .none
+                }
+                let highlight = (state.dayContent?.reminders ?? [])
+                    .first { $0.localIdentifier == identifier }
+                state.eventActionSheet = EventActionSheetState(
+                    identifier: identifier,
+                    externalIdentifier: highlight?.externalIdentifier,
+                    kind: .reminder,
+                    eventTitle: highlight?.title ?? "",
+                    // Reminders use a different recurrence model that
+                    // we don't (yet) decode into `hasRecurrenceRules`.
+                    // Always false — the recurring-series copy
+                    // therefore doesn't render on reminder sheets.
+                    hasRecurrenceRules: false,
+                    linkedNotebook: nil
+                )
+                return .none
+
             case .eventActionCreateTapped:
                 guard let sheet = state.eventActionSheet else { return .none }
                 state.eventActionSheet = nil
@@ -829,14 +878,20 @@ struct HomeFeature: Reducer {
                 return .none
 
             case .eventActionOpenInCalendarTapped:
+                // The action name is historical (the sheet was
+                // events-only in PR3); the actual destination now
+                // depends on the captured kind. Reminders deep-link
+                // to Reminders.app, events to Calendar.app. Neither
+                // supports a documented identifier-scoped URL — both
+                // open the system app to its default landing.
+                let kind = state.eventActionSheet?.kind ?? .event
                 state.eventActionSheet = nil
-                // Calendar.app deep-link by event identifier isn't a
-                // documented URL scheme; `calshow://` opens to today,
-                // which is still a useful hand-off for a one-tap
-                // "show me this in my real calendar" affordance.
-                // Specific-event navigation is follow-up.
                 return .run { _ in
-                    guard let url = URL(string: "calshow://") else { return }
+                    let scheme: String = switch kind {
+                    case .event:    "calshow://"
+                    case .reminder: "x-apple-reminderkit://"
+                    }
+                    guard let url = URL(string: scheme) else { return }
                     await UIApplication.shared.open(url)
                 }
 
@@ -884,7 +939,7 @@ struct HomeFeature: Reducer {
                 return .none
 
             case let .notebookCreatedFromEvent(notebookID, notebookTitle, link):
-                state.linkLookup[link.localIdentifier] = link
+                writeLinkToLookup(&state, link: link)
                 state.notebook = NotebookFeature.State(
                     notebookID: notebookID,
                     notebookTitle: notebookTitle
@@ -892,7 +947,7 @@ struct HomeFeature: Reducer {
                 return .none
 
             case let .linkCreated(notebookID, notebookTitle, link):
-                state.linkLookup[link.localIdentifier] = link
+                writeLinkToLookup(&state, link: link)
                 state.notebook = NotebookFeature.State(
                     notebookID: notebookID,
                     notebookTitle: notebookTitle
@@ -1095,16 +1150,37 @@ struct HomeFeature: Reducer {
         state.nowTick = now
     }
 
-    /// Fires the batched `lookupBatch` query for the visible event
-    /// identifiers. Cancellable so a rapid sequence of
-    /// `dayContentLoaded`s (e.g., during a wheel scrub) collapses to
-    /// one in-flight query.
-    private func refreshLinkLookup(eventIdentifiers: [String]) -> Effect<Action> {
+    /// Fires the two batched `lookupBatch` queries (one per kind) for
+    /// the visible identifiers and folds them into a single
+    /// `.linkLookupRefreshed` action. The two queries run concurrently
+    /// via `async let` so the wall-clock cost matches one round-trip.
+    /// Cancellable so a rapid sequence of `dayContentLoaded`s (e.g.,
+    /// during a wheel scrub) collapses to one in-flight refresh.
+    private func refreshLinkLookup(
+        eventIdentifiers: [String],
+        reminderIdentifiers: [String]
+    ) -> Effect<Action> {
         .run { send in
-            let dict = await linkService.lookupBatch(eventIdentifiers, .event)
-            await send(.linkLookupRefreshed(dict))
+            async let events = linkService.lookupBatch(eventIdentifiers, .event)
+            async let reminders = linkService.lookupBatch(reminderIdentifiers, .reminder)
+            await send(.linkLookupRefreshed(
+                events: events,
+                reminders: reminders
+            ))
         }
         .cancellable(id: "homeLinkLookup", cancelInFlight: true)
+    }
+
+    /// Writes a freshly created `CalendarItemLink.Snapshot` into the
+    /// kind-appropriate lookup dictionary. Used by both the
+    /// create-from-item and link-via-picker paths so the adapter
+    /// reflects the new link immediately, without waiting for the next
+    /// `dayContentLoaded` cycle.
+    private func writeLinkToLookup(_ state: inout State, link: CalendarItemLink.Snapshot) {
+        switch link.kind {
+        case .event:    state.eventLinkLookup[link.localIdentifier] = link
+        case .reminder: state.reminderLinkLookup[link.localIdentifier] = link
+        }
     }
 
     /// Create-from-event chain: mint a new notebook, write the link

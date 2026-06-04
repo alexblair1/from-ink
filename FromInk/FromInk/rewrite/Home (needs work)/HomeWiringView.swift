@@ -384,7 +384,7 @@ struct HomeWiringView: View {
         // adapter method which is buried inside a SwiftUI view.
         let now = store.nowTick
         let calendar = calendarContext.userCalendar()
-        let linkLookup = store.linkLookup
+        let linkLookup = store.eventLinkLookup
         return highlights
             .filter { $0.category == .allDay || $0.category == .upcoming }
             .enumerated()
@@ -446,17 +446,40 @@ struct HomeWiringView: View {
         // Same pinning rule: `.anytime` reminders come first via
         // `buildHighlights`. `.anytime` reminders never read as overdue
         // or flagged — those signals require a clock time.
-        highlights
+        let linkLookup = store.reminderLinkLookup
+        return highlights
             .filter { $0.category == .anytime || $0.category == .overdue || $0.category == .today }
             .enumerated()
             .map { index, h in
-                BriefReminderRow.Model(
+                let link: CalendarItemLink.Snapshot? = {
+                    guard let identifier = h.localIdentifier else { return nil }
+                    return linkLookup[identifier]
+                }()
+                let notebookLink: BriefReminderRow.Model.NotebookLink? = link.map { snap in
+                    BriefReminderRow.Model.NotebookLink(
+                        notebookTitle: snap.notebookTitle,
+                        notebookID: snap.notebookID ?? UUID()
+                    )
+                }
+                let identifier = h.localIdentifier
+                let tapHandler: () -> Void = {
+                    guard let id = identifier else { return }
+                    store.send(.reminderRowTapped(identifier: id))
+                }
+                let hint = link == nil
+                    ? AppStrings.EventActionSheet.unlinkedRowAccessibilityHint
+                    : AppStrings.EventActionSheet.linkedRowAccessibilityHint
+
+                return BriefReminderRow.Model(
                     id: "reminder-\(index)",
                     title: h.title,
                     metaText: h.time,
                     listName: h.trailingBadge,
                     isFlagged: h.category == .overdue,
-                    isOverdue: h.category == .overdue
+                    isOverdue: h.category == .overdue,
+                    notebookLink: notebookLink,
+                    onTap: tapHandler,
+                    accessibilityHint: identifier == nil ? "" : hint
                 )
             }
     }
@@ -650,6 +673,12 @@ struct HomeWiringView: View {
         for sheet: EventActionSheetState,
         ds: DesignSystem
     ) -> [EventActionSheetActionRow.Model] {
+        let isReminder = sheet.kind == .reminder
+        let openInSystemAppLabel = isReminder
+            ? AppStrings.EventActionSheet.openInReminders
+            : AppStrings.EventActionSheet.openInCalendar
+        let openInSystemAppIcon = isReminder ? "checklist" : "calendar"
+
         if let linked = sheet.linkedNotebook {
             return [
                 .init(
@@ -659,16 +688,19 @@ struct HomeWiringView: View {
                     ds: ds
                 ),
                 .init(
-                    label: AppStrings.EventActionSheet.openInCalendar,
-                    iconSystemName: "calendar",
+                    label: openInSystemAppLabel,
+                    iconSystemName: openInSystemAppIcon,
                     onTap: { store.send(.eventActionOpenInCalendarTapped) },
                     ds: ds
                 )
             ]
         }
+        let createLabel = isReminder
+            ? AppStrings.EventActionSheet.createNotebookFromReminder
+            : AppStrings.EventActionSheet.createNotebookFromEvent
         return [
             .init(
-                label: AppStrings.EventActionSheet.createNotebookFromEvent,
+                label: createLabel,
                 iconSystemName: "plus.rectangle.on.rectangle",
                 onTap: { store.send(.eventActionCreateTapped) },
                 ds: ds
@@ -680,8 +712,8 @@ struct HomeWiringView: View {
                 ds: ds
             ),
             .init(
-                label: AppStrings.EventActionSheet.openInCalendar,
-                iconSystemName: "calendar",
+                label: openInSystemAppLabel,
+                iconSystemName: openInSystemAppIcon,
                 onTap: { store.send(.eventActionOpenInCalendarTapped) },
                 ds: ds
             )
