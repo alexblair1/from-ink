@@ -13,4 +13,17 @@ struct ToolID: Hashable, Codable, RawRepresentable, Sendable {
     static let highlighter = ToolID(rawValue: "highlighter")
     static let eraser = ToolID(rawValue: "eraser")
     static let lasso = ToolID(rawValue: "lasso")
+    /// Region-marking tool — same `PKLassoTool` mechanic as `.lasso`,
+    /// but the Coordinator captures `wantsBrandedLasso = true` at
+    /// lasso-begin so the branded `LassoMenuBar` fires on completion.
+    /// `.lasso` sessions don't set that flag and produce no menu —
+    /// they're bare PKLassoTool (select + drag-to-move). System
+    /// Copy / Cut / Paste affordances would require explicit
+    /// `UIEditMenuInteraction` wiring on the canvas; a follow-up
+    /// PR can add that if `.lasso` parity with Apple Notes is wanted.
+    ///
+    /// This is the one-handed entry point to creating a `NoteRegion`
+    /// (header / link / event / reminder anchor). The existing
+    /// two-finger hold gesture also pushes this tool onto `toolStack`.
+    static let region = ToolID(rawValue: "region")
 }

@@ -109,8 +109,14 @@ struct ToolbarFeature: Reducer {
                 return .none
 
             case .twoFingerHoldBegan:
+                // Two-finger hold pushes `.region` (NOT `.lasso`) so the
+                // gesture continues to feed the branded `LassoMenuBar`
+                // even after `.lasso` was re-scoped to pure iOS lasso
+                // (system Copy / Cut / Delete menu). The selection
+                // mechanic is identical; only the post-selection menu
+                // differs and the canvas branches on `activeToolID`.
                 state.toolStack.append(state.activeToolID)
-                state.activeToolID = .lasso
+                state.activeToolID = .region
                 state.activeSettings = .default
                 return .none
 

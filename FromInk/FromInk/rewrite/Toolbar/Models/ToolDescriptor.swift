@@ -64,14 +64,35 @@ extension ToolDescriptor {
         hasCustomization: false,
         makePKTool: { _ in PKLassoTool() }
     )
-    
-    
+
+    /// Region tool — same `PKLassoTool` selection mechanic as `.lasso`,
+    /// but the Coordinator snapshots `wantsBrandedLasso = true` at
+    /// lasso-begin time, so the branded `LassoMenuBar` fires on
+    /// completion. `.lasso` sessions don't set that flag, so
+    /// `onLassoReady` is suppressed — the user gets PKLassoTool's
+    /// default behavior (select + drag-to-move strokes), no menu.
+    /// System Copy / Cut / Paste affordances for `.lasso` would need
+    /// `UIEditMenuInteraction` wiring; see follow-up if wanted.
+    /// Icon is a placeholder (`rectangle.dashed`) — swap when design
+    /// lands the final mark.
+    static let region = ToolDescriptor(
+        id: .region, icon: "rectangle.dashed",
+        hasCustomization: false,
+        makePKTool: { _ in PKLassoTool() }
+    )
+
+
     // TODO: This doesn't belong here. Couples domain and ui.
-    
-    
+
+
     /// The ordered set of all writing tools. Toolbar renders from this array.
+    ///
+    /// `.region` precedes `.lasso` deliberately — region is the
+    /// branded primary path (one-handed entry to header / link / event /
+    /// reminder anchoring); `.lasso` is the niche bare-selection tool.
+    /// Putting region first gives it discoverability priority.
     static let allWritingTools: [ToolDescriptor] = [
-        .pen, .fountain, .pencil, .marker, .highlighter, .eraser, .lasso
+        .pen, .fountain, .pencil, .marker, .highlighter, .eraser, .region, .lasso
     ]
 
     /// Look up a descriptor by ToolID. Returns nil for unknown IDs.

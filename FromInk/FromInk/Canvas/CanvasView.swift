@@ -145,6 +145,14 @@ struct CanvasView: UIViewRepresentable {
     ///   - viewRect: Selected content bounds in view coordinates (scroll-adjusted) — use for UI positioning.
     ///   - contentRect: Selected content bounds in canvas content coordinates — use for persistence.
     var onLassoReady: (UIImage, CGRect, CGRect) -> Void = { _, _, _ in }
+    /// True when the active tool is the branded region tool (`.region`),
+    /// false for the bare iOS lasso (`.lasso`) or any non-lasso tool.
+    /// Captured by the Coordinator at lasso-BEGIN time and used as the
+    /// gate for firing `onLassoReady`. Snapshotting at begin (not end)
+    /// makes the toolbar-pop race irrelevant — by the time the user
+    /// finishes drawing the lasso the toolbar may have already popped
+    /// `.region` off `toolStack`, but our decision was already made.
+    var wantsBrandedLasso: Bool = false
     var onScrollOffsetChanged: (CGPoint) -> Void = { _ in }
     var onScrolledAwayFromBottom: () -> Void = {}
     /// Set to scroll the canvas to a content offset. Resets to nil after scrolling.
@@ -191,6 +199,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.onScrollOffsetChanged = onScrollOffsetChanged
         context.coordinator.onScrolledNearBottom = onScrolledNearBottom
         context.coordinator.onScrolledAwayFromBottom = onScrolledAwayFromBottom
+        context.coordinator.wantsBrandedLasso = wantsBrandedLasso
 
         // Template background layer — inserted below PencilKit's drawing layer
         let templateLayer = PageTemplateLayer()
@@ -273,6 +282,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.onDrawingChanged = onDrawingChanged
         context.coordinator.onScrolledNearBottom = onScrolledNearBottom
         context.coordinator.onScrolledAwayFromBottom = onScrolledAwayFromBottom
+        context.coordinator.wantsBrandedLasso = wantsBrandedLasso
         // Sync persistence inputs in case pageID or client changed
         // (TabView reuse can rebind these without reinstantiating).
         context.coordinator.pageID = pageID
@@ -328,6 +338,11 @@ struct CanvasView: UIViewRepresentable {
         var onDrawingChanged: (PKDrawing) -> Void = { _ in }
         var onScrolledNearBottom: () -> Void = {}
         var onScrolledAwayFromBottom: () -> Void = {}
+        /// Mirror of `CanvasView.wantsBrandedLasso`. Read at lasso-BEGIN
+        /// time and snapshotted into `awaitingLassoSelection` so the
+        /// branded-vs-bare decision survives toolbar-state changes
+        /// (twoFingerHoldEnded popping `.region` off the stack mid-draw).
+        var wantsBrandedLasso: Bool = false
         weak var templateLayer: PageTemplateLayer?
         weak var lassoPanRecognizer: UIPanGestureRecognizer?
 
@@ -480,6 +495,18 @@ struct CanvasView: UIViewRepresentable {
         // synchronously so the save survives Coordinator/canvas
         // deallocation. The safety checkpoint above is the only place
         // the Coordinator initiates a save directly.
+
+        func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+            // Snapshot the branded-or-bare intent at lasso-BEGIN. The
+            // toolbar may pop `.region` off `toolStack` before the user
+            // finishes the lasso (lift-hold-finger-first race), so the
+            // decision can't be deferred to lasso-end. We only flip the
+            // flag for PKLassoTool sessions — pen / marker / eraser
+            // draws never trigger the branded menu so they don't need
+            // to touch `awaitingLassoSelection`.
+            guard canvasView.tool is PKLassoTool else { return }
+            awaitingLassoSelection = wantsBrandedLasso
+        }
 
         func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
             print("[Lasso] canvasViewDidEndUsingTool — awaitingLasso=\(awaitingLassoSelection), tool=\(type(of: canvasView.tool))")

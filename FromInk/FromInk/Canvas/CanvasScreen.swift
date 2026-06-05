@@ -664,6 +664,11 @@ struct CanvasScreen: View {
             },
             onScrolledNearBottom: onNearBottom,
             onLassoReady: { image, viewRect, contentRect in
+                // No gate here — the Coordinator already decided at
+                // lasso-BEGIN time whether this is a branded session
+                // via `wantsBrandedLasso` → `awaitingLassoSelection`.
+                // `onLassoReady` only fires for branded sessions; bare
+                // `.lasso` sessions don't invoke this callback at all.
                 DispatchQueue.main.async {
                     lassoMenuImage = image
                     lassoMenuRect = viewRect
@@ -671,6 +676,7 @@ struct CanvasScreen: View {
                     showLassoMenu = true
                 }
             },
+            wantsBrandedLasso: toolbarStore.activeToolID == .region,
             onScrollOffsetChanged: { offset in
                 DispatchQueue.main.async { scrollOffset = offset }
             },

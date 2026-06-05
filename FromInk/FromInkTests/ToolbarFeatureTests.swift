@@ -176,7 +176,11 @@ final class ToolbarFeatureTests: XCTestCase {
 
     // MARK: - Two-Finger Hold
 
-    func test_twoFingerHold_temporaryLasso() async {
+    /// Two-finger hold pushes `.region` (NOT `.lasso`) so the gesture
+    /// feeds the branded `LassoMenuBar` flow. `.lasso` was re-scoped
+    /// to mean pure iOS lasso (system Copy / Cut / Delete menu); the
+    /// branded entry point is now the explicit `.region` tool.
+    func test_twoFingerHold_temporaryRegion() async {
         let store = TestStore(
             initialState: ToolbarFeature.State(activeToolID: .pen),
             reducer: { ToolbarFeature() }
@@ -184,7 +188,7 @@ final class ToolbarFeatureTests: XCTestCase {
 
         await store.send(.twoFingerHoldBegan) {
             $0.toolStack = [.pen]
-            $0.activeToolID = .lasso
+            $0.activeToolID = .region
         }
 
         await store.send(.twoFingerHoldEnded) {
@@ -205,10 +209,10 @@ final class ToolbarFeatureTests: XCTestCase {
             $0.activeToolID = .eraser
         }
 
-        // Two-finger hold during eraser → lasso
+        // Two-finger hold during eraser → region (branded lasso path)
         await store.send(.twoFingerHoldBegan) {
             $0.toolStack = [.pen, .eraser]
-            $0.activeToolID = .lasso
+            $0.activeToolID = .region
         }
 
         // Release hold → back to eraser
