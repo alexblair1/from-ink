@@ -1,0 +1,111 @@
+import Foundation
+import CoreGraphics
+import SwiftData
+
+/// A lasso-selected region of ink on a `NotePage` that anchors a set of
+/// optional associations: header text (OCR'd from the ink), an external
+/// or internal link, and (via separate models) a calendar event and / or
+/// reminder. Replaces the pair of `NoteHeader` + `NoteLink` records
+/// that previously each anchored a single association per rect.
+///
+/// **At-most-one per kind.** A region carries at most one of each:
+/// one header text, one link destination. The UI prevents the user
+/// from adding two headers or two links to the same region. The
+/// model layer permits all fields to be set independently (CloudKit-
+/// friendly optional storage); enforcement lives at the API boundary.
+///
+/// **Associations outlive the region.** A region is a *visual anchor*
+/// over handwriting; the `CalendarItemLink` for an event lives
+/// independently. Erasure-detection logic on the canvas is
+/// responsible for flipping `isAnchored = false` when the strokes
+/// inside `rect` are gone: the indicator stops rendering, but link
+/// records referencing this region survive and remain queryable
+/// from the dispatch panel. If the region's `headerOCRText` is
+/// also cleared (the OCR was tied to ink that no longer exists)
+/// AND no other associations remain, the region is deleted outright.
+///
+/// **CloudKit notes:**
+/// - Every property has a default (`data_model_edd.md` §3.2).
+/// - All relationships optional.
+/// - `@Relationship(...)` declared on the parent `NotePage.regions`;
+///   this child holds the plain `page` back-pointer with no macro to
+///   dodge SwiftData's "duplicate inverse" runtime error — same
+///   pattern as `NoteHeader` / `NoteLink` and `CalendarItemLink`.
+@Model final class NoteRegion {
+    var id: UUID = UUID()
+
+    // Bounding box — CloudKit-friendly scalars, projected through the
+    // computed `rect` property below. Same shape as `NoteHeader` /
+    // `NoteLink` so the migration is purely additive.
+    var rectX: Double = 0
+    var rectY: Double = 0
+    var rectWidth: Double = 0
+    var rectHeight: Double = 0
+
+    var createdAt: Date = Date()
+    var sortOrder: Int = 0
+
+    /// True iff the region currently anchors to handwriting on the
+    /// page. Flipped to false by the erasure sweeper when the strokes
+    /// inside `rect` are gone — the canvas stops rendering the
+    /// indicator (the badges have nothing to attach to), but any
+    /// associations live on (visible in the dispatch panel).
+    var isAnchored: Bool = true
+
+    /// At-most-one OCR'd header text. Set at creation when the user
+    /// taps "Mark Header" in the lasso menu; editable via the
+    /// region's edit sheet; cleared by the erasure sweeper when the
+    /// underlying ink is gone (surfacing OCR text anchored to
+    /// non-existent strokes would lie).
+    var headerOCRText: String? = nil
+
+    // Link destination — exactly one of the four target fields is
+    // non-nil in any valid persisted state. Stored as flat optional
+    // fields rather than a closed enum so CloudKit can sync each
+    // independently and partial writes are tolerable. The
+    // `NotebookClient` enforces the at-most-one invariant at the API
+    // boundary via `NoteRegionLinkDestination`.
+    var linkExternalURL: String? = nil
+    var linkTargetPageID: UUID? = nil
+    var linkTargetNotebookID: UUID? = nil
+    /// Reserved — the PDF import + linking flow isn't wired yet. UI
+    /// guards prevent setting this until the PDF target story lands;
+    /// declared on the model now so adding PDF support later doesn't
+    /// require a schema bump.
+    var linkTargetPDFID: UUID? = nil
+
+    var page: NotePage? = nil
+
+    init(
+        id: UUID = UUID(),
+        page: NotePage? = nil,
+        rect: CGRect,
+        createdAt: Date = Date(),
+        sortOrder: Int = 0,
+        isAnchored: Bool = true,
+        headerOCRText: String? = nil,
+        linkExternalURL: String? = nil,
+        linkTargetPageID: UUID? = nil,
+        linkTargetNotebookID: UUID? = nil,
+        linkTargetPDFID: UUID? = nil
+    ) {
+        self.id = id
+        self.page = page
+        self.rectX = Double(rect.origin.x)
+        self.rectY = Double(rect.origin.y)
+        self.rectWidth = Double(rect.size.width)
+        self.rectHeight = Double(rect.size.height)
+        self.createdAt = createdAt
+        self.sortOrder = sortOrder
+        self.isAnchored = isAnchored
+        self.headerOCRText = headerOCRText
+        self.linkExternalURL = linkExternalURL
+        self.linkTargetPageID = linkTargetPageID
+        self.linkTargetNotebookID = linkTargetNotebookID
+        self.linkTargetPDFID = linkTargetPDFID
+    }
+
+    var rect: CGRect {
+        CGRect(x: rectX, y: rectY, width: rectWidth, height: rectHeight)
+    }
+}

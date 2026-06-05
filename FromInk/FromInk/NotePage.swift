@@ -58,6 +58,13 @@ import SwiftData
     @Relationship(deleteRule: .cascade, inverse: \NoteHistoryEntry.page)
     var history: [NoteHistoryEntry]? = []
 
+    /// Unified region records — each at-most-one header text +
+    /// at-most-one link destination per region. The legacy `headers`
+    /// + `links` arrays remain populated during the consumer
+    /// migration; new code writes through `regions` only.
+    @Relationship(deleteRule: .cascade, inverse: \NoteRegion.page)
+    var regions: [NoteRegion]? = []
+
     init(
         id: UUID = UUID(),
         index: Int = 0,
