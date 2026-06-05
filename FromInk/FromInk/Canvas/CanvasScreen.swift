@@ -63,7 +63,9 @@ struct CanvasScreen: View {
     @State private var showLassoMenu = false
     @State private var scrollOffset: CGPoint = .zero
 
-    // Headers (persisted via NotebookClient; UI cache of NoteHeaderSnapshot)
+    // Headers (legacy state — kept as empty array so the pre-NoteRegion
+    // code paths that read it remain no-ops without breaking
+    // compilation. New code reads from `regions` instead.)
     @State private var headers: [NoteHeaderSnapshot] = []
     /// Transient lasso preview kept by header id — used to display the
     /// pretty handwriting image in the dispatch panel for the rest of
@@ -75,6 +77,14 @@ struct CanvasScreen: View {
     @State private var headerPreviewInsertionOrder: [UUID] = []
     private static let maxPreviewImages = 50
     @State private var canvasScrollTarget: CGPoint? = nil
+
+    /// Unified region records loaded from `NoteRegion`. The canvas
+    /// renders `RegionIndicator` for each one; `syncDispatchPanelData`
+    /// translates the slice that carries a header / external URL into
+    /// the dispatch panel's existing `DispatchHeaderItem` /
+    /// `DispatchLinkItem` shapes so the panel keeps working without
+    /// its own NoteRegion refactor.
+    @State private var regions: [NoteRegionSnapshot] = []
 
     // Routing
     @State private var routingPermissionError: String? = nil
@@ -319,10 +329,11 @@ struct CanvasScreen: View {
                 Task {
                     let text = await LassoOCR.recognize(image: image, correct: false)
                     do {
-                        let snap = try await notebookClient.addHeader(pid, rect, text)
+                        let snap = try await notebookClient.addRegion(
+                            pid, rect, text, nil
+                        )
                         await MainActor.run {
-                            headers.append(snap)
-                            cachePreviewImage(image, for: snap.id)
+                            regions.append(snap)
                         }
                     } catch {
                         // Silent — the header drop just doesn't persist.
@@ -376,8 +387,7 @@ struct CanvasScreen: View {
                 canvasViewLayer
                     .ignoresSafeArea()
 
-                headerIndicators
-                linkIndicators
+                regionIndicators
 
                 if showLassoMenu {
                     // Selection highlight — stays visible while menu is up
@@ -554,8 +564,11 @@ struct CanvasScreen: View {
         do {
             if let detail = try await notebookClient.fetchPage(pageID) {
                 loadedDrawingData = detail.drawingData
-                headers = detail.headers
-                links = detail.links
+                regions = detail.regions
+                // Legacy `headers` / `links` state stays empty —
+                // canvas rendering reads from `regions` only.
+                headers = []
+                links = []
                 headerPreviewImages = [:]
                 headerPreviewInsertionOrder = []
             }
@@ -686,27 +699,19 @@ struct CanvasScreen: View {
     }
 
     @ViewBuilder
-    private var headerIndicators: some View {
-        ForEach(headers) { header in
-            let viewX = header.rect.midX - scrollOffset.x
-            let viewY = header.rect.midY - scrollOffset.y
-            HeaderIndicator(header: header)
+    private var regionIndicators: some View {
+        ForEach(regions) { region in
+            // Render only when the region's rect still anchors to
+            // handwriting. Orphaned regions (handwriting erased) are
+            // surfaced through the dispatch panel, not the canvas.
+            if region.isAnchored {
+                let viewX = region.rect.midX - scrollOffset.x
+                let viewY = region.rect.midY - scrollOffset.y
+                RegionIndicator(
+                    model: RegionIndicator.Model(snapshot: region)
+                )
                 .position(x: viewX, y: viewY)
-        }
-    }
-
-    @ViewBuilder
-    private var linkIndicators: some View {
-        ForEach(links) { link in
-            let viewX = link.rect.midX - scrollOffset.x
-            let viewY = link.rect.midY - scrollOffset.y
-            LinkIndicator(
-                link: link,
-                onTap: { onLinkTapped(link) },
-                onEdit: { beginEditingLink(link) },
-                onDelete: { deleteLink(link) }
-            )
-            .position(x: viewX, y: viewY)
+            }
         }
     }
 
@@ -770,8 +775,13 @@ struct CanvasScreen: View {
         let pid = pageID
         Task {
             do {
-                let snap = try await notebookClient.addLink(pid, rect, text, .external(url))
-                await MainActor.run { links.append(snap) }
+                let snap = try await notebookClient.addRegion(
+                    pid,
+                    rect,
+                    text.isEmpty ? nil : text,
+                    .external(url)
+                )
+                await MainActor.run { regions.append(snap) }
             } catch {
                 // Silent — the link just doesn't persist.
             }
@@ -779,31 +789,48 @@ struct CanvasScreen: View {
     }
 
     private func syncDispatchPanelData() {
-        dispatchPanelStore.send(
-            .headersUpdated(
-                headers.map { h in
-                    DispatchHeaderItem(
-                        id: h.id,
-                        ocrText: h.ocrText.isEmpty ? nil : h.ocrText,
-                        image: headerPreviewImages[h.id],
-                        positionY: h.rect.minY
-                    )
-                }
+        // Translate `regions` into the dispatch panel's existing
+        // `DispatchHeaderItem` / `DispatchLinkItem` shapes so the
+        // panel keeps working without its own NoteRegion refactor.
+        // Header rows come from regions with non-nil `headerOCRText`;
+        // link rows come from regions with an external URL. A region
+        // with both contributes to both lists (intentional — the
+        // panel surfaces each association independently).
+        //
+        // Thumbnail images are cropped on-demand from the current
+        // PKDrawing rather than read from a persisted cache. The
+        // crop is microseconds at typical region sizes.
+        let headerItems: [DispatchHeaderItem] = regions.compactMap { r in
+            guard let text = r.headerOCRText else { return nil }
+            return DispatchHeaderItem(
+                id: r.id,
+                ocrText: text,
+                image: cropPreview(for: r.rect),
+                positionY: r.rect.minY
             )
-        )
-        dispatchPanelStore.send(
-            .linksUpdated(
-                links.compactMap { l in
-                    guard case .external(let url) = l.destination else { return nil }
-                    return DispatchLinkItem(
-                        id: l.id,
-                        recognizedText: l.ocrText,
-                        url: url
-                    )
-                }
+        }
+        dispatchPanelStore.send(.headersUpdated(headerItems))
+
+        let linkItems: [DispatchLinkItem] = regions.compactMap { r in
+            guard case .external(let url) = r.linkDestination else { return nil }
+            return DispatchLinkItem(
+                id: r.id,
+                recognizedText: r.headerOCRText ?? "",
+                url: url
             )
-        )
+        }
+        dispatchPanelStore.send(.linksUpdated(linkItems))
         Task { await syncRoutedItemsAsync() }
+    }
+
+    /// On-demand thumbnail for a region's rect — crops the current
+    /// `PKDrawing` at scale 4 (matches the lasso-end render scale so
+    /// the visual is consistent across creation and rehydration).
+    /// Returns nil when the drawing is empty or the rect has no
+    /// strokes in it.
+    private func cropPreview(for rect: CGRect) -> UIImage? {
+        guard !currentDrawing.strokes.isEmpty else { return nil }
+        return currentDrawing.image(from: rect, scale: 4)
     }
 
     /// Fetches the page's task-routed history entries and pushes them

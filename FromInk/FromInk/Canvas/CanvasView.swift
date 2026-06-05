@@ -231,7 +231,7 @@ struct CanvasView: UIViewRepresentable {
         lassoPan.delaysTouchesBegan = false
         lassoPan.delaysTouchesEnded = false
         lassoPan.delegate = context.coordinator
-        lassoPan.isEnabled = tool == .lasso
+        lassoPan.isEnabled = tool.producesLassoSelection
         canvas.addGestureRecognizer(lassoPan)
         context.coordinator.lassoPanRecognizer = lassoPan
 
@@ -248,7 +248,7 @@ struct CanvasView: UIViewRepresentable {
             canvas.tool = tool.pkTool(settings: penSettings)
             context.coordinator.currentTool = tool
             context.coordinator.currentPenSettings = penSettings
-            context.coordinator.lassoPanRecognizer?.isEnabled = (tool == .lasso)
+            context.coordinator.lassoPanRecognizer?.isEnabled = tool.producesLassoSelection
         }
 
         // Update page size — re-apply tool after contentSize change because PencilKit
@@ -411,13 +411,20 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - Lasso bounds tracking
 
         @objc func trackLassoBounds(_ recognizer: UIPanGestureRecognizer) {
-            guard currentTool == .lasso else {
+            guard currentTool.producesLassoSelection else {
                 print("[Lasso] pan fired but currentTool=\(currentTool) — ignoring")
                 return
             }
             let p = recognizer.location(in: recognizer.view)
+            // Reset on each fresh pan so consecutive lassos don't
+            // accumulate a stale bounding rect from the previous
+            // selection. Two-finger hold's own reset still fires at
+            // gesture-begin; this covers the button-tap entry path
+            // (`.region` / `.lasso` button) where no two-finger event
+            // bookends the draw.
             if recognizer.state == .began {
                 print("[Lasso] pan began at \(p)")
+                resetLassoBounds()
             }
             lassoMinX = min(lassoMinX, p.x)
             lassoMinY = min(lassoMinY, p.y)

@@ -11,6 +11,11 @@ enum CanvasTool: String, CaseIterable, Equatable {
     case highlighter
     case eraser
     case lasso
+    /// Region tool — same `PKLassoTool` mechanic as `.lasso`. The
+    /// branded-vs-bare distinction is upstream (the Coordinator's
+    /// `wantsBrandedLasso` flag); from PencilKit's perspective both
+    /// produce a selection.
+    case region
 
     func pkTool(settings: PenSettings = .default) -> PKTool {
         switch self {
@@ -18,7 +23,7 @@ enum CanvasTool: String, CaseIterable, Equatable {
             return settings.pkTool
         case .eraser:
             return PKEraserTool(.bitmap)
-        case .lasso:
+        case .lasso, .region:
             return PKLassoTool()
         }
     }
@@ -32,6 +37,20 @@ enum CanvasTool: String, CaseIterable, Equatable {
         case .highlighter: return "highlighter"
         case .eraser:      return "eraser"
         case .lasso:       return "lasso"
+        case .region:      return "rectangle.dashed"
+        }
+    }
+
+    /// True for tools backed by `PKLassoTool`. The canvas uses this to
+    /// gate the lasso-bounds pan recognizer + the lasso-end callback
+    /// guards. Adding a third lasso-backed tool would only need a case
+    /// added here, not three separate `||` updates scattered through
+    /// CanvasView.
+    var producesLassoSelection: Bool {
+        switch self {
+        case .lasso, .region: return true
+        case .pen, .fountain, .pencil, .marker, .highlighter, .eraser:
+            return false
         }
     }
 }

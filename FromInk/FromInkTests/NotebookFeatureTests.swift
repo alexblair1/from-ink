@@ -97,6 +97,7 @@ final class NotebookFeatureTests: XCTestCase {
             deleteLink: { _ in throw CancellationError() },
             recordHistory: { _, _ in throw CancellationError() },
             updateHistoryStatus: { _, _ in throw CancellationError() },
+            addRegion: { _, _, _, _ in throw CancellationError() },
             createFolder: { _, _ in throw CancellationError() },
             deleteFolder: { _ in throw CancellationError() },
             moveNotebookToFolder: { _, _ in throw CancellationError() },

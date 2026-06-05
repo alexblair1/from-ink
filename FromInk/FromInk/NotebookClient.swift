@@ -108,6 +108,21 @@ struct NotebookClient: Sendable {
     var recordHistory: @Sendable (_ pageID: UUID, _ entry: NoteHistoryDraft) async throws -> NoteHistoryEntrySnapshot
     var updateHistoryStatus: @Sendable (_ entryID: UUID, _ status: String) async throws -> Void
 
+    // MARK: - Regions
+    /// Create a new `NoteRegion` on the given page. Either or both
+    /// associations may be supplied at creation time: pass
+    /// `headerOCRText` for the bookmark/header path, pass
+    /// `linkDestination` for the link path, pass both for a region
+    /// that opens with two badges from the start. Both nil mints a
+    /// region with no associations — useful for tests / edge cases
+    /// but normally the user picks at least one in the lasso menu.
+    var addRegion: @Sendable (
+        _ pageID: UUID,
+        _ rect: CGRect,
+        _ headerOCRText: String?,
+        _ linkDestination: NoteRegionLinkDestination?
+    ) async throws -> NoteRegionSnapshot
+
     // MARK: - Folders / Tags
     var createFolder: @Sendable (_ name: String, _ parentID: UUID?) async throws -> FolderSnapshot
     var deleteFolder: @Sendable (_ id: UUID) async throws -> Void
@@ -294,6 +309,7 @@ extension NotebookClient: DependencyKey {
         deleteLink: { _ in throw CancellationError() },
         recordHistory: { _, _ in throw CancellationError() },
         updateHistoryStatus: { _, _ in throw CancellationError() },
+        addRegion: { _, _, _, _ in throw CancellationError() },
         createFolder: { _, _ in throw CancellationError() },
         deleteFolder: { _ in throw CancellationError() },
         moveNotebookToFolder: { _, _ in throw CancellationError() },

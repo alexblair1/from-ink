@@ -13,6 +13,10 @@ struct NotePageDetailSnapshot: Equatable, Sendable {
     let headers: [NoteHeaderSnapshot]
     let links: [NoteLinkSnapshot]
     let history: [NoteHistoryEntrySnapshot]
+    /// Unified region records. New canvas rendering reads from this
+    /// list; the legacy `headers` / `links` arrays remain populated
+    /// for any code still on the old path.
+    let regions: [NoteRegionSnapshot]
 }
 
 // MARK: - Conversion from @Model
@@ -32,5 +36,8 @@ extension NotePageDetailSnapshot {
         self.history = (model.history ?? [])
             .sorted { $0.timestamp > $1.timestamp }
             .map(NoteHistoryEntrySnapshot.init(model:))
+        self.regions = (model.regions ?? [])
+            .sorted { $0.createdAt < $1.createdAt }
+            .map(NoteRegionSnapshot.init(model:))
     }
 }

@@ -580,6 +580,33 @@ extension NotebookClient {
                 }
             },
 
+            // MARK: - Regions
+            addRegion: { pageID, rect, headerOCRText, linkDestination in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
+                        throw NotebookClientError.pageNotFound(pageID)
+                    }
+                    // SortOrder grows monotonically from the page's
+                    // existing regions so insertion order is stable
+                    // across reloads and across re-marking of the
+                    // same handwriting region.
+                    let nextSort = (page.regions ?? []).map(\.sortOrder).max().map { $0 + 1 } ?? 0
+                    let region = NoteRegion(
+                        page: page,
+                        rect: rect,
+                        createdAt: calendarContext.now(),
+                        sortOrder: nextSort,
+                        headerOCRText: headerOCRText
+                    )
+                    apply(linkDestination, to: region)
+                    ctx.insert(region)
+                    page.notebook?.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                    return NoteRegionSnapshot(model: region)
+                }
+            },
+
             // MARK: - Folders
             createFolder: { name, parentID in
                 try await MainActor.run {
@@ -760,5 +787,52 @@ private func apply(_ destination: NoteLinkDestination, to link: NoteLink) {
         link.externalURL = nil
         link.targetPageID = nil
         link.targetNotebookID = nil
+    }
+}
+
+/// Applies an optional `NoteRegionLinkDestination` to a `NoteRegion`'s
+/// four flat link-target fields, zeroing the others. `nil` clears all
+/// four — the region has no link. `.none` and `.broken` are no-ops on
+/// the write path; only reads produce them.
+///
+/// Mirrors the `NoteLink` `apply(_:to:)` shape so the persistence
+/// layer keeps a single mental model: the API enforces the
+/// exactly-one-non-nil rule at this boundary.
+@MainActor
+private func apply(_ destination: NoteRegionLinkDestination?, to region: NoteRegion) {
+    guard let destination else {
+        region.linkExternalURL = nil
+        region.linkTargetPageID = nil
+        region.linkTargetNotebookID = nil
+        region.linkTargetPDFID = nil
+        return
+    }
+    switch destination {
+    case .external(let url):
+        region.linkExternalURL = url.absoluteString
+        region.linkTargetPageID = nil
+        region.linkTargetNotebookID = nil
+        region.linkTargetPDFID = nil
+    case .page(let id):
+        region.linkExternalURL = nil
+        region.linkTargetPageID = id
+        region.linkTargetNotebookID = nil
+        region.linkTargetPDFID = nil
+    case .notebook(let id):
+        region.linkExternalURL = nil
+        region.linkTargetPageID = nil
+        region.linkTargetNotebookID = id
+        region.linkTargetPDFID = nil
+    case .pdf(let id):
+        region.linkExternalURL = nil
+        region.linkTargetPageID = nil
+        region.linkTargetNotebookID = nil
+        region.linkTargetPDFID = id
+    case .none, .broken:
+        // No-op on write — same rationale as the NoteLink path.
+        region.linkExternalURL = nil
+        region.linkTargetPageID = nil
+        region.linkTargetNotebookID = nil
+        region.linkTargetPDFID = nil
     }
 }
