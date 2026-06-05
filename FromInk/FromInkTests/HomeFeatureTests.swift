@@ -1337,11 +1337,18 @@ final class HomeFeatureTests: XCTestCase {
         var seeded = HomeFeature.State(currentDate: wednesday)
         seeded.libraryBrowse = LibrarySearchFeature.State()
 
+        // Override `touchNotebookModified` to a successful no-op —
+        // the new browse-tap path bumps modifiedAt to keep parity
+        // with the shelf-tap path, and would otherwise throw
+        // `.notebookNotFound` for the synthesized snapshot ID.
+        var nbClient = NotebookClient.throwing
+        nbClient.touchNotebookModified = { _ in }
         let store = TestStore(initialState: seeded) {
             HomeFeature()
         } withDependencies: {
             $0.calendarContext = .fixed(now: wednesday)
             $0.dailyBriefClient = .testValue
+            $0.notebookClient = nbClient
         }
 
         await store.send(.libraryBrowse(.presented(.delegate(.resultSelected(.notebook(snap)))))) {
@@ -1351,6 +1358,11 @@ final class HomeFeatureTests: XCTestCase {
                 notebookTitle: "Quarterly Planning"
             )
         }
+        // Browse path now mirrors the shelf path — forwards the
+        // touch action into LibraryFeature. The library reducer
+        // dispatches its own effects (refresh shelves); we don't
+        // need to assert deeper, just that the forward happened.
+        await store.receive(\.library)
     }
 
     @MainActor

@@ -84,7 +84,9 @@ struct HomeWiringView: View {
                 // `PresentationAction.dismiss` is the documented
                 // primitive — fires the .ifLet's auto-clear, same as
                 // SwiftUI's swipe-to-dismiss.
-                onDismiss: { store.send(.libraryBrowse(.dismiss)) }
+                chrome: LibraryBrowseView.Chrome(
+                    onDismiss: { store.send(.libraryBrowse(.dismiss)) }
+                )
             )
         }
         .fullScreenCover(

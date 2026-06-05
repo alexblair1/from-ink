@@ -72,33 +72,21 @@ extension LibrarySearchService {
         LibrarySearchService(
             search: { rawQuery, scope in
                 let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !query.isEmpty else {
-                    // Empty query = full library, ranked by recency.
-                    // The "browse all" surface relies on this — no
-                    // separate "list everything" call needed.
-                    return try await fetchAll(scope: scope, client: notebookClient)
-                }
-
-                async let notebooks = scope.contains(.notebooks)
-                    ? notebookClient.fetchAllNotebooks().map(LibrarySearchResult.notebook)
-                    : []
-                async let folders = scope.contains(.folders)
-                    ? notebookClient.fetchAllFolders().map(LibrarySearchResult.folder)
-                    : []
-                async let pdfs = scope.contains(.pdfs)
-                    ? notebookClient.fetchAllPDFs().map(LibrarySearchResult.pdf)
-                    : []
-
-                let merged = try await notebooks + folders + pdfs
-                return rankAndFilter(merged, query: query)
+                let merged = try await fetchScoped(scope: scope, client: notebookClient)
+                // Empty query = full library, ranked by recency.
+                // Non-empty query = two-tier match-and-rank. The fetch
+                // composition is identical either way — only the
+                // post-processing differs.
+                return query.isEmpty
+                    ? merged.sorted { $0.rankingDate > $1.rankingDate }
+                    : rankAndFilter(merged, query: query)
             }
         )
     }
 
-    /// "Empty query" path — return everything in scope, ranked by
-    /// recency. Surfaced as a separate helper so the empty-query
-    /// branch in `search` reads in one line.
-    private static func fetchAll(
+    /// Concurrent fetch of every kind in scope. Single composition
+    /// point used by both the empty-query and the query-driven paths.
+    private static func fetchScoped(
         scope: LibrarySearchScope,
         client: NotebookClient
     ) async throws -> [LibrarySearchResult] {
@@ -111,27 +99,38 @@ extension LibrarySearchService {
         async let pdfs = scope.contains(.pdfs)
             ? client.fetchAllPDFs().map(LibrarySearchResult.pdf)
             : []
-        let merged = try await notebooks + folders + pdfs
-        return merged.sorted { $0.rankingDate > $1.rankingDate }
+        return try await notebooks + folders + pdfs
     }
 
     /// Two-tier rank: title prefix matches above substring matches,
     /// each tier sorted most-recent first. Pure function — easy to
     /// test independently of the SwiftData layer.
+    ///
+    /// Prefix detection uses Foundation's `range(of:options:)` with
+    /// `.anchored, .caseInsensitive, .diacriticInsensitive` so the
+    /// tier classification matches the substring filter's semantics.
+    /// Without this, "École de musique" matches query "eco" as a
+    /// substring but `hasPrefix("eco")` returns false (because
+    /// "école" ≠ "ecole" byte-wise) and the item misranks into the
+    /// substring tier despite being a real prefix match.
     static func rankAndFilter(
         _ items: [LibrarySearchResult],
         query: String
     ) -> [LibrarySearchResult] {
-        let lowered = query.lowercased()
-        let matches = items.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
+        let matchOpts: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let prefixOpts: String.CompareOptions = [.anchored, .caseInsensitive, .diacriticInsensitive]
+        var prefixHits: [LibrarySearchResult] = []
+        var substringHits: [LibrarySearchResult] = []
+        for item in items {
+            guard item.title.range(of: query, options: matchOpts) != nil else { continue }
+            if item.title.range(of: query, options: prefixOpts) != nil {
+                prefixHits.append(item)
+            } else {
+                substringHits.append(item)
+            }
         }
-        let prefixHits = matches
-            .filter { $0.title.lowercased().hasPrefix(lowered) }
-            .sorted { $0.rankingDate > $1.rankingDate }
-        let substringHits = matches
-            .filter { !$0.title.lowercased().hasPrefix(lowered) }
-            .sorted { $0.rankingDate > $1.rankingDate }
+        prefixHits.sort { $0.rankingDate > $1.rankingDate }
+        substringHits.sort { $0.rankingDate > $1.rankingDate }
         return prefixHits + substringHits
     }
 }

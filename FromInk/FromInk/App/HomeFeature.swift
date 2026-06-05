@@ -998,6 +998,12 @@ struct HomeFeature: Reducer {
                         notebookID: snap.id,
                         notebookTitle: snap.title
                     )
+                    // Bump `modifiedAt` so the notebook floats to the
+                    // top of the shelf next render. Matches the shelf-
+                    // tap path — two ways to open the same notebook
+                    // shouldn't have asymmetric persistence side
+                    // effects.
+                    return .send(.library(.touchNotebookActivated(id: snap.id)))
                 case .pdf(let snap):
                     state.pdfViewer = PDFFeature.State(
                         pdfID: snap.id,

@@ -123,7 +123,7 @@ extension HomeNotebookShelf {
 extension HomeNotebookShelf.Model {
     init(
         notebooks: [HomeNotebookShelf.NotebookCardModel],
-        onViewAllTapped: @escaping () -> Void = {},
+        onViewAllTapped: @escaping () -> Void,
         ds: DesignSystem = .standard
     ) {
         self.sectionTitle = AppStrings.Home.notebooks

@@ -46,11 +46,13 @@ struct LibrarySearchResultRow: View {
     }
 
     private var kindChip: some View {
+        // `kindLabel` is already uppercase from AppStrings (matches the
+        // existing `library.folderCount` / `library.notebookCount`
+        // convention) — no need for `.textCase(.uppercase)` here.
         Text(model.kindLabel)
             .font(model.kindFont)
             .foregroundStyle(model.kindColor)
             .tracking(model.kindTracking)
-            .textCase(.uppercase)
             .padding(.horizontal, model.kindHorizontalPadding)
             .padding(.vertical, model.kindVerticalPadding)
             .overlay(

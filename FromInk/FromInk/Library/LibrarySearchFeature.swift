@@ -45,10 +45,6 @@ struct LibrarySearchFeature: Reducer {
     enum Action: Equatable {
         case appeared
         case queryChanged(String)
-        /// Internal — fired after debounce settles. Carries no payload
-        /// because the reducer reads `state.query` + `state.scope` at
-        /// execution time, which is what tests want to assert against.
-        case searchExecuted
         case resultsLoaded([LibrarySearchResult])
         case resultTapped(LibrarySearchResult.ID)
         case delegate(Delegate)
@@ -97,12 +93,6 @@ struct LibrarySearchFeature: Reducer {
                 }
                 .cancellable(id: "librarySearchExecute", cancelInFlight: true)
 
-            case .searchExecuted:
-                // Reserved for callers that want to force an
-                // immediate re-query (e.g., after a delete elsewhere
-                // invalidated the cache). Not on the typing hot path.
-                return runSearch(query: state.query, scope: state.scope)
-
             case .resultsLoaded(let results):
                 state.results = results
                 state.isSearching = false
@@ -121,10 +111,10 @@ struct LibrarySearchFeature: Reducer {
         }
     }
 
-    /// Immediate (no debounce) search. Used by `.appeared` and
-    /// `.searchExecuted`. The debounced path lives inline in
-    /// `.queryChanged` because the sleep + cancellation orchestration
-    /// is the whole point there.
+    /// Immediate (no debounce) search — used by `.appeared` to
+    /// populate the initial result set. The debounced path lives
+    /// inline in `.queryChanged` because the sleep + cancellation
+    /// orchestration is the whole point there.
     private func runSearch(query: String, scope: LibrarySearchScope) -> Effect<Action> {
         .run { send in
             let results = (try? await searchService.search(query, scope)) ?? []
