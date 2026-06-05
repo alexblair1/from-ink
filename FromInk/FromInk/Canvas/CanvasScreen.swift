@@ -138,12 +138,17 @@ struct CanvasScreen: View {
     /// completes. The caller is then responsible for sending
     /// `.extractionCompleted(line)` to the store when extraction lands.
     private func presentDispatchFlow(for task: InkTask, isExtracting: Bool = false) {
-        let store = Store(
-            initialState: DispatchFeature.State(
-                tasks: [DispatchTask.single(from: task)],
-                isExtracting: isExtracting
-            )
-        ) {
+        var initial = DispatchFeature.State(
+            tasks: [DispatchTask.single(from: task)],
+            isExtracting: isExtracting
+        )
+        // Pass the source notebook + page so the resulting EK item
+        // auto-links back via `.generatedFromInk`. The link surfaces
+        // on the home brief as already-linked to this notebook on
+        // next refresh.
+        initial.sourceNotebookID = notebookID
+        initial.sourcePageID = pageID
+        let store = Store(initialState: initial) {
             DispatchFeature()
         }
         dispatchFlow = DispatchFlow(

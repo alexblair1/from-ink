@@ -114,6 +114,13 @@ enum CalendarItemLinkSource: String, Sendable {
 
     /// User tapped "Link to existing" and selected a pre-existing notebook.
     case linked
+
+    /// Dispatch flow created the EK item from a notebook page —
+    /// auto-linked back so the resulting event/reminder shows up in
+    /// the brief as already-linked to its source. Set by
+    /// `DispatchFeature.sendCompleted` when invoked with non-nil
+    /// `sourceNotebookID`.
+    case generatedFromInk
 }
 
 // MARK: - Snapshot

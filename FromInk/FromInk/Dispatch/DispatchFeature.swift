@@ -131,6 +131,19 @@ struct DispatchFeature: Reducer {
         /// Optional context note for the receiver.
         var note: String = ""
 
+        /// When set, the resulting EK event/reminder auto-links back to
+        /// this notebook via `CalendarItemLink(source: .generatedFromInk)`
+        /// so the brief surfaces the connection on next refresh. Nil
+        /// when Dispatch is invoked from a non-notebook context (no
+        /// auto-link). Edit mode also skips the link write — the EK
+        /// item pre-existed and any link decision was made earlier.
+        var sourceNotebookID: UUID? = nil
+        /// Source page within `sourceNotebookID`. Plumbed onto the link
+        /// record so navigation lands on the exact page that produced
+        /// the task. Nil falls through to "last edited page" at
+        /// navigation time — matches the picker's `.lastEdited` path.
+        var sourcePageID: UUID? = nil
+
         /// Per-destination permission status. Mail doesn't need
         /// permission (uses system compose); always `.fullAccess`.
         var calendarAuth: PermissionAuthStatus = .notDetermined
@@ -310,6 +323,7 @@ struct DispatchFeature: Reducer {
     @Dependency(\.eventKitService) var eventKit
     @Dependency(\.calendarContext) var cal
     @Dependency(\.locationSearchService) var locationSearch
+    @Dependency(\.calendarItemLinkService) var linkService
 
     var body: some Reducer<State, Action> {
         Reduce { state, action in
@@ -698,10 +712,51 @@ struct DispatchFeature: Reducer {
                 }
                 .cancellable(id: "dispatchSend", cancelInFlight: true)
 
-            case .sendCompleted:
+            case .sendCompleted(let ekID):
                 state.saveState = .idle
                 if let id = state.currentTask?.id {
                     state.resolved[id] = .sent
+                }
+                // Auto-link the freshly created EK item back to the
+                // source notebook. Conditions:
+                //   - `.create` mode (edit mode's item pre-existed and
+                //     any linking decision was already made)
+                //   - non-nil `ekID` (mail destinations return nil)
+                //   - non-nil `sourceNotebookID` (Dispatch invoked
+                //     outside a notebook context, no auto-link)
+                //
+                // Reminders take `kind: .reminder`; everything else
+                // (calendar) takes `.event`. Mail has no EK item so
+                // the `ekID` guard already short-circuits.
+                let shouldWriteLink: Bool = {
+                    if case .create = state.mode, ekID != nil, state.sourceNotebookID != nil {
+                        return true
+                    }
+                    return false
+                }()
+                let linkEffect: Effect<Action>
+                if shouldWriteLink, let ekID, let notebookID = state.sourceNotebookID {
+                    let kind: CalendarItemKind = state.destination == .reminders ? .reminder : .event
+                    let pageID = state.sourcePageID
+                    linkEffect = .run { _ in
+                        do {
+                            _ = try await linkService.create(
+                                ekID, nil, kind, notebookID, pageID, .generatedFromInk
+                            )
+                        } catch CalendarItemLinkError.duplicate {
+                            // Rare: the validator's heal path or a
+                            // parallel session already linked this
+                            // identifier. Silent — the link exists
+                            // either way.
+                        } catch {
+                            // Logged; not surfaced. Dispatch's primary
+                            // job (creating the EK item) succeeded; a
+                            // failed auto-link is a polish miss, not
+                            // a workflow break.
+                        }
+                    }
+                } else {
+                    linkEffect = .none
                 }
                 // Stack mode: advance to the next unresolved task. Single
                 // mode (or last task in stack): finish.
@@ -712,7 +767,7 @@ struct DispatchFeature: Reducer {
                 } else {
                     state.completion = .finished
                 }
-                return .none
+                return linkEffect
 
             case .sendFailed(let message):
                 state.saveState = .failed(message)

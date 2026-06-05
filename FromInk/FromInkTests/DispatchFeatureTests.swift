@@ -1564,4 +1564,210 @@ final class DispatchFeatureTests: XCTestCase {
             }
         )
     }
+
+    // MARK: - Auto-link to source notebook (Dispatch backfill)
+    //
+    // When Dispatch is invoked from inside a notebook (CanvasScreen
+    // passes notebookID + pageID), the EK item created by the modal
+    // should auto-link back to that notebook via
+    // `CalendarItemLink(source: .generatedFromInk)`. These tests pin
+    // the four branches:
+    //   - create event with source → writes event link
+    //   - create reminder with source → writes reminder link
+    //   - edit mode → skips
+    //   - no source notebook → skips
+
+    /// Lock-isolated capture of `linkService.create` invocations so
+    /// tests can both inject the closure and assert the captured args.
+    private struct LinkCreateCall: Equatable {
+        let localID: String
+        let kind: CalendarItemKind
+        let notebookID: UUID
+        let pageID: UUID?
+        let source: CalendarItemLinkSource
+    }
+
+    private func capturingLinkService(
+        into captures: LockIsolated<[LinkCreateCall]>
+    ) -> CalendarItemLinkService {
+        var svc = CalendarItemLinkService.testValue
+        svc.create = { localID, externalID, kind, notebookID, pageID, source in
+            captures.withValue { $0.append(LinkCreateCall(
+                localID: localID,
+                kind: kind,
+                notebookID: notebookID,
+                pageID: pageID,
+                source: source
+            )) }
+            return CalendarItemLink.Snapshot(
+                id: UUID(),
+                localIdentifier: localID,
+                externalIdentifier: externalID,
+                kind: kind,
+                source: source,
+                notebookID: notebookID,
+                notebookTitle: "",
+                pageID: pageID,
+                createdAt: Date(timeIntervalSince1970: 0)
+            )
+        }
+        return svc
+    }
+
+    func test_sendCompleted_createMode_withSourceNotebook_writesEventLink() async {
+        let notebookID = UUID()
+        let pageID = UUID()
+        let captures = LockIsolated<[LinkCreateCall]>([])
+
+        var seeded = DispatchFeature.State(tasks: [.init(line: "Plan offsite")])
+        seeded.sourceNotebookID = notebookID
+        seeded.sourcePageID = pageID
+        seeded.destination = .calendar
+        seeded.mode = .create
+
+        let store = TestStore(initialState: seeded) {
+            DispatchFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: Self.fixedNow)
+            $0.eventKitService = stubEventKit()
+            $0.calendarItemLinkService = capturingLinkService(into: captures)
+            $0.date = .constant(Self.fixedNow)
+        }
+
+        await store.send(.sendCompleted("ek-event-123")) {
+            $0.saveState = .idle
+            $0.resolved[$0.currentTask!.id] = .sent
+            $0.completion = .finished
+        }
+        await store.finish()
+
+        XCTAssertEqual(captures.value.count, 1)
+        let call = captures.value.first
+        XCTAssertEqual(call?.localID, "ek-event-123")
+        XCTAssertEqual(call?.kind, .event)
+        XCTAssertEqual(call?.notebookID, notebookID)
+        XCTAssertEqual(call?.pageID, pageID)
+        XCTAssertEqual(call?.source, .generatedFromInk)
+    }
+
+    func test_sendCompleted_createMode_remindersDestination_writesReminderLink() async {
+        let notebookID = UUID()
+        let captures = LockIsolated<[LinkCreateCall]>([])
+
+        var seeded = DispatchFeature.State(tasks: [.init(line: "Buy milk")])
+        seeded.sourceNotebookID = notebookID
+        seeded.destination = .reminders
+        seeded.mode = .create
+
+        let store = TestStore(initialState: seeded) {
+            DispatchFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: Self.fixedNow)
+            $0.eventKitService = stubEventKit()
+            $0.calendarItemLinkService = capturingLinkService(into: captures)
+            $0.date = .constant(Self.fixedNow)
+        }
+
+        await store.send(.sendCompleted("ek-reminder-42")) {
+            $0.saveState = .idle
+            $0.resolved[$0.currentTask!.id] = .sent
+            $0.completion = .finished
+        }
+        await store.finish()
+
+        XCTAssertEqual(captures.value.count, 1)
+        XCTAssertEqual(captures.value.first?.kind, .reminder)
+        XCTAssertEqual(captures.value.first?.localID, "ek-reminder-42")
+        XCTAssertEqual(captures.value.first?.pageID, nil)
+    }
+
+    func test_sendCompleted_editMode_skipsLinkWrite() async {
+        // Edit mode: the EK item already existed before this modal
+        // opened. Any link decision was made elsewhere; auto-write
+        // would be a duplicate or an unintended cross-link.
+        let captures = LockIsolated<[LinkCreateCall]>([])
+
+        var seeded = DispatchFeature.State(tasks: [.init(line: "x")])
+        seeded.sourceNotebookID = UUID()
+        seeded.destination = .calendar
+        seeded.mode = .edit("ek-existing-7")
+
+        let store = TestStore(initialState: seeded) {
+            DispatchFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: Self.fixedNow)
+            $0.eventKitService = stubEventKit()
+            $0.calendarItemLinkService = capturingLinkService(into: captures)
+            $0.date = .constant(Self.fixedNow)
+        }
+
+        await store.send(.sendCompleted("ek-existing-7")) {
+            $0.saveState = .idle
+            $0.resolved[$0.currentTask!.id] = .sent
+            $0.completion = .finished
+        }
+        await store.finish()
+
+        XCTAssertTrue(captures.value.isEmpty, "Edit mode must not write a link")
+    }
+
+    func test_sendCompleted_noSourceNotebook_skipsLinkWrite() async {
+        // Dispatch invoked outside a notebook context (no notebookID
+        // plumbed in) gets no auto-link. The EK item is still created
+        // normally — just nothing back-references it.
+        let captures = LockIsolated<[LinkCreateCall]>([])
+
+        var seeded = DispatchFeature.State(tasks: [.init(line: "x")])
+        seeded.sourceNotebookID = nil   // explicit
+        seeded.destination = .calendar
+        seeded.mode = .create
+
+        let store = TestStore(initialState: seeded) {
+            DispatchFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: Self.fixedNow)
+            $0.eventKitService = stubEventKit()
+            $0.calendarItemLinkService = capturingLinkService(into: captures)
+            $0.date = .constant(Self.fixedNow)
+        }
+
+        await store.send(.sendCompleted("ek-x")) {
+            $0.saveState = .idle
+            $0.resolved[$0.currentTask!.id] = .sent
+            $0.completion = .finished
+        }
+        await store.finish()
+
+        XCTAssertTrue(captures.value.isEmpty, "No source notebook → no link write")
+    }
+
+    func test_sendCompleted_mailDestination_skipsLinkWrite() async {
+        // Mail has no EK item — `sendCompleted` fires with nil id,
+        // which the guard short-circuits. Pin so a future refactor
+        // can't accidentally turn mail sends into link writes.
+        let captures = LockIsolated<[LinkCreateCall]>([])
+
+        var seeded = DispatchFeature.State(tasks: [.init(line: "x")])
+        seeded.sourceNotebookID = UUID()
+        seeded.destination = .mail
+        seeded.mode = .create
+
+        let store = TestStore(initialState: seeded) {
+            DispatchFeature()
+        } withDependencies: {
+            $0.calendarContext = .fixed(now: Self.fixedNow)
+            $0.eventKitService = stubEventKit()
+            $0.calendarItemLinkService = capturingLinkService(into: captures)
+            $0.date = .constant(Self.fixedNow)
+        }
+
+        await store.send(.sendCompleted(nil)) {
+            $0.saveState = .idle
+            $0.resolved[$0.currentTask!.id] = .sent
+            $0.completion = .finished
+        }
+        await store.finish()
+
+        XCTAssertTrue(captures.value.isEmpty, "Mail sends produce no EK item, no link")
+    }
 }
