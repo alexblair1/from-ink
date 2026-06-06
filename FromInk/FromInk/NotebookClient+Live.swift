@@ -606,6 +606,46 @@ extension NotebookClient {
                     return NoteRegionSnapshot(model: region)
                 }
             },
+            updateRegionHeader: { regionID, text in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let region = try fetchRegionModel(id: regionID, ctx: ctx) else {
+                        throw NotebookClientError.regionNotFound(regionID)
+                    }
+                    // Empty strings collapse to nil so the snapshot's
+                    // `hasAnyAssociation` doesn't keep the header
+                    // badge alive for a blank value.
+                    let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    region.headerOCRText = (trimmed?.isEmpty == false) ? trimmed : nil
+                    region.page?.notebook?.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                    return NoteRegionSnapshot(model: region)
+                }
+            },
+            updateRegionLink: { regionID, destination in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let region = try fetchRegionModel(id: regionID, ctx: ctx) else {
+                        throw NotebookClientError.regionNotFound(regionID)
+                    }
+                    apply(destination, to: region)
+                    region.page?.notebook?.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                    return NoteRegionSnapshot(model: region)
+                }
+            },
+            deleteRegion: { regionID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let region = try fetchRegionModel(id: regionID, ctx: ctx) else {
+                        throw NotebookClientError.regionNotFound(regionID)
+                    }
+                    let parent = region.page?.notebook
+                    ctx.delete(region)
+                    parent?.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                }
+            },
 
             // MARK: - Folders
             createFolder: { name, parentID in
@@ -715,6 +755,12 @@ private func fetchNotebookModel(id: UUID, ctx: ModelContext) throws -> Notebook?
 @MainActor
 private func fetchPageModel(id: UUID, ctx: ModelContext) throws -> NotePage? {
     let descriptor = FetchDescriptor<NotePage>(predicate: #Predicate { $0.id == id })
+    return try ctx.fetch(descriptor).first
+}
+
+@MainActor
+private func fetchRegionModel(id: UUID, ctx: ModelContext) throws -> NoteRegion? {
+    let descriptor = FetchDescriptor<NoteRegion>(predicate: #Predicate { $0.id == id })
     return try ctx.fetch(descriptor).first
 }
 

@@ -123,6 +123,31 @@ struct NotebookClient: Sendable {
         _ linkDestination: NoteRegionLinkDestination?
     ) async throws -> NoteRegionSnapshot
 
+    /// Set or clear a region's OCR'd header text. Passing `nil`
+    /// removes the header (the bookmark badge disappears) but keeps
+    /// the region alive if it carries any other association. The
+    /// returned snapshot is the post-update state so callers can swap
+    /// it into their `regions: [NoteRegionSnapshot]` array without a
+    /// re-fetch.
+    var updateRegionHeader: @Sendable (
+        _ regionID: UUID,
+        _ text: String?
+    ) async throws -> NoteRegionSnapshot
+
+    /// Set or clear a region's link destination. Passing `nil`
+    /// removes the link (the link badge disappears) but keeps the
+    /// region alive if it carries any other association.
+    var updateRegionLink: @Sendable (
+        _ regionID: UUID,
+        _ destination: NoteRegionLinkDestination?
+    ) async throws -> NoteRegionSnapshot
+
+    /// Delete a region outright, regardless of how many associations
+    /// it carried. Use `updateRegionHeader(id, nil)` or
+    /// `updateRegionLink(id, nil)` to remove a single badge while
+    /// preserving the rest.
+    var deleteRegion: @Sendable (_ regionID: UUID) async throws -> Void
+
     // MARK: - Folders / Tags
     var createFolder: @Sendable (_ name: String, _ parentID: UUID?) async throws -> FolderSnapshot
     var deleteFolder: @Sendable (_ id: UUID) async throws -> Void
@@ -233,6 +258,7 @@ enum NotebookClientError: Error, Equatable, Sendable {
     case pageNotFound(UUID)
     case headerNotFound(UUID)
     case linkNotFound(UUID)
+    case regionNotFound(UUID)
     case folderNotFound(UUID)
     case tagNotFound(UUID)
     case historyEntryNotFound(UUID)
@@ -310,6 +336,9 @@ extension NotebookClient: DependencyKey {
         recordHistory: { _, _ in throw CancellationError() },
         updateHistoryStatus: { _, _ in throw CancellationError() },
         addRegion: { _, _, _, _ in throw CancellationError() },
+        updateRegionHeader: { _, _ in throw CancellationError() },
+        updateRegionLink: { _, _ in throw CancellationError() },
+        deleteRegion: { _ in throw CancellationError() },
         createFolder: { _, _ in throw CancellationError() },
         deleteFolder: { _ in throw CancellationError() },
         moveNotebookToFolder: { _, _ in throw CancellationError() },

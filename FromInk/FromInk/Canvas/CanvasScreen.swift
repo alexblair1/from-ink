@@ -105,6 +105,18 @@ struct CanvasScreen: View {
     @State private var activeLinkURL: URL? = nil
     @State private var editingLink: NoteLinkSnapshot? = nil
 
+    // Region edit / manage state
+    //
+    // `managingRegionID` drives the confirmation dialog that opens when
+    // the user taps a region's ellipsis chip. `editingHeaderRegionID`
+    // drives a header text editor modal. `editingRegionLinkID` reuses
+    // the existing `LinkInputSheet` for region-link edits — the
+    // confirmLinkInput path branches on which of these is set.
+    @State private var managingRegionID: UUID? = nil
+    @State private var editingHeaderRegionID: UUID? = nil
+    @State private var pendingHeaderText: String = ""
+    @State private var editingRegionLinkID: UUID? = nil
+
 
     // MARK: - Routing
 
@@ -463,13 +475,60 @@ struct CanvasScreen: View {
                 isLoading: isRecognizingLink,
                 recognizedText: pendingLinkOCRText,
                 initialURL: editingLinkInitialURL,
-                isEditing: editingLink != nil,
+                isEditing: editingLink != nil || editingRegionLinkID != nil,
                 onConfirm: { url in confirmLinkInput(url: url) },
                 onDismiss: {
                     editingLink = nil
+                    editingRegionLinkID = nil
                     isLinkSheetVisible = false
                 }
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { editingHeaderRegionID != nil },
+                set: { if !$0 { editingHeaderRegionID = nil; pendingHeaderText = "" } }
+            )
+        ) {
+            RegionHeaderEditSheet(
+                text: $pendingHeaderText,
+                onSave: { commitRegionHeaderEdit() },
+                onCancel: {
+                    editingHeaderRegionID = nil
+                    pendingHeaderText = ""
+                }
+            )
+        }
+        .confirmationDialog(
+            AppStrings.RegionIndicator.manageTitle,
+            isPresented: Binding(
+                get: { managingRegionID != nil },
+                set: { if !$0 { managingRegionID = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: managingRegionID
+        ) { regionID in
+            if let region = regions.first(where: { $0.id == regionID }) {
+                if region.headerOCRText != nil {
+                    Button(AppStrings.RegionIndicator.manageEditHeader) {
+                        managingRegionID = nil
+                        beginEditingRegionHeader(regionID)
+                    }
+                }
+                if case .external = region.linkDestination {
+                    Button(AppStrings.RegionIndicator.manageEditLink) {
+                        managingRegionID = nil
+                        beginEditingRegionLink(regionID)
+                    }
+                }
+                Button(AppStrings.RegionIndicator.manageDelete, role: .destructive) {
+                    managingRegionID = nil
+                    deleteRegion(regionID)
+                }
+                Button(AppStrings.RegionIndicator.manageCancel, role: .cancel) {
+                    managingRegionID = nil
+                }
+            }
         }
         .onChange(of: dispatchPanelStore.isVisible) { _, visible in
             guard visible else { return }
@@ -584,6 +643,11 @@ struct CanvasScreen: View {
     /// link. Returns empty string for new links or for non-external
     /// destinations (page/notebook refs aren't represented as URLs).
     private var editingLinkInitialURL: String {
+        if let regionID = editingRegionLinkID,
+           let region = regions.first(where: { $0.id == regionID }),
+           case .external(let url) = region.linkDestination {
+            return url.absoluteString
+        }
         guard let existing = editingLink else { return "" }
         if case .external(let url) = existing.destination {
             return url.absoluteString
@@ -591,16 +655,40 @@ struct CanvasScreen: View {
         return ""
     }
 
-    /// Routes a confirmed `LinkInputSheet` URL through either the create
-    /// or edit path. Extracted from the body to keep the SwiftUI type
-    /// checker happy — inline this and the compiler times out.
+    /// Routes a confirmed `LinkInputSheet` URL through three paths:
+    /// region-link edit (most common path now that NoteLink is gone),
+    /// legacy NoteLink edit (no-op — `editingLink` is never set after
+    /// the NoteRegion migration), or create-new-region. Extracted from
+    /// the body to keep the SwiftUI type checker happy — inline this
+    /// and the compiler times out.
     private func confirmLinkInput(url: URL) {
-        if let existing = editingLink {
+        if let regionID = editingRegionLinkID {
+            updateRegionLink(regionID: regionID, url: url)
+        } else if let existing = editingLink {
             updateExistingLink(existing, url: url)
         } else {
             createNewLink(url: url)
         }
         isLinkSheetVisible = false
+    }
+
+    private func updateRegionLink(regionID: UUID, url: URL) {
+        editingRegionLinkID = nil
+        Task {
+            do {
+                let snap = try await notebookClient.updateRegionLink(
+                    regionID,
+                    .external(url)
+                )
+                await MainActor.run {
+                    if let idx = regions.firstIndex(where: { $0.id == regionID }) {
+                        regions[idx] = snap
+                    }
+                }
+            } catch {
+                // Silent — UI stays at the prior value.
+            }
+        }
     }
 
     private func updateExistingLink(_ existing: NoteLinkSnapshot, url: URL) {
@@ -707,10 +795,56 @@ struct CanvasScreen: View {
             if region.isAnchored {
                 let viewX = region.rect.midX - scrollOffset.x
                 let viewY = region.rect.midY - scrollOffset.y
+                let regionID = region.id
                 RegionIndicator(
-                    model: RegionIndicator.Model(snapshot: region)
+                    model: RegionIndicator.Model(
+                        snapshot: region,
+                        onEditHeaderTapped: { beginEditingRegionHeader(regionID) },
+                        onEditLinkTapped: { beginEditingRegionLink(regionID) },
+                        onManageTapped: { managingRegionID = regionID }
+                    )
                 )
                 .position(x: viewX, y: viewY)
+            }
+        }
+    }
+
+    private func beginEditingRegionHeader(_ regionID: UUID) {
+        guard let region = regions.first(where: { $0.id == regionID }) else { return }
+        editingHeaderRegionID = regionID
+        pendingHeaderText = region.headerOCRText ?? ""
+    }
+
+    private func beginEditingRegionLink(_ regionID: UUID) {
+        guard let region = regions.first(where: { $0.id == regionID }) else { return }
+        editingRegionLinkID = regionID
+        pendingLinkContentRect = region.rect
+        pendingLinkOCRText = region.headerOCRText ?? ""
+        isRecognizingLink = false
+        isLinkSheetVisible = true
+    }
+
+    private func deleteRegion(_ regionID: UUID) {
+        regions.removeAll { $0.id == regionID }
+        Task { try? await notebookClient.deleteRegion(regionID) }
+    }
+
+    private func commitRegionHeaderEdit() {
+        guard let regionID = editingHeaderRegionID else { return }
+        let trimmed = pendingHeaderText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String? = trimmed.isEmpty ? nil : trimmed
+        editingHeaderRegionID = nil
+        pendingHeaderText = ""
+        Task {
+            do {
+                let snap = try await notebookClient.updateRegionHeader(regionID, text)
+                await MainActor.run {
+                    if let idx = regions.firstIndex(where: { $0.id == regionID }) {
+                        regions[idx] = snap
+                    }
+                }
+            } catch {
+                // Silent — UI just stays at the prior value.
             }
         }
     }

@@ -18,9 +18,10 @@ struct RegionIndicator: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Bounding rect — unified style across all region kinds.
-            // Light tint fill + solid stroke, sharp corners per the
-            // design-system rule (no `cornerRadius` on content).
+            // Bounding rect background — explicitly NOT hit-testable
+            // so Apple Pencil strokes inside the region still reach
+            // PKCanvasView. Only the badges + ellipsis chip in the
+            // corners intercept touches.
             Rectangle()
                 .fill(model.fillColor)
                 .overlay(
@@ -28,6 +29,7 @@ struct RegionIndicator: View {
                         .strokeBorder(model.strokeColor, lineWidth: model.strokeWidth)
                 )
                 .frame(width: model.size.width, height: model.size.height)
+                .allowsHitTesting(false)
 
             if !model.badges.isEmpty {
                 badgeRow
@@ -37,8 +39,12 @@ struct RegionIndicator: View {
                     // floating inside it.
                     .offset(x: model.badgeRowOffset.x, y: model.badgeRowOffset.y)
             }
+
+            ellipsisChip
+                // Opposite corner from the badge row so the two
+                // affordances don't crowd one another.
+                .offset(x: model.ellipsisOffset.x, y: model.ellipsisOffset.y)
         }
-        .allowsHitTesting(false)
     }
 
     // MARK: - Badge row
@@ -46,18 +52,39 @@ struct RegionIndicator: View {
     private var badgeRow: some View {
         HStack(spacing: model.badgeSpacing) {
             ForEach(model.badges) { badge in
-                badgeView(badge)
+                badgeButton(badge)
             }
         }
     }
 
-    private func badgeView(_ badge: Model.Badge) -> some View {
-        Image(systemName: badge.iconSystemName)
-            .font(.system(size: model.badgeIconSize, weight: .medium))
-            .foregroundStyle(badge.iconColor)
-            .frame(width: model.badgeFrame, height: model.badgeFrame)
-            .background(badge.background)
-            .accessibilityLabel(badge.accessibilityLabel)
+    private func badgeButton(_ badge: Model.Badge) -> some View {
+        Button(action: badge.onTap) {
+            Image(systemName: badge.iconSystemName)
+                .font(.system(size: model.badgeIconSize, weight: .medium))
+                .foregroundStyle(badge.iconColor)
+                .frame(width: model.badgeFrame, height: model.badgeFrame)
+                .background(badge.background)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(badge.accessibilityLabel)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    // MARK: - Ellipsis chip
+
+    private var ellipsisChip: some View {
+        Button(action: model.onManageTapped) {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: model.badgeIconSize, weight: .medium))
+                .foregroundStyle(model.ellipsisIconColor)
+                .frame(width: model.badgeFrame, height: model.badgeFrame)
+                .background(model.ellipsisBackground)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.ellipsisAccessibilityLabel)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -68,6 +95,10 @@ extension RegionIndicator {
         let id: UUID
         let size: CGSize
         let badges: [Badge]
+        /// Tapped when the ellipsis chip is activated. The canvas
+        /// adapter routes this to a manage sheet (Delete region etc.).
+        let onManageTapped: () -> Void
+        let ellipsisAccessibilityLabel: String
 
         // Visual style (resolved from DesignSystem at adapter time)
         let fillColor: Color
@@ -80,6 +111,11 @@ extension RegionIndicator {
         let badgeFrame: CGFloat
         let badgeIconSize: CGFloat
 
+        // Ellipsis chip
+        let ellipsisOffset: CGPoint
+        let ellipsisIconColor: Color
+        let ellipsisBackground: Color
+
         struct Badge: Equatable, Identifiable {
             /// Stable id for `ForEach` — uses the badge kind so the
             /// same kind keeps its position across renders.
@@ -88,6 +124,10 @@ extension RegionIndicator {
             let iconColor: Color
             let background: Color
             let accessibilityLabel: String
+            /// Tapped when the user activates this specific badge.
+            /// The canvas adapter routes per-kind (header → edit
+            /// header sheet, link → link sheet, etc.).
+            let onTap: () -> Void
 
             enum Kind: String, Hashable {
                 case header
@@ -95,6 +135,14 @@ extension RegionIndicator {
                 case event
                 case reminder
                 case pdf
+            }
+
+            // Closures aren't Equatable; compare the visual + identity
+            // fields so the view diffs cleanly across renders.
+            static func == (lhs: Badge, rhs: Badge) -> Bool {
+                lhs.id == rhs.id
+                    && lhs.iconSystemName == rhs.iconSystemName
+                    && lhs.accessibilityLabel == rhs.accessibilityLabel
             }
         }
 
@@ -121,6 +169,9 @@ extension RegionIndicator.Model {
     /// this revision the canvas passes `[]`.
     init(
         snapshot: NoteRegionSnapshot,
+        onEditHeaderTapped: @escaping () -> Void = {},
+        onEditLinkTapped: @escaping () -> Void = {},
+        onManageTapped: @escaping () -> Void = {},
         extraBadges: [RegionIndicator.Model.Badge] = [],
         ds: DesignSystem = .standard
     ) {
@@ -129,22 +180,25 @@ extension RegionIndicator.Model {
 
         var badges: [Badge] = []
         if snapshot.headerOCRText != nil {
-            badges.append(.header(ds: ds))
+            badges.append(.header(onTap: onEditHeaderTapped, ds: ds))
         }
         switch snapshot.linkDestination {
         case .none:
             break
         case .external:
-            badges.append(.link(ds: ds))
+            badges.append(.link(onTap: onEditLinkTapped, ds: ds))
         case .page, .notebook:
-            badges.append(.crossReference(ds: ds))
+            badges.append(.crossReference(onTap: onEditLinkTapped, ds: ds))
         case .pdf:
-            badges.append(.pdf(ds: ds))
+            badges.append(.pdf(onTap: onEditLinkTapped, ds: ds))
         case .broken:
-            badges.append(.broken(ds: ds))
+            badges.append(.broken(onTap: onEditLinkTapped, ds: ds))
         }
         badges.append(contentsOf: extraBadges)
         self.badges = badges
+
+        self.onManageTapped = onManageTapped
+        self.ellipsisAccessibilityLabel = AppStrings.RegionIndicator.manageAccessibility
 
         self.fillColor = ds.colors.ink.opacity(0.06)
         self.strokeColor = ds.colors.ink.opacity(0.20)
@@ -158,53 +212,64 @@ extension RegionIndicator.Model {
         self.badgeRowOffset = CGPoint(x: frame / 2, y: -frame / 2)
         self.badgeSpacing = ds.spacing.xs
         self.badgeIconSize = 11
+
+        // Ellipsis chip mirrors the badge row across the rect's
+        // bottom-left corner so the two affordances don't collide.
+        self.ellipsisOffset = CGPoint(x: -frame / 2 - snapshot.rect.size.width,
+                                      y: snapshot.rect.size.height - frame / 2)
+        self.ellipsisIconColor = ds.colors.paperOnInk
+        self.ellipsisBackground = ds.colors.ink3
     }
 }
 
 // MARK: - Badge factories (kind-specific style resolution)
 
 extension RegionIndicator.Model.Badge {
-    static func header(ds: DesignSystem) -> Self {
+    static func header(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
         Self(
             id: .header,
             iconSystemName: "bookmark.fill",
             iconColor: ds.colors.paperOnInk,
             background: ds.colors.ink2,
-            accessibilityLabel: AppStrings.RegionIndicator.headerBadgeAccessibility
+            accessibilityLabel: AppStrings.RegionIndicator.headerBadgeAccessibility,
+            onTap: onTap
         )
     }
 
-    static func link(ds: DesignSystem) -> Self {
+    static func link(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
         Self(
             id: .link,
             iconSystemName: "link",
             iconColor: ds.colors.paperOnInk,
             background: ds.colors.ink2,
-            accessibilityLabel: AppStrings.RegionIndicator.linkBadgeAccessibility
+            accessibilityLabel: AppStrings.RegionIndicator.linkBadgeAccessibility,
+            onTap: onTap
         )
     }
 
-    static func crossReference(ds: DesignSystem) -> Self {
+    static func crossReference(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
         Self(
             id: .link,
             iconSystemName: "arrow.uturn.right.circle",
             iconColor: ds.colors.paperOnInk,
             background: ds.colors.ink2,
-            accessibilityLabel: AppStrings.RegionIndicator.crossRefBadgeAccessibility
+            accessibilityLabel: AppStrings.RegionIndicator.crossRefBadgeAccessibility,
+            onTap: onTap
         )
     }
 
-    static func pdf(ds: DesignSystem) -> Self {
+    static func pdf(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
         Self(
             id: .link,
             iconSystemName: "doc.richtext",
             iconColor: ds.colors.paperOnInk,
             background: ds.colors.ink2,
-            accessibilityLabel: AppStrings.RegionIndicator.pdfBadgeAccessibility
+            accessibilityLabel: AppStrings.RegionIndicator.pdfBadgeAccessibility,
+            onTap: onTap
         )
     }
 
-    static func broken(ds: DesignSystem) -> Self {
+    static func broken(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
         Self(
             id: .link,
             iconSystemName: "link.badge.plus",
@@ -213,7 +278,8 @@ extension RegionIndicator.Model.Badge {
             // reads as off-nominal at a glance without saturating with
             // a brand-violating red.
             background: ds.colors.ink3,
-            accessibilityLabel: AppStrings.RegionIndicator.brokenLinkBadgeAccessibility
+            accessibilityLabel: AppStrings.RegionIndicator.brokenLinkBadgeAccessibility,
+            onTap: onTap
         )
     }
 }
