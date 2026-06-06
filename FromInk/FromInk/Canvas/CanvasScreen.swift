@@ -515,7 +515,11 @@ struct CanvasScreen: View {
                         beginEditingRegionHeader(regionID)
                     }
                 }
-                if case .external = region.linkDestination {
+                // Surface "Edit link" for any non-`.none` destination —
+                // including `.broken`, where the entire affordance is
+                // "tap to repair." Restricting to `.external` was a bug
+                // (broken links became unreachable via this menu).
+                if region.linkDestination != .none {
                     Button(AppStrings.RegionIndicator.manageEditLink) {
                         managingRegionID = nil
                         beginEditingRegionLink(regionID)
@@ -684,6 +688,7 @@ struct CanvasScreen: View {
                     if let idx = regions.firstIndex(where: { $0.id == regionID }) {
                         regions[idx] = snap
                     }
+                    refreshDispatchPanelIfVisible()
                 }
             } catch {
                 // Silent — UI stays at the prior value.
@@ -826,6 +831,7 @@ struct CanvasScreen: View {
 
     private func deleteRegion(_ regionID: UUID) {
         regions.removeAll { $0.id == regionID }
+        refreshDispatchPanelIfVisible()
         Task { try? await notebookClient.deleteRegion(regionID) }
     }
 
@@ -842,11 +848,23 @@ struct CanvasScreen: View {
                     if let idx = regions.firstIndex(where: { $0.id == regionID }) {
                         regions[idx] = snap
                     }
+                    refreshDispatchPanelIfVisible()
                 }
             } catch {
                 // Silent — UI just stays at the prior value.
             }
         }
+    }
+
+    /// Fan-out for region mutations: if the dispatch panel is open,
+    /// re-translate `regions` into the panel's header/link items so
+    /// header text edits, link changes, and deletes appear without
+    /// the user having to close + reopen the panel. No-op when the
+    /// panel is hidden — `syncDispatchPanelData` runs on next reveal
+    /// via `onChange(of: dispatchPanelStore.isVisible)`.
+    private func refreshDispatchPanelIfVisible() {
+        guard dispatchPanelStore.isVisible else { return }
+        syncDispatchPanelData()
     }
 
     private func onLinkTapped(_ link: NoteLinkSnapshot) {
