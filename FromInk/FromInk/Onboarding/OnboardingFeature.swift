@@ -45,6 +45,12 @@ struct OnboardingFeature: Reducer {
         var remindersStatus: PermissionAuthStatus = .notDetermined
         var locationStatus: LocationAuthStatus = .notDetermined
         var microphoneStatus: MicrophoneAuthStatus = .notDetermined
+        /// Selected subscription tier on the paywall. Lifetime is the
+        /// default per the brand-position decision in subscription EDD
+        /// §5.5 — users who don't manually change the default land where
+        /// the product steers them, which is exactly where the brand
+        /// wants them.
+        var selectedTier: SubscriptionTier = .lifetime
         /// `true` while the "you didn't enable anything" confirmation
         /// alert is presented. Only set when the user taps Continue on
         /// permissions with both calendar and reminders ungranted.
@@ -68,6 +74,7 @@ struct OnboardingFeature: Reducer {
         case remindersRowTapped
         case locationRowTapped
         case microphoneRowTapped
+        case tierSelected(SubscriptionTier)
         case permissionsAppeared
         case sceneBecameActive
         case statusesLoaded(
@@ -147,6 +154,10 @@ struct OnboardingFeature: Reducer {
                     current: state.microphoneStatus,
                     routedFrom: state.step
                 )
+
+            case .tierSelected(let tier):
+                state.selectedTier = tier
+                return .none
 
             case .permissionsAppeared:
                 return refreshStatuses()

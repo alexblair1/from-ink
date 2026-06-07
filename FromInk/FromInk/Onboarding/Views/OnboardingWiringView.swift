@@ -32,6 +32,7 @@ struct OnboardingWiringView: View {
                 isSwipeDisabled: store.step == .permissions,
                 footer: footerModel,
                 permissions: permissionsModel,
+                subscription: subscriptionModel,
                 backgroundColor: ds.colors.paper,
                 horizontalPadding: ds.spacing.xl,
                 contentTopPadding: ds.spacing.lg,
@@ -114,12 +115,27 @@ struct OnboardingWiringView: View {
         )
     }
 
+    private var subscriptionModel: OnboardingSubscriptionView.Model {
+        OnboardingSubscriptionView.Model(
+            selectedTier: store.selectedTier,
+            onTierSelected: { store.send(.tierSelected($0)) }
+        )
+    }
+
     private func primaryTitle(for step: OnboardingStep) -> String {
         switch step {
         case .welcome:      return AppStrings.Onboarding.welcomeButton
         case .value:        return AppStrings.Onboarding.continueButton
         case .permissions:  return AppStrings.Onboarding.permissionsContinue
-        case .subscription: return AppStrings.Onboarding.subscriptionPrimary
+        case .subscription:
+            // CTA label varies by selected tier (subscription EDD §5.4):
+            // - Lifetime: "Buy" (matches Apple's standard non-consumable
+            //   IAP button label, single word in every target language)
+            // - Yearly / Monthly: "Start free trial" (accurately
+            //   describes the 7-day trial action)
+            return store.selectedTier == .lifetime
+                ? AppStrings.Onboarding.subscriptionPrimaryLifetime
+                : AppStrings.Onboarding.subscriptionPrimary
         }
     }
 

@@ -128,7 +128,7 @@ struct OnboardingContainerView: View {
         case .permissions:
             OnboardingPermissionsView(model: model.permissions)
         case .subscription:
-            OnboardingSubscriptionView(model: .init())
+            OnboardingSubscriptionView(model: model.subscription)
         }
     }
 }
@@ -141,6 +141,7 @@ extension OnboardingContainerView {
         let isSwipeDisabled: Bool
         let footer: OnboardingFooter.Model
         let permissions: OnboardingPermissionsView.Model
+        let subscription: OnboardingSubscriptionView.Model
         let backgroundColor: Color
         let horizontalPadding: CGFloat
         let contentTopPadding: CGFloat

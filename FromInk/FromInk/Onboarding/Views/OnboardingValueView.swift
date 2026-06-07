@@ -1,13 +1,26 @@
 import SwiftUI
 
-/// Value screen ("The idea") — kicker, two-tone headline, three feature
-/// rows separated by hairline rules.
+/// Value screen ("The idea") — kicker, two-tone headline ("From ink"
+/// + italic "to done."), five feature rows separated by hairline rules.
+///
+/// The five rows form a deliberate escalation:
+///
+///     1. Ink & text         — how you write
+///     2. Daily brief        — what you see each morning
+///     3. Connections        — where it goes
+///     4. For every reader   — who can use it
+///     5. Privacy            — who can see it
+///
+/// Privacy is the final row by design: the user leaves this screen on
+/// the boundary that protects them, right before the Continue button.
 ///
 /// The headline is composed of two localized strings concatenated with
 /// a single space and styled as one continuous flowing block — no
 /// hardcoded `\n`. It wraps based on available width, so long-locale
 /// translations and large Dynamic Type sizes both reflow gracefully.
-/// All text uses system text styles (Dynamic Type-aware).
+/// All text uses system text styles (Dynamic Type-aware). At AX5 the
+/// rows overflow the page and the per-page vertical ScrollView in
+/// OnboardingContainerView handles the scroll.
 ///
 struct OnboardingValueView: View {
     let model: Model
@@ -66,27 +79,43 @@ extension OnboardingValueView.Model {
         self.headlineLine2 = AppStrings.Onboarding.valueHeadlineLine2
         self.rows = [
             OnboardingFeatureRow.Model(
+                id: "ink-text",
+                icon: "pencil.and.scribble",
+                kicker: AppStrings.Onboarding.valueInkTextKicker,
+                title: AppStrings.Onboarding.valueInkTextTitle,
+                body: AppStrings.Onboarding.valueInkTextBody,
+                ds: ds
+            ),
+            OnboardingFeatureRow.Model(
                 id: "brief",
-                icon: "sparkles",
+                icon: "newspaper",
                 kicker: AppStrings.Onboarding.valueBriefKicker,
                 title: AppStrings.Onboarding.valueBriefTitle,
                 body: AppStrings.Onboarding.valueBriefBody,
                 ds: ds
             ),
             OnboardingFeatureRow.Model(
-                id: "notebooks",
-                icon: "book.closed",
-                kicker: AppStrings.Onboarding.valueNotebooksKicker,
-                title: AppStrings.Onboarding.valueNotebooksTitle,
-                body: AppStrings.Onboarding.valueNotebooksBody,
+                id: "connections",
+                icon: "paperplane",
+                kicker: AppStrings.Onboarding.valueConnectionsKicker,
+                title: AppStrings.Onboarding.valueConnectionsTitle,
+                body: AppStrings.Onboarding.valueConnectionsBody,
                 ds: ds
             ),
             OnboardingFeatureRow.Model(
-                id: "search",
-                icon: "magnifyingglass",
-                kicker: AppStrings.Onboarding.valueSearchKicker,
-                title: AppStrings.Onboarding.valueSearchTitle,
-                body: AppStrings.Onboarding.valueSearchBody,
+                id: "reading",
+                icon: "textformat.size",
+                kicker: AppStrings.Onboarding.valueReadingKicker,
+                title: AppStrings.Onboarding.valueReadingTitle,
+                body: AppStrings.Onboarding.valueReadingBody,
+                ds: ds
+            ),
+            OnboardingFeatureRow.Model(
+                id: "privacy",
+                icon: "lock",
+                kicker: AppStrings.Onboarding.valuePrivacyKicker,
+                title: AppStrings.Onboarding.valuePrivacyTitle,
+                body: AppStrings.Onboarding.valuePrivacyBody,
                 isLast: true,
                 ds: ds
             )

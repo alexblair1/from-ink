@@ -36,62 +36,120 @@ extension AppStrings {
         )
         static let valueHeadlineLine1 = NSLocalizedString(
             "onboarding.value.headline.line1",
-            value: "Everything,",
-            comment: "Onboarding value screen headline — first line"
+            value: "From ink",
+            comment: "Onboarding value screen headline — first line, ink color. Half of the brand mantra; rendered alongside the italic accent line below."
         )
         static let valueHeadlineLine2 = NSLocalizedString(
             "onboarding.value.headline.line2",
-            value: "in one brief.",
-            comment: "Onboarding value screen headline — second (italic accent) line"
+            value: "to done.",
+            comment: "Onboarding value screen headline — second line, italic ink-2 accent. Completes the 'From ink to done.' brand mantra."
         )
 
-        // Feature rows
+        // MARK: - Value feature rows
+        //
+        // Five pillars rendered top to bottom. The escalation is: how you
+        // write → what you see each morning → where it goes → who can
+        // use it → who can see it. Privacy is the deliberate close,
+        // landing the user on the boundary that protects them right
+        // before the Continue button.
+
+        // Pillar 1 — capture / input modes. Names both Apple Pencil and
+        // keyboard input honestly; finger drawing is omitted because the
+        // canvas runs in .pencilOnly mode (per PaperKit canvas rules in
+        // CLAUDE.md). Future-proof for the text-based note system.
+        static let valueInkTextKicker = NSLocalizedString(
+            "onboarding.value.ink_text.kicker",
+            value: "Ink & text",
+            comment: "Value row eyebrow — capture modes. Names both supported input modalities."
+        )
+        static let valueInkTextTitle = NSLocalizedString(
+            "onboarding.value.ink_text.title",
+            value: "Write the way you think",
+            comment: "Value row title — capture modes."
+        )
+        static let valueInkTextBody = NSLocalizedString(
+            "onboarding.value.ink_text.body",
+            value: "Apple Pencil for ink. Keyboard for text. Whichever your hands prefer.",
+            comment: "Value row body — capture modes. Three short sentences instead of an em-dash so the copy localizes cleanly. 'Apple Pencil' passes through verbatim per the localization EDD glossary."
+        )
+
+        // Pillar 2 — the daily brief. Sources named (calendar, reminders,
+        // weather, notes) ground the abstract brief in concrete inputs.
         static let valueBriefKicker = NSLocalizedString(
             "onboarding.value.brief.kicker",
             value: "Daily brief",
-            comment: "Value row eyebrow — daily brief"
+            comment: "Value row eyebrow — daily brief."
         )
         static let valueBriefTitle = NSLocalizedString(
             "onboarding.value.brief.title",
             value: "Your day, composed",
-            comment: "Value row title — daily brief"
+            comment: "Value row title — daily brief."
         )
         static let valueBriefBody = NSLocalizedString(
             "onboarding.value.brief.body",
-            value: "Events, reminders and recent notes gathered into a single morning read.",
-            comment: "Value row body — daily brief"
+            value: "Calendar, reminders, weather, and recent notes drawn into one morning read.",
+            comment: "Value row body — daily brief. 'Drawn into' carries the brand's ink metaphor. No em-dash so the copy localizes cleanly."
         )
 
-        static let valueNotebooksKicker = NSLocalizedString(
-            "onboarding.value.notebooks.kicker",
-            value: "Notebooks & pages",
-            comment: "Value row eyebrow — notebooks"
+        // Pillar 3 — user-driven linking from inside the writing experience.
+        // The destinations (reminder / calendar event / contact) are
+        // V1-honest examples under an 'anything' umbrella that will
+        // expand gracefully when V2 OAuth integrations ship.
+        static let valueConnectionsKicker = NSLocalizedString(
+            "onboarding.value.connections.kicker",
+            value: "Connections",
+            comment: "Value row eyebrow — linking handwriting to other apps and entities."
         )
-        static let valueNotebooksTitle = NSLocalizedString(
-            "onboarding.value.notebooks.title",
-            value: "Write freely, sort later",
-            comment: "Value row title — notebooks"
+        static let valueConnectionsTitle = NSLocalizedString(
+            "onboarding.value.connections.title",
+            value: "Connected to your day",
+            comment: "Value row title — linking handwriting to other apps and entities."
         )
-        static let valueNotebooksBody = NSLocalizedString(
-            "onboarding.value.notebooks.body",
-            value: "A calm shelf that keeps every notebook within reach.",
-            comment: "Value row body — notebooks"
+        static let valueConnectionsBody = NSLocalizedString(
+            "onboarding.value.connections.body",
+            value: "Link your handwriting to anything. A reminder, a calendar event, a name.",
+            comment: "Value row body — linking. 'Anything' carries the breadth promise; the three nouns are V1-honest examples (Reminders, Calendar, Contacts). Pattern expands gracefully when V2 OAuth integrations ship — no copy update needed."
         )
 
-        static let valueSearchKicker = NSLocalizedString(
-            "onboarding.value.search.kicker",
-            value: "Search & PDFs",
-            comment: "Value row eyebrow — search"
+        // Pillar 4 — accessibility, framed without the word. Three
+        // concrete capabilities (Dynamic Type, VoiceOver, RTL support)
+        // under a universalizing premise. The localization EDD covers
+        // RTL layout, and the design system covers Dynamic Type — this
+        // row commits the marketing to the experience.
+        static let valueReadingKicker = NSLocalizedString(
+            "onboarding.value.reading.kicker",
+            value: "For every reader",
+            comment: "Value row eyebrow — universal-design framing without using the word 'accessibility'. Names the audience the row serves implicitly."
         )
-        static let valueSearchTitle = NSLocalizedString(
-            "onboarding.value.search.title",
-            value: "Find it in a keystroke",
-            comment: "Value row title — search"
+        static let valueReadingTitle = NSLocalizedString(
+            "onboarding.value.reading.title",
+            value: "Made for the way you read",
+            comment: "Value row title — universal-design framing. 'The way you read' universalizes (every reader fits in this sentence)."
         )
-        static let valueSearchBody = NSLocalizedString(
-            "onboarding.value.search.body",
-            value: "Surface any note, notebook, or imported PDF instantly.",
-            comment: "Value row body for the search row. Active voice replaces a passive em-dash construction so the line localizes cleanly."
+        static let valueReadingBody = NSLocalizedString(
+            "onboarding.value.reading.body",
+            value: "Text at every size. Reads aloud when you ask. Whichever way you read.",
+            comment: "Value row body — three concrete capabilities. 'Text at every size' covers Dynamic Type; 'Reads aloud when you ask' covers VoiceOver; 'Whichever way you read' covers RTL layout implicitly. The word 'accessibility' is deliberately absent — the row describes the experience, not the audience it serves."
+        )
+
+        // Pillar 5 — privacy as the deliberate close. Three factually
+        // defensible claims: on-device Foundation Models (no third-party
+        // AI servers), no From Ink backend that ingests notes, and
+        // CloudKit sync as a boundary the user already has with Apple.
+        static let valuePrivacyKicker = NSLocalizedString(
+            "onboarding.value.privacy.kicker",
+            value: "Privacy",
+            comment: "Value row eyebrow — privacy. Direct, no marketing softening."
+        )
+        static let valuePrivacyTitle = NSLocalizedString(
+            "onboarding.value.privacy.title",
+            value: "The privacy you deserve",
+            comment: "Value row title — privacy. Claims a moral position (privacy as a right) before substantiating it in the body."
+        )
+        static let valuePrivacyBody = NSLocalizedString(
+            "onboarding.value.privacy.body",
+            value: "On-device AI. We never see your notes. iCloud sync, between you and Apple.",
+            comment: "Value row body — three factually defensible privacy claims. (1) Foundation Models runs locally, no third-party AI server in the loop. (2) From Ink operates no backend that ingests note content. (3) CloudKit private database — the sync exists but stays in the user's iCloud, not From Ink's infrastructure."
         )
 
         // MARK: - Permissions
@@ -207,22 +265,91 @@ extension AppStrings {
         static let subscriptionKicker = NSLocalizedString(
             "onboarding.subscription.kicker",
             value: "From Ink Plus",
-            comment: "Subscription screen eyebrow"
+            comment: "Subscription screen eyebrow. Brand name passes through verbatim per the localization EDD glossary."
         )
-        static let subscriptionHeadlineLine1 = NSLocalizedString(
-            "onboarding.subscription.headline.line1",
-            value: "Try everything,",
-            comment: "Subscription headline — first line"
+
+        // MARK: - Per-tier headline + body
+        //
+        // The paywall's main headline and supporting body change based
+        // on which tier the user has selected. This keeps the three
+        // tier options visually equal (stacked, equal weight) while
+        // letting the editorial copy at the top of the screen carry
+        // each tier's specific framing.
+        //
+        // Each tier follows the established two-tone pattern:
+        // line1 (ink) + line2 (italic, ink-2 accent), joined with a
+        // space in the view.
+
+        // LIFETIME — brand-position headline; the ownership commitment.
+        static let subscriptionLifetimeHeadlineLine1 = NSLocalizedString(
+            "onboarding.subscription.lifetime.headline.line1",
+            value: "Pay once.",
+            comment: "Lifetime tier headline — first line, ink color. The anti-subscription pattern interrupt."
         )
-        static let subscriptionHeadlineLine2 = NSLocalizedString(
-            "onboarding.subscription.headline.line2",
-            value: "free for 7 days.",
-            comment: "Subscription headline — second (italic accent) line"
+        static let subscriptionLifetimeHeadlineLine2 = NSLocalizedString(
+            "onboarding.subscription.lifetime.headline.line2",
+            value: "Yours, forever.",
+            comment: "Lifetime tier headline — second line, italic ink-2 accent. The emotional payoff."
         )
-        static let subscriptionBody = NSLocalizedString(
-            "onboarding.subscription.body",
-            value: "Full access while you settle in. Keep it for less than a coffee a year. Cancel anytime.",
-            comment: "Subscription screen body. 'Cancel anytime' is the final, standalone sentence — the reassurance the user reads last, immediately before reaching the primary CTA."
+        /// Lifetime tier body, three separate sentences rendered as a
+        /// stacked VStack under the headline. Each does one job:
+        ///   line 1: the lifetime UPDATES promise (Procreate-style)
+        ///   line 2: the lifetime DEVICES promise (iCloud scope)
+        ///   line 3: "No subscription." — the negative-space punch
+        ///
+        /// Per subscription EDD §5.3, line 3 must NOT be softened or
+        /// buried in translation. It is the one sentence that defines
+        /// what From Ink is against. Translators should preserve its
+        /// terseness even if the target language tends toward longer
+        /// phrasing.
+        static let subscriptionLifetimeBody1 = NSLocalizedString(
+            "onboarding.subscription.lifetime.body.1",
+            value: "From Ink, and every update we'll ever ship.",
+            comment: "Lifetime tier body line 1 of 3 — the Procreate-style lifetime updates commitment."
+        )
+        static let subscriptionLifetimeBody2 = NSLocalizedString(
+            "onboarding.subscription.lifetime.body.2",
+            value: "Yours, on every device you'll ever own.",
+            comment: "Lifetime tier body line 2 of 3 — clarifies practical scope (iCloud sync follows the user across devices)."
+        )
+        static let subscriptionLifetimeBody3 = NSLocalizedString(
+            "onboarding.subscription.lifetime.body.3",
+            value: "No subscription.",
+            comment: "Lifetime tier body line 3 of 3 — the negative-space punch. Per subscription EDD §5.3, this is the one sentence that defines what From Ink is against. Do NOT soften. Do NOT bury. Translators should preserve its terseness even if the target language tends toward longer phrasing."
+        )
+
+        // YEARLY — trial-first framing with the post-trial annual cost.
+        static let subscriptionYearlyHeadlineLine1 = NSLocalizedString(
+            "onboarding.subscription.yearly.headline.line1",
+            value: "Free for 7 days,",
+            comment: "Yearly tier headline — first line, ink color. Leads with the trial offer."
+        )
+        static let subscriptionYearlyHeadlineLine2 = NSLocalizedString(
+            "onboarding.subscription.yearly.headline.line2",
+            value: "then $14.99 a year.",
+            comment: "Yearly tier headline — second line, italic ink-2 accent. The post-trial cadence. Price is a placeholder until StoreKit integration replaces it with Product.displayPrice."
+        )
+        static let subscriptionYearlyBody = NSLocalizedString(
+            "onboarding.subscription.yearly.body",
+            value: "Cancel anytime.",
+            comment: "Yearly tier body. The cancellation reassurance, kept short."
+        )
+
+        // MONTHLY — same trial-first framing with monthly cadence.
+        static let subscriptionMonthlyHeadlineLine1 = NSLocalizedString(
+            "onboarding.subscription.monthly.headline.line1",
+            value: "Free for 7 days,",
+            comment: "Monthly tier headline — first line, ink color. Leads with the trial offer (matches yearly tier's line1)."
+        )
+        static let subscriptionMonthlyHeadlineLine2 = NSLocalizedString(
+            "onboarding.subscription.monthly.headline.line2",
+            value: "then $2.99 a month.",
+            comment: "Monthly tier headline — second line, italic ink-2 accent. The post-trial cadence. Price is a placeholder until StoreKit integration replaces it with Product.displayPrice."
+        )
+        static let subscriptionMonthlyBody = NSLocalizedString(
+            "onboarding.subscription.monthly.body",
+            value: "Cancel anytime.",
+            comment: "Monthly tier body. Matches yearly tier's body."
         )
 
         static let subscriptionPriceMajor = NSLocalizedString(
@@ -291,11 +418,75 @@ extension AppStrings {
             value: "iCloud sync across devices",
             comment: "Subscription included feature row — multi-device experience via CloudKit."
         )
+        static let subscriptionFeatureFamilySharing = NSLocalizedString(
+            "onboarding.subscription.feature.family",
+            value: "Family Sharing for up to 6",
+            comment: "Subscription included feature row — Family Sharing applies to all three tiers per subscription EDD §2.1. The 'for up to 6' framing communicates the practical scope without using the literal Apple count (organizer + 5 family members)."
+        )
 
         static let subscriptionPrimary = NSLocalizedString(
             "onboarding.subscription.primary",
             value: "Start free trial",
-            comment: "Subscription primary CTA"
+            comment: "Subscription primary CTA when a subscription tier (yearly or monthly) is selected. Accurately describes the action: tapping starts a 7-day free trial before billing begins."
+        )
+
+        /// Primary CTA label when the lifetime tier is selected. Per
+        /// subscription EDD §5.4, intentionally minimal — one word in
+        /// English that translates as a single word or 2-character
+        /// cluster in every target language with no expansion risk on
+        /// the button at AX5 Dynamic Type sizes. Matches Apple's
+        /// standard non-consumable IAP button label across all 175
+        /// App Store storefronts.
+        static let subscriptionPrimaryLifetime = NSLocalizedString(
+            "onboarding.subscription.primary.lifetime",
+            value: "Buy",
+            comment: "Primary CTA when the lifetime tier is selected. One word, universal across languages. Matches Apple's standard non-consumable IAP button label."
+        )
+
+        // MARK: - Tier cards (kickers, prices, subtitles)
+        //
+        // All three tiers render as equal-weight stacked cards. Each
+        // shows a kicker (uppercase mono), a price, and an optional
+        // subtitle. Lifetime's "pay once" subtitle distinguishes it
+        // from the per-period subscriptions; yearly and monthly carry
+        // no subtitle (the per-cadence cost is in the price itself).
+
+        static let subscriptionLifetimeKicker = NSLocalizedString(
+            "onboarding.subscription.lifetime.kicker",
+            value: "Lifetime",
+            comment: "Mono uppercase label at the top of the lifetime tier card."
+        )
+        static let subscriptionLifetimePriceMajor = NSLocalizedString(
+            "onboarding.subscription.lifetime.price.major",
+            value: "$19.99",
+            comment: "Lifetime tier price. Placeholder until StoreKit integration replaces it with Product.displayPrice (locale-aware currency formatting)."
+        )
+        static let subscriptionLifetimePriceCaption = NSLocalizedString(
+            "onboarding.subscription.lifetime.price.caption",
+            value: "pay once",
+            comment: "Small mono uppercase caption beneath the lifetime price. Distinguishes lifetime from per-period subscription tiers."
+        )
+
+        static let subscriptionYearlyKicker = NSLocalizedString(
+            "onboarding.subscription.yearly.kicker",
+            value: "Yearly",
+            comment: "Mono uppercase label at the top of the yearly tier card."
+        )
+        static let subscriptionYearlyPrice = NSLocalizedString(
+            "onboarding.subscription.yearly.price",
+            value: "$14.99/yr",
+            comment: "Yearly tier price. Placeholder until StoreKit integration."
+        )
+
+        static let subscriptionMonthlyKicker = NSLocalizedString(
+            "onboarding.subscription.monthly.kicker",
+            value: "Monthly",
+            comment: "Mono uppercase label at the top of the monthly tier card."
+        )
+        static let subscriptionMonthlyPrice = NSLocalizedString(
+            "onboarding.subscription.monthly.price",
+            value: "$2.99/mo",
+            comment: "Monthly tier price. Placeholder until StoreKit integration."
         )
 
         /// VoiceOver label for the X close button rendered in the
