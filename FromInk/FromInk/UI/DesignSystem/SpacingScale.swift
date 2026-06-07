@@ -66,6 +66,21 @@ struct LayoutTokens: Sendable {
     let emptyStateIconSize: CGFloat
     let mastheadTracking: CGFloat
     let scrimOpacity: Double
+    /// Onboarding custom Switch — track outer width.
+    let onboardingSwitchTrackWidth: CGFloat
+    /// Onboarding custom Switch — track height (capsule).
+    let onboardingSwitchTrackHeight: CGFloat
+    /// Onboarding custom Switch — thumb diameter.
+    let onboardingSwitchThumbDiameter: CGFloat
+    /// Onboarding custom Switch — inset between thumb and track edge.
+    let onboardingSwitchThumbInset: CGFloat
+    /// Width of the icon column on each value-screen feature row.
+    /// Sized for the smaller 20pt-ish SF Symbols used in value rows.
+    let onboardingFeatureRowIconColumn: CGFloat
+    /// Width of the icon column on permissions rows and the
+    /// informational microphone card. Sized for the larger 22pt SF
+    /// Symbols used in those rows.
+    let onboardingPermissionRowIconColumn: CGFloat
 
     static let standard = LayoutTokens(
         hitTarget: 44,
@@ -105,7 +120,13 @@ struct LayoutTokens: Sendable {
         labelIconSize: 11,
         emptyStateIconSize: 36,
         mastheadTracking: -1.12,
-        scrimOpacity: 0.25
+        scrimOpacity: 0.25,
+        onboardingSwitchTrackWidth: 48,
+        onboardingSwitchTrackHeight: 28,
+        onboardingSwitchThumbDiameter: 22,
+        onboardingSwitchThumbInset: 3,
+        onboardingFeatureRowIconColumn: 30,
+        onboardingPermissionRowIconColumn: 34
     )
 }
 

@@ -1,6 +1,6 @@
 # From Ink — Localization Engineering Design
 
-> **Status:** Draft. The "Target Languages" list (§3) is **TBD** — the project ships with the intent of "8 languages and 130 countries" but the specific eight have not been ratified. The rest of this document defines the architecture that the eight will plug into; the architecture stands whether the list is 8 or 8+N.
+> **Status:** Active. The "Target Languages" list (§3) is ratified at **nine** (English plus the eight non-English languages Apple Foundation Models supports on iOS 26.1). The rest of this document defines the architecture; this list slots into it. Expansion to 30+ languages is anticipated but staged for a later phase; FM-unsupported languages will rely on the hide-rather-than-fake rule (§5) for the editorial layer while the chrome ships translated.
 
 ---
 
@@ -24,30 +24,73 @@
 | **Authored content** | Strings the user typed: event titles from EventKit, reminder titles, notebook names, page text. Pass through unchanged; never translated. |
 | **Chrome** | Strings the team wrote: button labels, section headers, empty states, fallback prose, accessibility hints. Always localized via `AppStrings`. |
 
-## 3. Target languages (TBD)
+## 3. Target languages
 
-The eight target languages are **not yet ratified**. The Xcode project's `knownRegions` currently contains only `en` + `Base`. Translations have not been commissioned.
+Nine languages. English is the development language; the other eight are the non-English languages Apple Foundation Models supported live as of iOS 26 launch (Sept 2025), confirmed still live at iOS 26.1. The list intentionally aligns with FM coverage so the editorial layer (Daily Brief focus paragraph, future page summaries, future task-extraction prose) works in every target language we ship to. Expanding past nine is reserved for a later phase governed by the migration plan in §12.
 
-The list must be decided before:
-- Any `.strings` files are added to the project.
-- The localization budget is committed to translators.
-- The fallback-discipline test obligations (§11) can be enforced.
+| # | Language | Locale identifier | Variant | FM-supported (§4) | Notes |
+|---|---|---|---|---|---|
+| 1 | English | `en` | — | yes | Development language. Base reference for all other translations. App Store description and metadata authored here first. |
+| 2 | French | `fr` | generic (covers `fr_FR` + `fr_CA`) | yes | Informal "tu". Brand voice direction in §3.1. |
+| 3 | German | `de` | generic | yes | Informal "du". Length expansion 30–40% vs English; layouts must handle. |
+| 4 | Italian | `it` | generic | yes | Informal "tu". |
+| 5 | Portuguese (Brazil) | `pt-BR` | Brazil only | yes | Informal "você" (Brazilian standard). **Portugal users (`pt_PT`) fall back to English.** Apple FM does not support `pt_PT` at iOS 26.1. |
+| 6 | Spanish | `es` | generic (covers `es_ES` + `es_MX` + `es_419`) | yes | Informal "tú". |
+| 7 | Chinese (Simplified) | `zh-Hans` | Simplified only | yes | **Traditional (`zh-Hant`) users fall back to English.** Apple FM lists Traditional as "coming soon"; this section will be revised when it ships. |
+| 8 | Japanese | `ja` | — | yes | Polite-form `です/ます`. Not casual; not high keigo. Length contraction 30–50% vs English; some headlines may need re-balanced typographic weight. |
+| 9 | Korean | `ko` | — | yes | `해요체` (polite informal). Length contraction similar to Japanese. |
 
-When the list is decided, replace this section with a table of the form:
+**Locale coverage by App Store country (approximate):** the nine languages cover roughly 95–130 unique countries where at least one is officially or commonly spoken. The App Store ships to 175 countries/regions total; users in the ~45–70 countries not well-served by these nine fall back to English at runtime per Apple's standard locale resolution rules. The 175-country reach is preserved; the *quality of localized experience* is bounded by the nine.
 
-| # | Language | Locale identifier(s) | FM-supported (§4) | Notes |
-|---|---|---|---|---|
-| 1 | English | `en` | yes | base / development language |
-| 2 | … | | | |
+**Languages explicitly out of scope for this phase:**
+- Apple FM "coming soon" 8 — Danish, Dutch, Norwegian, Portuguese (Portugal), Swedish, Turkish, Chinese (Traditional), Vietnamese. Will be added once Apple ships FM support; no concrete Apple date as of June 2026.
+- FM-unsupported languages — Arabic, Hebrew, Persian, Urdu, Hindi and the Indic family, Thai, Polish, Russian, etc. Reserved for a later phase that explicitly accepts FM editorial layer absence per §5.
 
-Decisions to make explicit when filling the table:
-- **Regional variants.** Does "Portuguese" mean `pt_BR` only, `pt_PT` only, or both? Apple FM currently supports `pt_BR` only.
-- **Scripts.** "Chinese" splits into `zh_Hans` (Simplified) and `zh_Hant` (Traditional). FM currently supports Simplified only; Traditional is coming soon.
-- **Right-to-left languages.** Arabic, Hebrew, Persian, Urdu are RTL — see §10.
-- **Non-Latin numbering systems.** Arabic-Indic, Devanagari, Thai are common — see §9.
-- **Non-Gregorian calendars.** Japanese era, Buddhist, Hebrew — see `dates_edd.md` §6.
+**Project file state.** The Xcode project's `knownRegions` array must include all nine identifiers (`en`, `Base`, `fr`, `de`, `it`, `pt-BR`, `es`, `zh-Hans`, `ja`, `ko`) before Batch 1 of the migration plan (§12) executes.
 
-Architectural emphasis in the codebase (locale stress tests in `dates_edd.md`, RTL discipline in `feedback_directional_sf_symbols.md`, Devanagari/Thai/Arabic overrides in date component tests) suggests the team intends to cover at least one RTL language, at least one Indic-numbering language, and at least one non-Gregorian-calendar language. None of these are FM-supported. The list should be confirmed with that constraint in mind.
+### 3.1 Style guide
+
+Per-language register decisions, locked. The brand voice across all languages is **editorial, quiet, confident** — closer to a New York Times opinion-page register than to consumer-app marketing-speak. Sentences are short. Declarations land without exclamation.
+
+| Language | Formality | Specific direction |
+|---|---|---|
+| French | Informal | `tu` for all user-facing copy. Match Le Monde / Libération opinion-page register over Le Figaro formal. |
+| German | Informal | `du`. Match indie newsletter register over `Sie`-formal corporate. |
+| Italian | Informal | `tu`. Conversational but not slang-y. |
+| Portuguese (Brazil) | Informal | `você` (which is grammatically third-person but semantically informal 2nd person in Brazilian Portuguese — the standard app default). Not `tu`. |
+| Spanish | Informal | `tú`. Latin American register (not Spain's `vos` regional variants). |
+| Japanese | Polite-form | `です/ます` form. Not casual `だ/である`. Not high keigo (`いらっしゃる`, `ございます`). This is the standard app default and matches the editorial register. |
+| Korean | Polite informal | `해요체`. Not the higher-formal `합쇼체`. Matches the warm, accessible-but-not-casual brand voice. |
+
+**Voice direction applies regardless of language**: short sentences. No exclamation marks (rare exceptions for accessibility hints). No em-dashes in user-facing strings (see §3.2 typography rules below; bullets, periods, and commas only). No marketing-shout-y constructs ("Try it now!", "Don't miss out!"). Where English uses a comma to slow a phrase ("Pay once. Yours."), the target language should choose the equivalent rhythmic structure even if word order shifts.
+
+**Typographic discipline shared across languages:**
+- No em-dashes (`—`), en-dashes (`–`), middle dots (`·`), or angle quotes (`›`) in any user-facing `value:`. The original English source has been audited to remove them; translators must not reintroduce them.
+- Apostrophes use straight ASCII (`'`). Typographic curly quotes are produced by SwiftUI's text shaping at render time, not in the source string.
+- Plurals must be handled via the String Catalog's plural variation system (§7.1), not via inline `count == 1 ? ... : ...` logic.
+
+### 3.2 Glossary
+
+Terms that **pass through every translation unchanged**:
+
+| Term | Notes |
+|---|---|
+| **From Ink** | Brand name. Never translated, never transliterated. Stays English in Korean, Japanese, Chinese — all CJK languages render it inline as "From Ink" in Latin script. |
+| **From Ink Plus** | Subscription tier name. Same rule. |
+| **Apple Pencil** | Apple product name. Apple's own localization glossaries leave this in English globally. |
+| **iCloud** | Apple product name. Same. |
+| **App Store** | Apple product name. Same. |
+| **Settings** | When referring to the *iOS Settings app*, use Apple's official localized name from their glossaries (German "Einstellungen", Japanese "設定", etc.). When referring to in-app settings, use the local-language equivalent of "Settings". Distinguish via context in translator-facing comments. |
+| **Spotlight** | Apple product name. English globally. |
+| **PDF** | Universal acronym, English globally. |
+| **Reminders, Calendar, Mail, Messages** | When referring to system apps, use Apple's official localized names per their glossaries. Translators must look these up; do not invent. |
+
+Terms that **must be translated** (do not leave in English):
+- All adjectives, verbs, and descriptive nouns ("notebook", "page", "morning", "yours", "search", etc.)
+- All UI affordance labels ("Continue", "Cancel", "Save", "Skip")
+- All accessibility labels and hints
+
+Architectural emphasis in the broader codebase (RTL discipline in `feedback_directional_sf_symbols.md`, Devanagari/Thai/Arabic overrides in date component tests) anticipates a later phase covering at least one RTL, one Indic-numbering, and one non-Gregorian-calendar language. None of those are in the current nine. When that phase lands, the architecture in §9, §10, and `dates_edd.md` §6 carries the load without per-feature code changes.
 
 ## 4. Apple Foundation Models language coverage
 
@@ -105,13 +148,19 @@ The FM-generated surface omits itself; the underlying data presentation continue
 
 **When to use:** the FM output is editorial commentary on data the user already accesses through some other surface in the same view. This is the most common case for FM features in From Ink — the data layer (EventKit, SwiftData, etc.) is already presented somewhere; FM adds prose on top of it. This is the case §5's hide-rather-than-fake rule covers.
 
-### 6.2 Disable with messaging (for FM-essential surfaces)
+### 6.2 Disable with messaging (RETIRED for From Ink)
 
-The feature shows a localized "not available in this language" surface in place of its normal UI. The user understands the limitation; the feature is honest about it.
+> **§6.2 is not used in From Ink.** Decision: the team's policy is that FM-gated surfaces hide rather than display "not available" messaging. The user is never told the app's features are partially absent — they simply see a coherent product that does what it does, in their language, well. This decision was made explicit during the pre-V1 paywall + onboarding design pass; see decision log [2026-06].
+>
+> The original §6.2 specification is retained below for historical completeness and for reference if a future feature genuinely requires the disable-with-messaging pattern. **It must not be reached for as a default;** the bar to use it is explicit team approval that no §6.1 (hide silently) or §6.3 (hide entirely) treatment serves the case.
 
-**Example (hypothetical):** an "AI summarize this notebook" button on the library screen. The summary is the *only* surface presenting that information — there's no separate "all my notebooks' contents" view the user could fall back to. On an unsupported locale the button shows a disabled state with `AppStrings.Library.summarizeUnavailable` ("Summarize isn't available in Catalan yet.").
+The original specification was:
 
-**When to use:** the feature's value is FM-essential AND there's no separate data surface that already conveys the same information. The feature is prominent enough that silently hiding it would confuse the user.
+> The feature shows a localized "not available in this language" surface in place of its normal UI. The user understands the limitation; the feature is honest about it.
+>
+> **Example (hypothetical):** an "AI summarize this notebook" button on the library screen. The summary is the *only* surface presenting that information — there's no separate "all my notebooks' contents" view the user could fall back to. On an unsupported locale the button shows a disabled state with `AppStrings.Library.summarizeUnavailable` ("Summarize isn't available in Catalan yet.").
+>
+> **When to use:** the feature's value is FM-essential AND there's no separate data surface that already conveys the same information. The feature is prominent enough that silently hiding it would confuse the user.
 
 ### 6.3 Hide entirely
 
@@ -124,10 +173,22 @@ The feature does not appear in the UI at all for users whose locale is unsupport
 | Property | Choose |
 |---|---|
 | FM wraps/comments on data already shown elsewhere in the same view | §6.1 Hide the FM surface |
-| FM-essential, no separate data surface, prominent | §6.2 Disable with messaging |
+| FM-essential, no separate data surface, prominent | ~~§6.2 Disable with messaging~~ — **retired**; reach for §6.3 instead |
 | FM-essential, no separate data surface, non-critical | §6.3 Hide entirely |
 
 Every FM-gated feature must declare its gating choice in its own EDD or feature-level comment, alongside a `supportsLocale`-style check at the entry point.
+
+### 6.4 Selling FM-gated features in paywalls and feature lists
+
+A subtle case the matrix above doesn't directly answer: **how do feature lists on the subscription paywall (and similar marketing surfaces) treat FM-gated capabilities when the user's locale is unsupported?**
+
+**Rule.** Feature rows that *describe* FM-gated capabilities stay visible on the paywall regardless of FM language support. The underlying capability still ships; only the editorial layer (the FM-generated prose) hides per §6.1.
+
+**Canonical example.** The onboarding subscription screen lists "Daily brief and smart search" as one of eight included features. On a Hindi-locale device (FM-unsupported), the Daily Brief still functions — the brief surface still displays the user's events, reminders, weather, and birthdays directly. The editor's note paragraph is the only thing that hides. **The feature row stays visible on the paywall** because we're not misrepresenting what's sold: the brief, search, calendar surfacing, and reminder surfacing are all real. The FM editorial layer is an editorial *gloss* on top of those, and its absence in unsupported languages is a quiet degradation, not a missing feature.
+
+**The line we don't cross.** A feature row that *only* describes FM output (e.g., "AI-generated weekly summaries", "Smart auto-tagging") must be hidden on the paywall for unsupported-locale users, because the underlying capability does not ship without the FM layer. Don't sell what isn't delivered.
+
+**Practical test.** For each paywall feature row, ask: *if FM hides on this user's device, does the underlying capability still serve the user?* If yes, keep the row visible. If no, hide the row. This determination is made per-row at paywall-render time, using the same `supportsLocale` check.
 
 ### Where the check lives
 
@@ -142,13 +203,60 @@ Both must be true to expose the FM path. Either being false routes to the chosen
 
 All chrome strings flow through `AppStrings.{Domain}.{key}` static lets or functions, which wrap `NSLocalizedString` with explicit `value` and `comment` parameters. The full rule is in `CLAUDE.md`; this section is the localization-specific addendum.
 
-**Plurals.** Use `String.localizedStringWithFormat` with a `.stringsdict` file for any string whose form depends on a numeric count. Example: `home.briefFallback.reminderWithMore` carries `value: "Don't forget %1$@ — plus %2$d other reminders."` — translators add a `.stringsdict` entry to handle their language's plural forms (e.g., Russian's 3 forms, Arabic's 6).
+**Plurals.** Use the String Catalog's plural variation system (see §7.1). For strings whose form depends on a numeric count, declare the variations directly in the catalog — translators add the language-specific plural cases (e.g., Russian's 3 forms, Arabic's 6) per-language under the same key.
 
 **Reordering.** Format strings use positional placeholders (`%1$@`, `%2$@`) so translators can reorder. The English `"%1$@ at %2$@"` becomes Japanese `"%2$@に%1$@"` (time before event, particle marker) without code changes.
 
 **List joining.** Use `ListFormatter` keyed to the user's locale, never a hard-coded `joined(separator: ", ")`. English picks up the Oxford comma + "and"; French uses "et"; CJK uses `「、」`; Arabic uses an Arabic comma.
 
 **Authored content.** Event titles, reminder names, notebook titles, page text — never pass through `NSLocalizedString`. The user typed them; we respect their language choice.
+
+### 7.1 String Catalog as the canonical file format
+
+The project uses Apple's **String Catalog** (`.xcstrings`) format, introduced in Xcode 15 and required for new localization work in Xcode 16+. Legacy `Localizable.strings` files and `.stringsdict` files are **not used** in this project.
+
+**Why String Catalog over legacy formats:**
+- Single source-of-truth file (`Localizable.xcstrings`) holding all languages and all plural variations. Avoids the file-explosion of N languages × M domains in `Foo.lproj/Localizable.strings` directories.
+- Auto-extracts strings from `NSLocalizedString(_:value:comment:)` call sites on build. The source code is the source of truth; the catalog is the translation surface that follows.
+- Plurals are first-class — no separate `.stringsdict` file management.
+- Translation state machine is built in: each translation has `state` (`translated`, `needs_review`, `stale`) that Xcode and CI can read.
+- Translator-facing comment is carried from the source `comment:` parameter automatically.
+
+**File location.** `FromInk/FromInk/Localizable.xcstrings` — alongside `Assets.xcassets`, at the project root inside the `FromInk` target's source group. Xcode's `PBXFileSystemSynchronizedRootGroup` picks it up automatically; no manual project file edit beyond `knownRegions`.
+
+**Source language.** `en`. The catalog's `sourceLanguage` field is `en`; every key's English value is the canonical source. When the English `value:` parameter on an `NSLocalizedString` call changes, the corresponding catalog entry's `state` for other languages should transition to `needs_review` so translators (or the next AI translation pass) re-verify.
+
+**Plural variations.** Declared inline in the catalog per-key:
+
+```json
+"home.briefFallback.reminderWithCount" : {
+  "comment" : "Fallback shown when count of overdue reminders varies.",
+  "localizations" : {
+    "en" : {
+      "variations" : {
+        "plural" : {
+          "one" : { "stringUnit" : { "state" : "translated", "value" : "You have one overdue reminder." } },
+          "other" : { "stringUnit" : { "state" : "translated", "value" : "You have %lld overdue reminders." } }
+        }
+      }
+    },
+    "ru" : { /* three forms: one, few, other */ },
+    "ar" : { /* six forms: zero, one, two, few, many, other */ }
+  }
+}
+```
+
+CLDR plural rules determine which forms a language requires. Russian's three (1, 2-4, 5+), Polish's three (1, 2-4 except 12-14, 5+), Arabic's six, Czech's three. Apple's String Catalog editor in Xcode flags missing forms automatically.
+
+**Placeholder consistency.** Every translation of a string with `%@`, `%lld`, `%1$@`, etc. must preserve the same set of placeholders. The catalog validates this on build — a translated string missing a placeholder fails the build with a clear error. CI surfaces this; do not commit translations that drop placeholders.
+
+**State machine for translation lifecycle.** Each `stringUnit` carries a `state`:
+- `translated` — verified, ready to ship.
+- `needs_review` — the source English changed and this translation hasn't been re-verified.
+- `stale` — the key no longer exists in source code (Xcode flags for deletion).
+- (no state) — never translated; falls back to source language at runtime.
+
+CI must fail if any translated language has a `needs_review` state on a key that ships in the build. This is the enforcement mechanism for source-change discipline.
 
 ## 8. Date + Calendar + Locale pattern
 
@@ -233,30 +341,50 @@ The project ships with English as the development language. Localization rollout
 - Every team-authored user-facing string already routes through `AppStrings` per `CLAUDE.md`.
 - Deterministic fallbacks exist for FM-gated features (currently: Daily Brief).
 - `CalendarContext` is the canonical locale/date source.
-- This EDD exists; the language list (§3) is TBD.
+- This EDD exists; the language list (§3) is ratified at 9.
 
-### Phase 1 — Pilot a single non-English language
+The migration to nine languages executes in six concrete batches, ordered to ship the highest-leverage surfaces first. Each batch is sized to be completable in a single focused session — translate, verify catalog format, build verify. Subsequent batches roll forward independently.
 
-- Ratify the target language list (§3).
-- Pick one **non-English, FM-supported** language for the first translation pass — likely Spanish (largest secondary market and shares Latin script). This lets us validate the chrome translation flow without also debugging RTL / non-Latin script / fallback issues.
-- Add the language to `knownRegions` and ship a Spanish `.strings` file.
-- Run the full test suite with Spanish fixtures. Fix gaps.
-- TestFlight with Spanish-locale testers.
+### Phase 1 — Six-batch rollout to 9 languages
 
-### Phase 2 — Add FM-supported languages
+The phase 1 milestone is **catalog complete in all nine languages across all 14 `AppStrings+*.swift` extension files** (~339 string keys total). Batches:
 
-- Roll out remaining FM-supported target languages (Japanese, German, French, Italian, Chinese-Simplified, Portuguese-BR, Korean as applicable).
-- Per language: translation pass → fixture tests → TestFlight.
+| Batch | Domain(s) | Approx. keys | Priority rationale |
+|---|---|---|---|
+| **1** | Infrastructure + Onboarding | ~60 | Most polished English copy; paywall conversion impact; validates the catalog pattern. Sets up `Localizable.xcstrings` and `knownRegions`. |
+| **2** | Bootstrap + Common + Settings | ~40 | App-level chrome, error messages, settings UI. Unblocks the rest of the app being navigable in non-English. |
+| **3** | Home + EventActionSheet + Calendar | ~80 | Daily Brief surface, home masthead, calendar features. Largest user-visible surface after onboarding. |
+| **4** | Library + LibrarySearch + NotebookPicker | ~70 | Notebook collection management. The user's "shelf" surface. |
+| **5** | Dispatch + DispatchModal + DispatchPanel | ~60 | Task routing flow. Connects handwritten capture to native + OAuth integrations. |
+| **6** | Canvas + RegionIndicator + DocumentImport | ~30 | Canvas chrome, region indicators, PDF import. Lowest user-facing copy density (canvas is mostly direct manipulation). |
 
-### Phase 3 — Add FM-unsupported languages
+**Per-batch checklist:**
+1. Translate all keys in the batch's domain(s) into the 8 non-English target languages.
+2. Each translated string carries `state: "translated"` in the catalog.
+3. Placeholder consistency verified — every `%@`, `%lld`, `%1$@` etc. preserved across languages.
+4. Plural variations (where present) cover the CLDR-required forms for each language.
+5. Length-expansion sanity check — any string growing >40% vs English flagged for UI review (potentially breaks layout).
+6. Style guide (§3.1) verified — informal "you", correct register, glossary terms preserved per §3.2.
+7. `xcodebuild` runs clean against iPhone 17 Pro simulator.
 
-- For each target language Apple FM does **not** support, FM-gated surfaces simply do not appear per §5. The user sees the underlying data surfaces (tabs, lists, detail views) in their language; the editorial layer is absent.
-- The translation burden is bounded by chrome — `AppStrings` keys for app structure, button labels, accessibility hints, etc. No "FM-equivalent prose in N languages" obligation exists.
-- This is where RTL, non-Latin script, and non-Gregorian calendar testing earns its keep. The architectural investment from `dates_edd.md` and the locale-aware components ensures the data surfaces themselves are correct in every target language.
+**Translator.** First pass produced by the AI tooling embedded in the development workflow per the Phase-1 acceleration decision; no professional human translator step is enforced for Tier A/B languages (English variants, Spanish, French, German, Italian, Portuguese, Dutch, Catalan). The current 9-language list falls within Tier A/B for AI translation quality. Future expansion into Tier C/D languages (Indic family, Tamil, Bengali, etc.) will require professional native-translator review per the policy in the localization team's accepted-tier policy doc.
 
-### Phase 4 — Ongoing maintenance
+### Phase 2 — App Store metadata localization
 
-- When Apple expands FM language coverage, no code change required — the `supportsLocale` check picks up the new languages automatically. Translation work (if any) is the only follow-up.
+After the in-app catalog is complete in all nine, App Store Connect metadata translates to the same nine. This is text-only work — app name, subtitle, description, keywords, what's new, promotional text — and can be drafted in the same AI translation flow with the same style guide.
+
+### Phase 3 — Screenshot localization (deferred to post-V1)
+
+App Store screenshots in the additional 8 languages are deferred to post-V1 launch. The launch ships with English screenshots; non-English App Store listings use Apple's fallback rule to display the primary-language screenshots until localized ones are produced via Fastlane snapshot automation. See the screenshot automation plan (not in this EDD; lives in operational tooling docs).
+
+### Phase 4 — Expansion past 9 languages
+
+- When Apple expands FM language coverage (currently 8 announced as "coming soon": Danish, Dutch, Norwegian, Portuguese-PT, Swedish, Turkish, Chinese-Traditional, Vietnamese), no code change required — the `supportsLocale` check picks up the new languages automatically. Translation work follows the same six-batch pattern.
+- For FM-unsupported languages (Arabic, Hebrew, Hindi, Thai, Russian, etc.), the architecture in §5 already handles the FM-empty case correctly. Adding such a language is a chrome-translation exercise; the FM editorial layer simply doesn't appear for those users. RTL, non-Latin script, and non-Gregorian calendar testing earns its keep at this phase.
+
+### Phase 5 — Ongoing maintenance
+
+- Source-string changes flag the corresponding translations as `needs_review` per §7.1. CI fails if a `needs_review` state ships in a release build.
 - When the team adds a target language, run the same per-language test obligations from §11.3 against existing features.
 
 ## 13. Cross-references
@@ -272,10 +400,11 @@ The project ships with English as the development language. Localization rollout
 
 | # | Question | Impact |
 |---|---|---|
-| 1 | What are the eight target languages? | §3 is blocked until decided. Blocks all translation work. |
-| 2 | Do we ship regional variants of any language (`pt_BR` + `pt_PT`, `en_US` + `en_GB`, `zh_Hans` + `zh_Hant`)? | Affects FM coverage (PT-PT and ZH-Hant are coming-soon, not live) and translation budget. |
+| ~~1~~ | ~~What are the eight target languages?~~ | **Resolved:** ratified at nine (English plus the 8 FM-supported languages). See §3. |
+| ~~2~~ | ~~Do we ship regional variants?~~ | **Resolved:** `pt-BR` only (no `pt-PT`); `zh-Hans` only (no `zh-Hant`); generic `fr`, `es`, `en` (no regional splits at launch). See §3. |
+| ~~6~~ | ~~Voice / register guidance per language.~~ | **Resolved:** style guide locked in §3.1. Informal "you" universally; JP polite-form `です/ます`; KO `해요체`. |
 | 3 | For FM-unsupported languages, do we localize the FM prompt body or accept English-instructed FM output for the rare case where someone overrides the device language to an unsupported one while we still have FM access? | Edge case. Likely accept English-instructed; the `supportsLocale` gate already prevents this combination. |
 | 4 | Does any third-party integration (Linear, Github, etc. — see `integration_matrix_edd.md`) introduce strings we can't localize? | Their UI we embed (web auth flows) may be English-only. Document per integration. |
-| 5 | When translators ship a `.stringsdict` for plural forms, who owns format-string correctness for languages with 3+ plural cases (Slavic, Arabic)? | Translation vendor obligation; need to specify in the localization brief. |
-| 6 | Voice / register guidance per language. Japanese alone has formal vs. casual register; Korean has multiple honorific levels. Does From Ink standardize? | Affects FM prompt language directive and translation-style guide. |
+| 5 | For Phase 4 expansion into FM-unsupported languages with non-trivial plural rules (Russian, Arabic, Polish), do AI-translated plural forms need professional review? | Yes — defer to professional translators for any language with 3+ plural forms. Document in localization team handoff. |
 | 7 | Brief regeneration on language change. If a Japanese user switches their device to French while a Japanese brief is cached, the cached brief is suddenly the "wrong" language. Should we invalidate? | Today, the cached brief is what it is until the next regen. Probably acceptable. Worth a small task to invalidate `DailyBriefRecord` cache on locale change. |
+| 8 | Audit of all `FoundationModelsService` call sites to ensure each gates with `supportsLocale` per §6.1 / §6.3 — does this audit exist as a tracked task? | Pre-launch hygiene; should land before the V1 submission. |

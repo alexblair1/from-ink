@@ -34,4 +34,19 @@ enum PermissionAuthStatus: Equatable, Sendable {
 
     /// True iff our read paths (events/reminders fetch) will succeed.
     var grantsRead: Bool { self == .fullAccess }
+
+    /// True iff the user must go to Settings to change this status.
+    /// `.notDetermined` doesn't qualify — we can still prompt for that
+    /// in-app via the iOS 17+ EventKit async APIs.
+    ///
+    /// `.writeOnly` qualifies even though the user did grant *something*:
+    /// the brief reads events / reminders, so write-only access leaves
+    /// the page silent. Treating it as "requires Settings" pushes the
+    /// user to upgrade to full access.
+    var requiresSettings: Bool {
+        switch self {
+        case .notDetermined, .fullAccess:     return false
+        case .denied, .restricted, .writeOnly: return true
+        }
+    }
 }

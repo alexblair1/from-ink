@@ -51,6 +51,44 @@ struct TypographyTokens: Sendable {
     /// Button label — SF Pro 15pt medium.
     let buttonLabel: Font
 
+    // MARK: - Onboarding chrome
+    //
+    // Chrome presets only (kicker, button, secondary link, footer note,
+    // body). Hero serif typography is resolved per-screen because each
+    // onboarding screen has its own headline size in the design.
+
+    /// "Kicker" — small mono uppercase eyebrow above each screen's
+    /// headline. SF Mono, fixed 11pt so tracking and case treatment
+    /// stay tight; callers apply `.tracking(0.24em)` + uppercase.
+    let onboardingKicker: Font
+    /// Body paragraph copy on each onboarding screen.
+    /// SF Pro body style — scales with Dynamic Type.
+    let onboardingBody: Font
+    /// Primary CTA label on the footer button.
+    /// SF Pro 16pt medium.
+    let onboardingButtonLabel: Font
+    /// Secondary "Not now" / "Maybe later" text link in the footer.
+    /// SF Mono 11pt — paired with uppercase + 0.18em tracking.
+    let onboardingTextLink: Font
+    /// Mono uppercase note under the secondary link
+    /// ("Then $11.99/year · Cancel anytime"). SF Mono 9.5pt.
+    let onboardingFooterNote: Font
+
+    // MARK: - Tracking
+    //
+    // Letter-spacing values paired with mono uppercase styles. SwiftUI's
+    // `.tracking(_:)` modifier takes a CGFloat in points. Three named
+    // values cover every mono-uppercase use site in the app.
+
+    /// Tight tracking — for very small mono text (footer notes).
+    let monoNoteTracking: CGFloat
+    /// Standard mono uppercase tracking — for secondary text links,
+    /// micro-card eyebrows, and short captions.
+    let monoLinkTracking: CGFloat
+    /// Wide tracking — for prominent eyebrows / kickers where the
+    /// letterspacing should read as editorial.
+    let kickerTracking: CGFloat
+
     // MARK: - Parametric styles
 
     /// Display — New York Light, for date mastheads and marquee titles.
@@ -88,7 +126,15 @@ struct TypographyTokens: Sendable {
         mastheadMonthDay: .system(size: 40, weight: .regular, design: .serif).italic(),
         mastheadWeekdayCompact:  .system(size: 32, weight: .regular, design: .serif),
         mastheadMonthDayCompact: .system(size: 22, weight: .regular, design: .serif).italic(),
-        buttonLabel:      .system(size: 15, weight: .medium, design: .default)
+        buttonLabel:      .system(size: 15, weight: .medium, design: .default),
+        onboardingKicker:      .system(.caption2, design: .monospaced).weight(.medium),
+        onboardingBody:        .system(.body, design: .default),
+        onboardingButtonLabel: .system(.callout, design: .default).weight(.medium),
+        onboardingTextLink:    .system(.caption2, design: .monospaced),
+        onboardingFooterNote:  .system(.caption2, design: .monospaced),
+        monoNoteTracking: 1.4,
+        monoLinkTracking: 2.0,
+        kickerTracking:   2.4
     )
 }
 

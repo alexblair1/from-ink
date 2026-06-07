@@ -27,5 +27,9 @@
 		<key>UIColorName</key>
 		<string>ink/Paper</string>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>From Ink uses the microphone to capture voice notes alongside your handwriting.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>From Ink uses your location to show weather in your morning brief.</string>
 </dict>
 </plist>

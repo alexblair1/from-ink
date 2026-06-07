@@ -27,6 +27,32 @@ struct UserPreferences: Sendable {
     /// `"handedness"` UserDefaults key.
     var loadHandedness: @Sendable () async -> Handedness
     var saveHandedness: @Sendable (Handedness) async -> Void
+
+    /// Whether the user has completed the onboarding flow.
+    /// `true` only after the user reaches the final paywall screen
+    /// and taps the primary CTA. Backing out, force-quitting, or
+    /// failing the boot replays onboarding. Backed by the
+    /// `"hasSeenOnboarding"` UserDefaults key.
+    var loadHasSeenOnboarding: @Sendable () async -> Bool
+    var markOnboardingCompleted: @Sendable () async -> Void
+
+    /// In-progress onboarding step. Persisted across cold launches so
+    /// that if iOS terminates the app while the user is in Settings
+    /// (e.g. after tapping "Open Settings" from the permissions screen
+    /// to grant calendar access), they resume on the same step rather
+    /// than restarting at welcome.
+    ///
+    /// Returns `nil` when no progress has been saved (fresh install or
+    /// after completion clears it).
+    /// Backed by the `"onboardingStep"` UserDefaults key storing the
+    /// step's raw value.
+    var loadOnboardingStep: @Sendable () async -> OnboardingStep?
+    /// Pass non-nil to record the step the user is being routed away
+    /// from (i.e. before opening the system Settings app). Pass nil to
+    /// clear the record (called on `sceneBecameActive` once the user
+    /// has returned). User-initiated kills mid-onboarding never call
+    /// this, so relaunching after a force-quit always lands at welcome.
+    var saveOnboardingStep: @Sendable (OnboardingStep?) async -> Void
 }
 
 // MARK: - DependencyKey
@@ -57,6 +83,25 @@ extension UserPreferences: DependencyKey {
         },
         saveHandedness: { handedness in
             UserDefaults.standard.set(handedness.rawValue, forKey: "handedness")
+        },
+        loadHasSeenOnboarding: {
+            UserDefaults.standard.bool(forKey: "hasSeenOnboarding")
+        },
+        markOnboardingCompleted: {
+            UserDefaults.standard.set(true, forKey: "hasSeenOnboarding")
+            // Completion invalidates any in-progress step record.
+            UserDefaults.standard.removeObject(forKey: "onboardingStep")
+        },
+        loadOnboardingStep: {
+            UserDefaults.standard.string(forKey: "onboardingStep")
+                .flatMap(OnboardingStep.init(rawValue:))
+        },
+        saveOnboardingStep: { step in
+            if let step {
+                UserDefaults.standard.set(step.rawValue, forKey: "onboardingStep")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "onboardingStep")
+            }
         }
     )
 
@@ -72,7 +117,11 @@ extension UserPreferences: DependencyKey {
         loadAppearance: { .system },
         saveAppearance: { _ in },
         loadHandedness: { .right },
-        saveHandedness: { _ in }
+        saveHandedness: { _ in },
+        loadHasSeenOnboarding: { true },
+        markOnboardingCompleted: { },
+        loadOnboardingStep: { nil },
+        saveOnboardingStep: { _ in }
     )
 }
 

@@ -1,7 +1,7 @@
 import Foundation
 
 extension AppStrings {
-    enum Bootstrap {
+    enum Bootstrap { 
         static let unableToStart = NSLocalizedString(
             "bootstrap.unableToStart",
             value: "Unable to Start",
