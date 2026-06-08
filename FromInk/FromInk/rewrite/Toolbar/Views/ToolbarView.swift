@@ -1,63 +1,133 @@
 import SwiftUI
 
-/// Feature view for the toolbar. No TCA imports.
+/// Feature view for the floating-capsule toolbar.
 ///
-/// The rail stretches edge-to-edge vertically. Zones tagged `pinnedTop`
-/// hug the top, `pinnedBottom` zones hug the bottom, and `flexible`
-/// zones live in a scrollable middle so the writing tools stay reachable
-/// even on a short iPhone screen. On tall iPads where everything fits,
-/// `.scrollBounceBehavior(.basedOnSize)` suppresses rubber-banding.
+/// Two stacked capsules:
+///   • Top capsule — drag handle, scrollable tool list, ink readout pinned
+///     at the bottom of the capsule (outside the scroll region).
+///   • Bottom capsule — utility actions (undo / redo / template / settings
+///     / dispatch). Intrinsic height; never scrolls; always fully visible.
+///
+/// Layout rule on tight viewports: the bottom capsule takes priority and
+/// shows all its content; the top capsule occupies the remaining height,
+/// and its internal ScrollView activates when the tool list exceeds that
+/// height. The capsule chrome (drag handle + ink readout) stays pinned.
+///
+/// Component / feature view — no TCA imports.
 struct ToolbarView: View {
     let model: Model
 
     var body: some View {
-        VStack(spacing: 0) {
-            zonesGroup(model.pinnedTopZones)
+        VStack(spacing: model.minCapsuleGap) {
+            topCapsule
+                .frame(maxHeight: .infinity, alignment: .top)
 
-            if model.showsTopBoundaryRule {
-                HairlineRule()
+            bottomCapsule
+        }
+        .padding(.horizontal, model.outerHorizontalInset)
+        .padding(.vertical, model.outerVerticalInset)
+        .frame(maxWidth: .infinity, alignment: model.alignment)
+    }
+
+    // MARK: - Top capsule
+
+    private var topCapsule: some View {
+        VStack(spacing: 0) {
+            if let dragHandle = model.dragHandle {
+                DragHandleView(model: dragHandle)
             }
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    zonesGroup(model.flexibleZones)
+                VStack(spacing: model.interItemSpacing) {
+                    ForEach(model.topItems) { item in
+                        toolbarItem(item)
+                    }
                 }
+                .padding(.vertical, model.dragHandle == nil ? 0 : model.interItemSpacing)
             }
             .scrollBounceBehavior(.basedOnSize)
 
-            if model.showsBottomBoundaryRule {
-                HairlineRule()
+            if let readout = model.inkReadout {
+                capsuleDivider
+                    .padding(.bottom, model.interItemSpacing)
+                InkReadoutView(model: readout)
             }
-
-            zonesGroup(model.pinnedBottomZones)
         }
-        .frame(width: model.width)
-        .frame(maxHeight: .infinity)
-        .background(model.background)
-        .overlay(alignment: model.borderAlignment) {
-            Rectangle()
-                .fill(model.borderColor)
-                .frame(width: model.borderWidth)
+        .padding(.horizontal, model.capsulePaddingHorizontal)
+        .padding(.vertical, model.capsulePaddingVertical)
+        .background(capsuleBackground)
+        .overlay(capsuleBorder)
+        .shadow(
+            color: model.shadowPrimary.color,
+            radius: model.shadowPrimary.radius,
+            x: model.shadowPrimary.x,
+            y: model.shadowPrimary.y
+        )
+        .shadow(
+            color: model.shadowAmbient.color,
+            radius: model.shadowAmbient.radius,
+            x: model.shadowAmbient.x,
+            y: model.shadowAmbient.y
+        )
+    }
+
+    // MARK: - Bottom capsule
+
+    @ViewBuilder
+    private var bottomCapsule: some View {
+        if !model.bottomItems.isEmpty {
+            VStack(spacing: model.interItemSpacing) {
+                ForEach(model.bottomItems) { item in
+                    toolbarItem(item)
+                }
+            }
+            .padding(.horizontal, model.capsulePaddingHorizontal)
+            .padding(.vertical, model.capsulePaddingVertical)
+            .background(capsuleBackground)
+            .overlay(capsuleBorder)
+            .shadow(
+                color: model.shadowPrimary.color,
+                radius: model.shadowPrimary.radius,
+                x: model.shadowPrimary.x,
+                y: model.shadowPrimary.y
+            )
+            .shadow(
+                color: model.shadowAmbient.color,
+                radius: model.shadowAmbient.radius,
+                x: model.shadowAmbient.x,
+                y: model.shadowAmbient.y
+            )
         }
     }
 
+    // MARK: - Helpers
+
     @ViewBuilder
-    private func zonesGroup(_ zones: [Model.Zone]) -> some View {
-        ForEach(Array(zones.enumerated()), id: \.element.id) { index, zone in
-            if index > 0 && !zone.items.isEmpty {
-                HairlineRule()
-            }
-            ForEach(zone.items) { item in
-                switch item {
-                case .toolButton(let buttonModel):
-                    ToolButtonView(model: buttonModel)
-                case .actionButton(let buttonModel):
-                    ActionButtonView(model: buttonModel)
-                case .dragHandle(let handleModel):
-                    DragHandleView(model: handleModel)
-                }
-            }
+    private func toolbarItem(_ item: Model.Item) -> some View {
+        switch item {
+        case .toolButton(let buttonModel):
+            ToolButtonView(model: buttonModel)
+        case .actionButton(let buttonModel):
+            ActionButtonView(model: buttonModel)
         }
+    }
+
+    private var capsuleBackground: some View {
+        RoundedRectangle(cornerRadius: model.cornerRadius, style: .continuous)
+            .fill(model.capsuleFill)
+    }
+
+    private var capsuleBorder: some View {
+        RoundedRectangle(cornerRadius: model.cornerRadius, style: .continuous)
+            .stroke(model.capsuleBorder, lineWidth: model.borderWidth)
+    }
+
+    private var capsuleDivider: some View {
+        Rectangle()
+            .fill(model.capsuleBorder)
+            .frame(width: model.internalRuleWidth, height: 1)
+            .opacity(0.7)
+            .padding(.top, model.interItemSpacing)
     }
 }
 
@@ -65,35 +135,41 @@ struct ToolbarView: View {
 
 extension ToolbarView {
     struct Model {
-        let pinnedTopZones: [Zone]
-        let flexibleZones: [Zone]
-        let pinnedBottomZones: [Zone]
-        let showsTopBoundaryRule: Bool
-        let showsBottomBoundaryRule: Bool
-        let borderAlignment: Alignment
-        let width: CGFloat
-        let background: Color
-        let borderColor: Color
-        let borderWidth: CGFloat
+        /// Optional drag handle pinned at the top of the top capsule.
+        let dragHandle: DragHandleView.Model?
+        /// Tools (and bolt) rendered inside the scrollable region of the
+        /// top capsule, in order.
+        let topItems: [Item]
+        /// Ink readout pinned to the bottom of the top capsule. nil hides
+        /// the readout and its divider (e.g. when no settings are loaded
+        /// yet on first launch).
+        let inkReadout: InkReadoutView.Model?
+        /// Actions rendered inside the bottom capsule, in order.
+        let bottomItems: [Item]
 
-        struct Zone: Identifiable {
-            let id: String
-            let items: [Item]
-        }
+        let alignment: Alignment
+        let outerHorizontalInset: CGFloat
+        let outerVerticalInset: CGFloat
+        let minCapsuleGap: CGFloat
+        let capsulePaddingHorizontal: CGFloat
+        let capsulePaddingVertical: CGFloat
+        let interItemSpacing: CGFloat
+        let internalRuleWidth: CGFloat
+        let cornerRadius: CGFloat
+        let borderWidth: CGFloat
+        let capsuleFill: Color
+        let capsuleBorder: Color
+        let shadowPrimary: ShadowTokens.Shadow
+        let shadowAmbient: ShadowTokens.Shadow
 
         enum Item: Identifiable {
             case toolButton(ToolButtonView.Model)
             case actionButton(ActionButtonView.Model)
-            case dragHandle(DragHandleView.Model)
 
             var id: String {
                 switch self {
-                case .toolButton(let m):
-                    "tool-\(m.id)"
-                case .actionButton(let m):
-                    "action-\(m.id)"
-                case .dragHandle:
-                    "handle"
+                case .toolButton(let m):   "tool-\(m.id)"
+                case .actionButton(let m): "action-\(m.id)"
                 }
             }
         }
@@ -104,21 +180,30 @@ extension ToolbarView {
 
 extension ToolbarView.Model {
     init(
-        pinnedTopZones: [Zone],
-        flexibleZones: [Zone],
-        pinnedBottomZones: [Zone],
+        dragHandle: DragHandleView.Model?,
+        topItems: [Item],
+        inkReadout: InkReadoutView.Model?,
+        bottomItems: [Item],
         side: ToolbarSide,
         ds: DesignSystem = .standard
     ) {
-        self.pinnedTopZones = pinnedTopZones
-        self.flexibleZones = flexibleZones
-        self.pinnedBottomZones = pinnedBottomZones
-        self.showsTopBoundaryRule = !pinnedTopZones.isEmpty && !flexibleZones.isEmpty
-        self.showsBottomBoundaryRule = !flexibleZones.isEmpty && !pinnedBottomZones.isEmpty
-        self.borderAlignment = side == .left ? .trailing : .leading
-        self.width = ds.layout.toolbarWidth
-        self.background = ds.colors.paper
-        self.borderColor = ds.colors.rule
+        self.dragHandle = dragHandle
+        self.topItems = topItems
+        self.inkReadout = inkReadout
+        self.bottomItems = bottomItems
+        self.alignment = side == .left ? .leading : .trailing
+        self.outerHorizontalInset = ds.layout.toolbarCapsuleHorizontalInset
+        self.outerVerticalInset = ds.layout.toolbarCapsuleVerticalInset
+        self.minCapsuleGap = ds.layout.toolbarCapsuleMinPillGap
+        self.capsulePaddingHorizontal = ds.layout.toolbarCapsulePaddingHorizontal
+        self.capsulePaddingVertical = ds.layout.toolbarCapsulePaddingVertical
+        self.interItemSpacing = ds.layout.toolbarCapsuleInterItemSpacing
+        self.internalRuleWidth = ds.layout.toolbarCapsuleInternalRuleWidth
+        self.cornerRadius = ds.layout.toolbarCapsuleCornerRadius
         self.borderWidth = ds.layout.borderWidth
+        self.capsuleFill = ds.colors.paper
+        self.capsuleBorder = ds.colors.rule
+        self.shadowPrimary = ds.shadow.toolbarCapsulePrimary
+        self.shadowAmbient = ds.shadow.toolbarCapsuleAmbient
     }
 }

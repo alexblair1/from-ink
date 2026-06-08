@@ -25,83 +25,108 @@ struct ToolbarWiringView: View {
 
 extension ToolbarView.Model {
     init(store: StoreOf<ToolbarFeature>, zones: [ToolbarZoneConfig]) {
-        // Build the rendered Zone for each config, then bucket by
-        // placement so the view layer can lay out pinned-top /
-        // flexible-middle / pinned-bottom regions independently.
-        let viewZones: [(ToolbarZoneConfig.Placement, ToolbarView.Model.Zone)] = zones.compactMap { zone in
-            let items: [ToolbarView.Model.Item] = zone.items.compactMap { item in
-                Self.resolveItem(item, store: store)
+        // Resolve each configured zone item into a concrete view item.
+        // Items that the current store state hides (e.g. bolt when
+        // `isBoltVisible == false`) drop out via the compactMap; the
+        // drag handle is hoisted out of the items stream and pinned to
+        // the top of the top capsule.
+        var dragHandle: DragHandleView.Model?
+        var topItems: [ToolbarView.Model.Item] = []
+        var bottomItems: [ToolbarView.Model.Item] = []
+
+        for zone in zones {
+            for item in zone.items {
+                switch item {
+                case .dragHandle:
+                    dragHandle = DragHandleView.Model(
+                        onDragEnded: { side in store.send(.sideChanged(side)) }
+                    )
+
+                case .tool(let descriptor):
+                    let isActive = store.activeToolID == descriptor.id
+                    let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon
+                        ?? descriptor.icon
+                    let toolItem: ToolbarView.Model.Item = .toolButton(
+                        ToolButtonView.Model(
+                            id: descriptor.id.rawValue,
+                            icon: icon,
+                            onTap: { store.send(.toolTapped(descriptor.id)) },
+                            isActive: isActive
+                        )
+                    )
+                    Self.appendItem(toolItem, to: zone.placement,
+                                    top: &topItems, bottom: &bottomItems)
+
+                case .action(let actionID, let icon):
+                    let actionItem: ToolbarView.Model.Item = .actionButton(
+                        ActionButtonView.Model(
+                            id: actionID.rawValue,
+                            icon: icon,
+                            onTap: {
+                                switch actionID {
+                                case .undo: store.send(.undoTapped)
+                                case .redo: store.send(.redoTapped)
+                                case .template: store.send(.templatePickerToggled)
+                                case .settings: store.send(.settingsToggled)
+                                case .dispatch: store.send(.dispatchTapped)
+                                }
+                            }
+                        )
+                    )
+                    Self.appendItem(actionItem, to: zone.placement,
+                                    top: &topItems, bottom: &bottomItems)
+
+                case .bolt:
+                    guard store.isBoltVisible else { continue }
+                    let boltItem: ToolbarView.Model.Item = .actionButton(
+                        ActionButtonView.Model(
+                            id: "bolt",
+                            icon: "sparkles.rectangle.stack",
+                            onTap: { store.send(.analyzeTapped) }
+                        )
+                    )
+                    Self.appendItem(boltItem, to: zone.placement,
+                                    top: &topItems, bottom: &bottomItems)
+                }
             }
-            guard !items.isEmpty else { return nil }
-            return (zone.placement, ToolbarView.Model.Zone(id: zone.id, items: items))
         }
 
-        let pinnedTop = viewZones.filter { $0.0 == .pinnedTop }.map { $0.1 }
-        let flexible = viewZones.filter { $0.0 == .flexible }.map { $0.1 }
-        let pinnedBottom = viewZones.filter { $0.0 == .pinnedBottom }.map { $0.1 }
+        // Ink readout reads from the active settings. Hidden until the
+        // user-preferences-load Effect resolves (`activeSettings` is still
+        // `.default`, which doesn't carry meaningful "active" semantics
+        // until tools are loaded). Showing it always is fine — the
+        // default settings render as a HB graphite chip at the smallest
+        // pip size, which is a reasonable rest state.
+        let readout = InkReadoutView.Model(
+            settings: store.activeSettings,
+            accessibilityLabel: ""  // TODO: localized "Active ink: …" via AppStrings
+        )
 
         self.init(
-            pinnedTopZones: pinnedTop,
-            flexibleZones: flexible,
-            pinnedBottomZones: pinnedBottom,
+            dragHandle: dragHandle,
+            topItems: topItems,
+            inkReadout: readout,
+            bottomItems: bottomItems,
             side: store.side
         )
     }
 
-    private static func resolveItem(
-        _ item: ToolbarZoneItem,
-        store: StoreOf<ToolbarFeature>
-    ) -> ToolbarView.Model.Item? {
-        switch item {
-        case .tool(let descriptor):
-            let isActive = store.activeToolID == descriptor.id
-            let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon
-                ?? descriptor.icon
-
-            return .toolButton(
-                ToolButtonView.Model(
-                    id: descriptor.id.rawValue,
-                    icon: icon,
-                    onTap: { store.send(.toolTapped(descriptor.id)) },
-                    isActive: isActive
-                )
-            )
-
-        case .action(let actionID, let icon):
-            return .actionButton(
-                ActionButtonView.Model(
-                    id: actionID.rawValue,
-                    icon: icon,
-                    onTap: {
-                        switch actionID {
-                        case .undo: store.send(.undoTapped)
-                        case .redo: store.send(.redoTapped)
-                        case .template: store.send(.templatePickerToggled)
-                        case .settings: store.send(.settingsToggled)
-                        case .dispatch: store.send(.dispatchTapped)
-                        }
-                    }
-                )
-            )
-
-        case .bolt:
-            guard store.isBoltVisible else { return nil }
-            return .actionButton(
-                ActionButtonView.Model(
-                    id: "bolt",
-                    icon: "sparkles.rectangle.stack",
-                    onTap: { store.send(.analyzeTapped) }
-                )
-            )
-
-        case .dragHandle:
-            return .dragHandle(
-                DragHandleView.Model(
-                    onDragEnded: { side in
-                        store.send(.sideChanged(side))
-                    }
-                )
-            )
+    /// Routes a resolved item into the top or bottom capsule based on
+    /// its zone placement. `.pinnedTop` and `.flexible` zones live in
+    /// the top capsule (the top capsule scrolls when squeezed);
+    /// `.pinnedBottom` lives in the bottom capsule (priority — always
+    /// fully visible).
+    private static func appendItem(
+        _ item: ToolbarView.Model.Item,
+        to placement: ToolbarZoneConfig.Placement,
+        top: inout [ToolbarView.Model.Item],
+        bottom: inout [ToolbarView.Model.Item]
+    ) {
+        switch placement {
+        case .pinnedTop, .flexible:
+            top.append(item)
+        case .pinnedBottom:
+            bottom.append(item)
         }
     }
 }
