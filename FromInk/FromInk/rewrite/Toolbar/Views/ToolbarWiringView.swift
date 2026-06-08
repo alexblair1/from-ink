@@ -57,15 +57,13 @@ extension ToolbarView.Model {
             let isActive = store.activeToolID == descriptor.id
             let icon = store.toolSettings[id: descriptor.id]?.settings.penType.icon
                 ?? descriptor.icon
-            let ds = DesignSystem.standard
 
             return .toolButton(
                 ToolButtonView.Model(
                     id: descriptor.id.rawValue,
                     icon: icon,
                     onTap: { store.send(.toolTapped(descriptor.id)) },
-                    foreground: isActive ? ds.colors.paperPure : ds.colors.inkPure,
-                    background: isActive ? ds.colors.inkPure : .clear
+                    isActive: isActive
                 )
             )
 

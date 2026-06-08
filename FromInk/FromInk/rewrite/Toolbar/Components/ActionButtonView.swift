@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// An action icon button in the toolbar (undo, redo, template, settings).
-/// Component view — no TCA imports.
+/// An action icon button in a toolbar capsule (undo, redo, template,
+/// settings, dispatch, bolt). Component view — no TCA imports.
 ///
+/// Same round treatment as ToolButtonView but action buttons are never
+/// "active" in the persistent sense — they fire a one-shot. No scale,
+/// no shadow at rest. A pressed/hover treatment can be added later via
+/// ButtonStyle if needed.
 struct ActionButtonView: View {
     let model: Model
 
@@ -12,8 +16,8 @@ struct ActionButtonView: View {
                 .font(.system(size: model.iconSize, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(model.foreground)
-                .frame(width: model.width, height: model.height)
-                .contentShape(Rectangle())
+                .frame(width: model.size, height: model.size)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
@@ -26,8 +30,7 @@ extension ActionButtonView {
         let id: String
         let icon: String
         let onTap: () -> Void
-        let width: CGFloat
-        let height: CGFloat
+        let size: CGFloat
         let iconSize: CGFloat
         let foreground: Color
     }
@@ -45,8 +48,7 @@ extension ActionButtonView.Model {
         self.id = id
         self.icon = icon
         self.onTap = onTap
-        self.width = ds.layout.toolbarWidth
-        self.height = ds.layout.toolbarButtonHeight
+        self.size = ds.layout.toolbarCapsuleButtonSize
         self.iconSize = ds.layout.actionIconSize
         self.foreground = ds.colors.inkPure
     }
