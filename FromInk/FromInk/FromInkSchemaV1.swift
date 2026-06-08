@@ -30,6 +30,7 @@ enum FromInkSchemaV1: VersionedSchema {
             DailyBriefRecord.self,
             CalendarItemLink.self,
             NoteRegion.self,
+            PageBlock.self,
         ]
     }
 }

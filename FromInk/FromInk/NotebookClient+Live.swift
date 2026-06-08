@@ -649,6 +649,203 @@ extension NotebookClient {
                 }
             },
 
+            // MARK: - Page blocks
+            fetchBlocksForPage: { pageID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
+                        throw NotebookClientError.pageNotFound(pageID)
+                    }
+                    return (page.blocks ?? [])
+                        .sorted { $0.sortIndex < $1.sortIndex }
+                        .map { PageBlockSnapshot(model: $0, loadDrawingData: false) }
+                }
+            },
+            loadBlockDrawing: { blockID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    return try fetchBlockModel(id: blockID, ctx: ctx)?.drawingData
+                }
+            },
+            insertBlock: { pageID, kind, afterBlockID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
+                        throw NotebookClientError.pageNotFound(pageID)
+                    }
+                    let existing = (page.blocks ?? []).sorted { $0.sortIndex < $1.sortIndex }
+                    let insertIndex: Int = {
+                        guard let afterID = afterBlockID,
+                              let after = existing.firstIndex(where: { $0.id == afterID })
+                        else { return existing.count }
+                        return after + 1
+                    }()
+
+                    // Shift existing blocks at/after the insertion point down by 1.
+                    for (i, block) in existing.enumerated() where i >= insertIndex {
+                        block.sortIndex = i + 1
+                    }
+
+                    let now = calendarContext.now()
+                    let new = PageBlock(
+                        page: page,
+                        sortIndex: insertIndex,
+                        kind: kind,
+                        heightPoints: 200
+                    )
+                    ctx.insert(new)
+                    page.modifiedAt = now
+                    page.notebook?.modifiedAt = now
+                    page.recomputeExtractedAggregates()
+                    try ctx.save()
+                    return PageBlockSnapshot(model: new, loadDrawingData: false)
+                }
+            },
+            updateBlockBody: { blockID, bodyData, plainText in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    block.bodyData = bodyData
+                    block.plainText = plainText
+                    block.contentHash = PageBlock.sha256(plainText)
+                    let now = calendarContext.now()
+                    block.modifiedAt = now
+                    block.page?.modifiedAt = now
+                    block.page?.notebook?.modifiedAt = now
+                    block.page?.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+            updateBlockDrawing: { blockID, drawingData, thumbnailData in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    block.drawingData = drawingData
+                    if let thumbnailData {
+                        block.thumbnailData = thumbnailData
+                    }
+                    // contentHash for ink covers the OCR text; this method
+                    // doesn't trigger OCR (the OCR service owns that path).
+                    block.contentHash = PageBlock.sha256(block.ocrText ?? "")
+                    let now = calendarContext.now()
+                    block.modifiedAt = now
+                    block.page?.modifiedAt = now
+                    block.page?.notebook?.modifiedAt = now
+                    block.page?.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+            updateBlockOCR: { blockID, ocrText in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    block.ocrText = ocrText
+                    block.ocrUpdatedAt = calendarContext.now()
+                    block.contentHash = PageBlock.sha256(ocrText)
+                    block.page?.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+            updateBlockVoice: { blockID, audioData, transcript, confidence, durationSeconds, language in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    block.audioData = audioData
+                    block.transcript = transcript
+                    block.transcriptConfidence = confidence
+                    block.audioDurationSeconds = durationSeconds
+                    block.transcriptLanguage = language
+                    block.contentHash = PageBlock.sha256(transcript)
+                    let now = calendarContext.now()
+                    block.modifiedAt = now
+                    block.page?.modifiedAt = now
+                    block.page?.notebook?.modifiedAt = now
+                    block.page?.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+            updateBlockHeight: { blockID, heightPoints in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    // No-op for text / voice blocks — they compute their own
+                    // height. Only ink blocks honor a user-set drag-bar height.
+                    guard block.kind == .ink else { return }
+                    block.heightPoints = heightPoints
+                    block.modifiedAt = calendarContext.now()
+                    try ctx.save()
+                }
+            },
+            deleteBlock: { blockID in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
+                        throw NotebookClientError.blockNotFound(blockID)
+                    }
+                    let page = block.page
+                    ctx.delete(block)
+
+                    // Reindex remaining siblings so the sort order stays gapless.
+                    let remaining = (page?.blocks ?? [])
+                        .filter { $0.id != blockID }
+                        .sorted { $0.sortIndex < $1.sortIndex }
+                    for (i, sibling) in remaining.enumerated() {
+                        sibling.sortIndex = i
+                    }
+
+                    let now = calendarContext.now()
+                    page?.modifiedAt = now
+                    page?.notebook?.modifiedAt = now
+                    page?.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+            reorderBlocks: { pageID, orderedBlockIDs in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
+                        throw NotebookClientError.pageNotFound(pageID)
+                    }
+                    let blocksByID = Dictionary(
+                        uniqueKeysWithValues: (page.blocks ?? []).map { ($0.id, $0) }
+                    )
+                    for (i, id) in orderedBlockIDs.enumerated() {
+                        blocksByID[id]?.sortIndex = i
+                    }
+                    let now = calendarContext.now()
+                    page.modifiedAt = now
+                    page.notebook?.modifiedAt = now
+                    page.recomputeExtractedAggregates()
+                    try ctx.save()
+                }
+            },
+
+            // MARK: - Canonical canvas binding
+            bindCanonicalCanvasWidth: { notebookID, width in
+                try await MainActor.run {
+                    let ctx = modelContext.context()
+                    guard let nb = try fetchNotebookModel(id: notebookID, ctx: ctx) else {
+                        throw NotebookClientError.notebookNotFound(notebookID)
+                    }
+                    // Idempotent: only set once, then frozen. The 768pt
+                    // default counts as "not yet bound" for this purpose —
+                    // a notebook with no ink yet snaps on first stroke.
+                    guard nb.canonicalCanvasWidth == 768 else { return }
+                    nb.canonicalCanvasWidth = width
+                    try ctx.save()
+                }
+            },
+
             // MARK: - Folders
             createFolder: { name, parentID in
                 try await MainActor.run {
@@ -763,6 +960,12 @@ private func fetchPageModel(id: UUID, ctx: ModelContext) throws -> NotePage? {
 @MainActor
 private func fetchRegionModel(id: UUID, ctx: ModelContext) throws -> NoteRegion? {
     let descriptor = FetchDescriptor<NoteRegion>(predicate: #Predicate { $0.id == id })
+    return try ctx.fetch(descriptor).first
+}
+
+@MainActor
+private func fetchBlockModel(id: UUID, ctx: ModelContext) throws -> PageBlock? {
+    let descriptor = FetchDescriptor<PageBlock>(predicate: #Predicate { $0.id == id })
     return try ctx.fetch(descriptor).first
 }
 

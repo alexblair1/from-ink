@@ -34,9 +34,29 @@ import SwiftData
 @Model final class NoteRegion {
     var id: UUID = UUID()
 
+    // MARK: Anchor (text experience EDD §11)
+
+    /// The `PageBlock` that owns this region's anchor. nil during the
+    /// legacy / pre-block window — the canvas refactor (EDD §22.5)
+    /// populates this for every existing region in the same commit
+    /// that retires `NotePage.drawingData`. New regions created via
+    /// `NotebookClient.addRegion(...)` set this at write time.
+    var anchorBlockID: UUID? = nil
+
+    /// Discriminates the anchor shape. `.inkRect` reads `rectX/Y/W/H`;
+    /// `.textRange` carries no offsets here — the authoritative span
+    /// lives in the text block's archived `AttributedString` as a
+    /// `RegionAnchorAttribute` value equal to this region's `id`.
+    var anchorKindRaw: String = NoteRegionAnchorKind.inkRect.rawValue
+
+    var anchorKind: NoteRegionAnchorKind {
+        get { NoteRegionAnchorKind(rawValue: anchorKindRaw) ?? .inkRect }
+        set { anchorKindRaw = newValue.rawValue }
+    }
+
     // Bounding box — CloudKit-friendly scalars, projected through the
     // computed `rect` property below. Same shape as `NoteHeader` /
-    // `NoteLink` so the migration is purely additive.
+    // `NoteLink`. Read only when `anchorKind == .inkRect`.
     var rectX: Double = 0
     var rectY: Double = 0
     var rectWidth: Double = 0

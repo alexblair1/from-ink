@@ -33,6 +33,16 @@ import SwiftData
         set { notebookTypeRaw = newValue.rawValue }
     }
 
+    /// Canonical canvas width for ink coordinates in this notebook.
+    /// Defaults to 768pt (iPad 11" portrait); bound on first ink stroke
+    /// to the authoring device's portrait width via `NotebookClient.
+    /// bindCanonicalWidth(_:)`. Never changes after the binding is set.
+    ///
+    /// Render scale at any viewport: `viewport.width / canonicalCanvasWidth`,
+    /// clamped by `CanvasGeometry.minScale` and `.hybridMaxScale`. See
+    /// text experience EDD §6.1 for the full canvas-geometry rules.
+    var canonicalCanvasWidth: Double = 768
+
     /// CloudKit record ID of the user who created this notebook.
     /// Placeholder for future shared-notebook attribution; nil for
     /// single-user records.

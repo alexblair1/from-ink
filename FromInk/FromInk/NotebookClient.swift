@@ -154,6 +154,107 @@ struct NotebookClient: Sendable {
     /// preserving the rest.
     var deleteRegion: @Sendable (_ regionID: UUID) async throws -> Void
 
+    // MARK: - Page blocks (text experience EDD §5)
+    //
+    // Block-level CRUD for the hybrid text + ink + voice page model.
+    // These coexist with the legacy `saveDrawing` / `updateOCR` /
+    // `updateTypedText` methods above during the rollout window; the
+    // CanvasScreen refactor retires the legacy path.
+    //
+    // Every mutating method bumps the parent page's `modifiedAt` and
+    // calls `NotePage.recomputeExtractedAggregates()` so search /
+    // ML caches stay current without callers having to remember.
+
+    /// Read all blocks on a page, ordered by `sortIndex`. Snapshots
+    /// project the model with `loadDrawingData: false` — callers
+    /// promote individual ink blocks to live by `loadBlockDrawing`.
+    var fetchBlocksForPage: @Sendable (_ pageID: UUID) async throws -> [PageBlockSnapshot]
+
+    /// Lazy load the drawing payload for a single ink block. Used by
+    /// the per-block lifecycle (EDD §6.4.1) when promoting from
+    /// thumbnail to live state.
+    var loadBlockDrawing: @Sendable (_ blockID: UUID) async throws -> Data?
+
+    /// Insert a new block at the given `sortIndex`. Existing blocks at
+    /// or after that index shift down. Returns the new block's snapshot.
+    /// Passing `afterBlockID: nil` and `sortIndex: 0` appends at the head;
+    /// passing `afterBlockID: x` and any `sortIndex` inserts immediately
+    /// after block `x` and reindexes accordingly.
+    var insertBlock: @Sendable (
+        _ pageID: UUID,
+        _ kind: PageBlockKind,
+        _ afterBlockID: UUID?
+    ) async throws -> PageBlockSnapshot
+
+    /// Write a text block's archived body + recompute its `plainText`
+    /// mirror + `contentHash`. The data is the Codable (Path B) or
+    /// archiver-bridged (Path A fallback) form of the
+    /// `AttributedString`. Caller is responsible for choosing the
+    /// encoding; the model layer doesn't know which path is in use.
+    var updateBlockBody: @Sendable (
+        _ blockID: UUID,
+        _ bodyData: Data,
+        _ plainText: String
+    ) async throws -> Void
+
+    /// Write an ink block's drawing payload + thumbnail. Re-runs the
+    /// per-block content hash from the *current* `ocrText` (this method
+    /// doesn't run OCR; the OCR service writes through
+    /// `updateBlockOCR` separately).
+    var updateBlockDrawing: @Sendable (
+        _ blockID: UUID,
+        _ drawingData: Data,
+        _ thumbnailData: Data?
+    ) async throws -> Void
+
+    /// Write an ink block's OCR text + bump its `ocrUpdatedAt`. Refreshes
+    /// the per-block `contentHash` and the page-level aggregates.
+    var updateBlockOCR: @Sendable (
+        _ blockID: UUID,
+        _ ocrText: String
+    ) async throws -> Void
+
+    /// Write a voice block's audio + transcript + metadata.
+    var updateBlockVoice: @Sendable (
+        _ blockID: UUID,
+        _ audioData: Data?,
+        _ transcript: String,
+        _ confidence: Double,
+        _ durationSeconds: Double,
+        _ language: String?
+    ) async throws -> Void
+
+    /// Adjust an ink block's user-set `heightPoints`. No-op on text /
+    /// voice blocks (they size themselves). Reducer validates the
+    /// minimum height against the block's ink bounding box before
+    /// committing.
+    var updateBlockHeight: @Sendable (
+        _ blockID: UUID,
+        _ heightPoints: Double
+    ) async throws -> Void
+
+    /// Delete a block and reindex siblings.
+    var deleteBlock: @Sendable (_ blockID: UUID) async throws -> Void
+
+    /// Reorder all blocks on a page. The list is the new sortIndex
+    /// order — element 0 → sortIndex 0, etc. Any block IDs missing
+    /// from the list keep their existing sortIndex (callers should
+    /// pass the full ordering).
+    var reorderBlocks: @Sendable (
+        _ pageID: UUID,
+        _ orderedBlockIDs: [UUID]
+    ) async throws -> Void
+
+    // MARK: - Canonical canvas binding
+
+    /// Records the per-notebook canonical canvas width on first ink
+    /// stroke. Idempotent: subsequent calls are no-ops because the
+    /// width is set once and held. See text experience EDD §6.1.
+    var bindCanonicalCanvasWidth: @Sendable (
+        _ notebookID: UUID,
+        _ width: Double
+    ) async throws -> Void
+
     // MARK: - Folders / Tags
     var createFolder: @Sendable (_ name: String, _ parentID: UUID?) async throws -> FolderSnapshot
     var deleteFolder: @Sendable (_ id: UUID) async throws -> Void
@@ -265,6 +366,7 @@ enum NotebookClientError: Error, Equatable, Sendable {
     case headerNotFound(UUID)
     case linkNotFound(UUID)
     case regionNotFound(UUID)
+    case blockNotFound(UUID)
     case folderNotFound(UUID)
     case tagNotFound(UUID)
     case historyEntryNotFound(UUID)
@@ -345,6 +447,17 @@ extension NotebookClient: DependencyKey {
         updateRegionHeader: { _, _ in throw CancellationError() },
         updateRegionLink: { _, _ in throw CancellationError() },
         deleteRegion: { _ in throw CancellationError() },
+        fetchBlocksForPage: { _ in throw CancellationError() },
+        loadBlockDrawing: { _ in throw CancellationError() },
+        insertBlock: { _, _, _ in throw CancellationError() },
+        updateBlockBody: { _, _, _ in throw CancellationError() },
+        updateBlockDrawing: { _, _, _ in throw CancellationError() },
+        updateBlockOCR: { _, _ in throw CancellationError() },
+        updateBlockVoice: { _, _, _, _, _, _ in throw CancellationError() },
+        updateBlockHeight: { _, _ in throw CancellationError() },
+        deleteBlock: { _ in throw CancellationError() },
+        reorderBlocks: { _, _ in throw CancellationError() },
+        bindCanonicalCanvasWidth: { _, _ in throw CancellationError() },
         createFolder: { _, _ in throw CancellationError() },
         deleteFolder: { _ in throw CancellationError() },
         moveNotebookToFolder: { _, _ in throw CancellationError() },
