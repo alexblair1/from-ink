@@ -82,6 +82,64 @@ struct LayoutTokens: Sendable {
     /// Symbols used in those rows.
     let onboardingPermissionRowIconColumn: CGFloat
 
+    // MARK: - Floating chrome (capsule toolbar, accessory bar, slash menu)
+    //
+    // Floating chrome elements detach from the screen edge and convey
+    // elevation via shadow + border + corner radius. See `ShadowTokens`
+    // for the matching shadow values. These tokens are reused by the
+    // notebook toolbar today and by the text accessory bar / slash menu
+    // when the text experience lands.
+
+    /// Capsule corner radius. 26pt produces a true capsule for the
+    /// 50pt-wide button column plus padding (50 + 10×2 = 70 → radius
+    /// equal to half-height of an 8-button stack would over-round; 26
+    /// keeps the pill ends round and the sides barely flat).
+    let toolbarCapsuleCornerRadius: CGFloat
+    /// Horizontal inset between the capsule and the screen edge.
+    let toolbarCapsuleHorizontalInset: CGFloat
+    /// Vertical inset between the capsule and the safe-area top / bottom.
+    let toolbarCapsuleVerticalInset: CGFloat
+    /// Horizontal padding inside the capsule (capsule wall → button column).
+    let toolbarCapsulePaddingHorizontal: CGFloat
+    /// Vertical padding inside the capsule (capsule top/bottom → first/last button).
+    let toolbarCapsulePaddingVertical: CGFloat
+    /// Vertical gap between buttons inside the capsule.
+    let toolbarCapsuleInterItemSpacing: CGFloat
+    /// Minimum vertical breathing room between the top and bottom capsules.
+    /// The top capsule's content starts scrolling when allocating less than
+    /// this gap to the gap would otherwise be required.
+    let toolbarCapsuleMinPillGap: CGFloat
+    /// Width of the hairline rule that separates sections inside a capsule
+    /// (e.g. tools vs ink readout in the top capsule).
+    let toolbarCapsuleInternalRuleWidth: CGFloat
+    /// Round button diameter inside a capsule. Buttons are circular —
+    /// width and height are this value, corner radius is half of it.
+    let toolbarCapsuleButtonSize: CGFloat
+    /// Scale applied to an active (selected) button. Cubic-bezier
+    /// `pop` motion in the prototype maps to a linear lift in our
+    /// animation system; the visible effect is the scale value.
+    let toolbarCapsuleActiveScale: CGFloat
+
+    // MARK: - Ink readout (bottom of the top capsule)
+
+    /// Diameter of the inked color chip.
+    let inkReadoutChipSize: CGFloat
+    /// Thickness of the paper ring around the chip (inner ring).
+    let inkReadoutChipInnerRingWidth: CGFloat
+    /// Thickness of the rule ring around the chip (outer ring).
+    let inkReadoutChipOuterRingWidth: CGFloat
+    /// Number of weight pips rendered. The pips visualize the active
+    /// stroke thickness — diameter scales with `thicknessIndex`.
+    let inkReadoutPipCount: Int
+    /// Minimum pip diameter (at thinnest stroke).
+    let inkReadoutPipMinSize: CGFloat
+    /// Maximum pip diameter (at thickest stroke).
+    let inkReadoutPipMaxSize: CGFloat
+    /// Horizontal gap between adjacent pips.
+    let inkReadoutPipGap: CGFloat
+    /// Vertical gap between the chip and the pip row.
+    let inkReadoutSectionGap: CGFloat
+
     static let standard = LayoutTokens(
         hitTarget: 44,
         toolbarWidth: 48,
@@ -126,7 +184,75 @@ struct LayoutTokens: Sendable {
         onboardingSwitchThumbDiameter: 22,
         onboardingSwitchThumbInset: 3,
         onboardingFeatureRowIconColumn: 30,
-        onboardingPermissionRowIconColumn: 34
+        onboardingPermissionRowIconColumn: 34,
+        toolbarCapsuleCornerRadius: 26,
+        toolbarCapsuleHorizontalInset: 18,
+        toolbarCapsuleVerticalInset: 26,
+        toolbarCapsulePaddingHorizontal: 10,
+        toolbarCapsulePaddingVertical: 12,
+        toolbarCapsuleInterItemSpacing: 4,
+        toolbarCapsuleMinPillGap: 40,
+        toolbarCapsuleInternalRuleWidth: 26,
+        toolbarCapsuleButtonSize: 50,
+        toolbarCapsuleActiveScale: 1.06,
+        inkReadoutChipSize: 22,
+        inkReadoutChipInnerRingWidth: 1.5,
+        inkReadoutChipOuterRingWidth: 1,
+        inkReadoutPipCount: 3,
+        inkReadoutPipMinSize: 3,
+        inkReadoutPipMaxSize: 6,
+        inkReadoutPipGap: 4,
+        inkReadoutSectionGap: 9
+    )
+}
+
+// MARK: - Floating-chrome shadows
+
+/// Drop-shadow tokens for floating chrome — capsule toolbar, accessory
+/// bar, slash menu popovers. Content surfaces still ship no shadows per
+/// the design principles in `CLAUDE.md`; shadows live here so chrome can
+/// convey elevation without the rule leaking into list rows or canvas
+/// content.
+///
+/// Two layers compose into the final shadow:
+///   - `primary` — the soft, far-cast drop that anchors the element
+///   - `ambient` — the close, low-y shadow that grounds it to the surface
+///
+/// SwiftUI shadows don't have spread; the prototype CSS uses negative
+/// spread to tighten the shadow against its source. We approximate by
+/// choosing tighter radii at higher opacity for ambient, looser at
+/// lower opacity for primary.
+struct ShadowTokens: Sendable {
+    let toolbarCapsulePrimary: Shadow
+    let toolbarCapsuleAmbient: Shadow
+    let toolbarActiveButton: Shadow
+
+    struct Shadow: Sendable {
+        let color: Color
+        let radius: CGFloat
+        let x: CGFloat
+        let y: CGFloat
+    }
+
+    static let standard = ShadowTokens(
+        toolbarCapsulePrimary: Shadow(
+            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.22),
+            radius: 22,
+            x: 0,
+            y: 14
+        ),
+        toolbarCapsuleAmbient: Shadow(
+            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.12),
+            radius: 6,
+            x: 0,
+            y: 3
+        ),
+        toolbarActiveButton: Shadow(
+            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.55),
+            radius: 8,
+            x: 0,
+            y: 4
+        )
     )
 }
 

@@ -531,11 +531,12 @@ Text(AppStrings.Bootstrap.unableToStart)
 All visual constants are named Color Sets in `Assets.xcassets` — never hardcoded hex values anywhere in view code.
 
 **Core design principles (all locked):**
-- `cornerRadius: 0` globally — no rounded corners in UI chrome
-- No shadows, no gradients, no vibrancy
-- No color in UI chrome — toolbar, navigation, sidebar are monochrome
-- 1px borders only
-- 80–120ms linear animation — no spring physics, no bounces
+- `cornerRadius: 0` on content surfaces (canvas, list rows, cards). Floating chrome (toolbar capsules, accessory bar, slash menu popovers) uses the capsule radius from `LayoutTokens.toolbarCapsuleCornerRadius`.
+- No shadows on content. Drop shadows allowed on **floating chrome only**, sourced from `ShadowTokens` — never inline literal values, never on list rows or canvas content.
+- No gradients, no vibrancy.
+- No color in UI chrome — toolbar, navigation, sidebar are monochrome. Floating chrome stays monochrome too; the only color inside a capsule is the active ink chip (a tool-state readout, not decoration).
+- 1px borders only.
+- 80–120ms linear animation — no spring physics, no bounces.
 
 **Typography:**
 - Notebook content: New York serif — `.font(.system(.body, design: .serif))`

@@ -18,6 +18,7 @@ struct DesignSystem: Sendable {
     let layout: LayoutTokens
     let animation: AnimationTokens
     let cornerRadius: CornerRadiusScale
+    let shadow: ShadowTokens
 
     static let standard = DesignSystem(
         colors: .standard,
@@ -25,6 +26,7 @@ struct DesignSystem: Sendable {
         spacing: .standard,
         layout: .standard,
         animation: .standard,
-        cornerRadius: .standard
+        cornerRadius: .standard,
+        shadow: .standard
     )
 }
