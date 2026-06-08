@@ -50,10 +50,23 @@ import SwiftData
     /// cache-writes this on every save; for ink blocks the user
     /// adjusts it via the drag bar; for voice blocks the renderer
     /// computes it from waveform + transcript length.
+    ///
+    /// Default is `PageBlock.defaultHeightPoints` — kind-aware empty-
+    /// state heights live in `PageBlock.emptyHeightPoints(for:)` for
+    /// reducer-initiated inserts. The 200pt schema default exists for
+    /// any caller that constructs a PageBlock without going through
+    /// `NotebookClient.insertBlock`.
     var heightPoints: Double = 200
 
     // MARK: Text payload
-    @Attribute(.externalStorage) var bodyData: Data? = nil
+    //
+    // `bodyData` is intentionally NOT externalStorage. Typical archived
+    // AttributedString sizes for a paragraph are 200B–2KB; promoting
+    // those to CKAsset on sync would add a per-block asset round-trip
+    // for what would otherwise fit inline under CloudKit's 1MB record
+    // limit. Ink and voice payloads ARE externalStorage because they're
+    // genuinely heavy.
+    var bodyData: Data? = nil
     /// Plain-text mirror, recomputed on every text-block save. Drives
     /// `#Predicate` search, ML input composition, and the per-block
     /// `contentHash`.
@@ -92,19 +105,51 @@ import SwiftData
         page: NotePage? = nil,
         sortIndex: Int = 0,
         kind: PageBlockKind = .text,
-        heightPoints: Double = 200
+        heightPoints: Double = PageBlock.defaultHeightPoints,
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.page = page
         self.sortIndex = sortIndex
         self.kindRaw = kind.rawValue
         self.heightPoints = heightPoints
-        self.createdAt = Date()
-        self.modifiedAt = Date()
+        self.createdAt = createdAt
+        self.modifiedAt = createdAt
     }
 
+    /// Read-only — block kind is immutable post-insert. Changing a
+    /// block's kind would orphan the existing payload (e.g. a
+    /// `.text → .voice` flip leaves `bodyData` populated on a voice
+    /// block). The caller-facing "change kind" operation is
+    /// delete + insert, which the EDD §10.4 Pencil-in-blank-text
+    /// promotion path uses.
     var kind: PageBlockKind {
-        get { PageBlockKind(rawValue: kindRaw) ?? .text }
-        set { kindRaw = newValue.rawValue }
+        PageBlockKind(rawValue: kindRaw) ?? .text
+    }
+
+    // MARK: - Height defaults
+
+    /// Schema-level default height. Falls back to this for callers that
+    /// construct a `PageBlock` directly without going through
+    /// `NotebookClient.insertBlock`. Reducer-initiated inserts should
+    /// use `emptyHeightPoints(for:)` so empty text blocks open at a
+    /// single body row rather than a 200pt gap.
+    static let defaultHeightPoints: Double = 200
+
+    /// Empty-state height for a freshly inserted block, sized to look
+    /// natural before the user has added content.
+    ///
+    ///   • `.text`  → 44pt — one row of body text at the default
+    ///     Dynamic Type size. The TextKit layout immediately overrides
+    ///     this with the real measured height once any text exists.
+    ///   • `.ink`   → 200pt — the EDD §10.3 floor for ink blocks
+    ///     (smaller is a dead zone).
+    ///   • `.voice` → 88pt — waveform stub + one-line transcript row.
+    static func emptyHeightPoints(for kind: PageBlockKind) -> Double {
+        switch kind {
+        case .text:  return 44
+        case .ink:   return 200
+        case .voice: return 88
+        }
     }
 }

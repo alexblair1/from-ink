@@ -367,6 +367,14 @@ enum NotebookClientError: Error, Equatable, Sendable {
     case linkNotFound(UUID)
     case regionNotFound(UUID)
     case blockNotFound(UUID)
+    /// `reorderBlocks` requires the caller to pass the complete set of
+    /// block IDs on the page in their new order. This error surfaces
+    /// when the IDs in `got` differ from the IDs currently on the
+    /// page (`expected`) — either a missing ID (caller forgot a
+    /// block), an extra ID (caller passed a stale ID), or both.
+    /// Reordering silently would leave the missing block at its old
+    /// `sortIndex`, potentially colliding with the reordered set.
+    case reorderMismatch(pageID: UUID, expected: Set<UUID>, got: Set<UUID>)
     case folderNotFound(UUID)
     case tagNotFound(UUID)
     case historyEntryNotFound(UUID)

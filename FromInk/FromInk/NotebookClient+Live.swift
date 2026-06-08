@@ -691,7 +691,8 @@ extension NotebookClient {
                         page: page,
                         sortIndex: insertIndex,
                         kind: kind,
-                        heightPoints: 200
+                        heightPoints: PageBlock.emptyHeightPoints(for: kind),
+                        createdAt: now
                     )
                     ctx.insert(new)
                     page.modifiedAt = now
@@ -745,9 +746,16 @@ extension NotebookClient {
                     guard let block = try fetchBlockModel(id: blockID, ctx: ctx) else {
                         throw NotebookClientError.blockNotFound(blockID)
                     }
+                    let now = calendarContext.now()
                     block.ocrText = ocrText
-                    block.ocrUpdatedAt = calendarContext.now()
+                    block.ocrUpdatedAt = now
                     block.contentHash = PageBlock.sha256(ocrText)
+                    // OCR is a derived index, but updating it does
+                    // change the page's queryable content (search,
+                    // ML inputs). Bump modifiedAt so observers see
+                    // the page as "changed" and refresh.
+                    block.modifiedAt = now
+                    block.page?.modifiedAt = now
                     block.page?.recomputeExtractedAggregates()
                     try ctx.save()
                 }
@@ -781,8 +789,14 @@ extension NotebookClient {
                     // No-op for text / voice blocks — they compute their own
                     // height. Only ink blocks honor a user-set drag-bar height.
                     guard block.kind == .ink else { return }
+                    let now = calendarContext.now()
                     block.heightPoints = heightPoints
-                    block.modifiedAt = calendarContext.now()
+                    block.modifiedAt = now
+                    // Drag-bar resize is a user-visible content event —
+                    // bump page + notebook modifiedAt so the library
+                    // list reflects the touched page.
+                    block.page?.modifiedAt = now
+                    block.page?.notebook?.modifiedAt = now
                     try ctx.save()
                 }
             },
@@ -819,6 +833,20 @@ extension NotebookClient {
                     let blocksByID = Dictionary(
                         uniqueKeysWithValues: (page.blocks ?? []).map { ($0.id, $0) }
                     )
+                    // Validate exact set equality before mutating. A
+                    // missing ID would leave a block at its old
+                    // sortIndex, potentially colliding with the
+                    // reordered set; an extra ID would silently no-op.
+                    // Both indicate caller bugs that should be loud.
+                    let expected = Set(blocksByID.keys)
+                    let got = Set(orderedBlockIDs)
+                    guard expected == got else {
+                        throw NotebookClientError.reorderMismatch(
+                            pageID: pageID,
+                            expected: expected,
+                            got: got
+                        )
+                    }
                     for (i, id) in orderedBlockIDs.enumerated() {
                         blocksByID[id]?.sortIndex = i
                     }
@@ -837,11 +865,18 @@ extension NotebookClient {
                     guard let nb = try fetchNotebookModel(id: notebookID, ctx: ctx) else {
                         throw NotebookClientError.notebookNotFound(notebookID)
                     }
-                    // Idempotent: only set once, then frozen. The 768pt
-                    // default counts as "not yet bound" for this purpose —
-                    // a notebook with no ink yet snaps on first stroke.
-                    guard nb.canonicalCanvasWidth == 768 else { return }
+                    // Idempotent: only set once, then frozen. Gated on
+                    // the explicit `canonicalCanvasWidthIsBound` flag
+                    // rather than `width == 768` so a user authoring
+                    // on a device whose portrait width IS 768 doesn't
+                    // re-bind on every first stroke.
+                    guard !nb.canonicalCanvasWidthIsBound else { return }
                     nb.canonicalCanvasWidth = width
+                    nb.canonicalCanvasWidthIsBound = true
+                    // First-stroke is a content event — bump the
+                    // notebook's modifiedAt so the library list
+                    // reflects the touched notebook.
+                    nb.modifiedAt = calendarContext.now()
                     try ctx.save()
                 }
             },

@@ -12,7 +12,7 @@ import Foundation
 ///     attribute value.
 ///
 /// See text experience EDD §11.
-enum NoteRegionAnchorKind: String, Codable, Sendable {
+enum NoteRegionAnchorKind: String, Codable, CaseIterable, Sendable {
     case inkRect
     case textRange
 }

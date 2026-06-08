@@ -56,10 +56,14 @@ import SwiftData
     // MARK: Block model (text experience EDD §5)
 
     /// Aggregated extracted text composed from per-block payloads in
-    /// `sortIndex` order: `text.plainText ∪ ink.ocrText ∪ voice.transcript`.
-    /// Drives full-text search, Foundation Models input composition,
-    /// and the VoiceOver "read entire page" path. Recomputed on every
-    /// block save.
+    /// `sortIndex` order: `text.plainText ∪ ink.ocrText ∪ voice.transcript`,
+    /// joined by blank lines so adjacent text blocks read as separate
+    /// paragraphs to Foundation Models and to VoiceOver. Drives full-
+    /// text search, ML input composition, and the VoiceOver "read
+    /// entire page" path. Recomputed on every block save.
+    ///
+    /// `nil` distinguishes "never aggregated" (fresh page) from
+    /// "aggregated, result was empty."
     var extractedText: String? = nil
 
     /// SHA256 over a manifest of per-block `contentHash` values
@@ -68,7 +72,10 @@ import SwiftData
     /// keyed to old order can refresh; an edit to one block changes
     /// only that block's leaf hash, so delta-aware ML callers can
     /// diff the manifest against the last run.
-    var extractedTextHash: String = ""
+    ///
+    /// `nil` distinguishes "never aggregated" from "aggregated to an
+    /// empty manifest" (which has a specific SHA256 value).
+    var extractedTextHash: String? = nil
 
     // Parent — Step 3 declares the inverse on Notebook.pages
     var notebook: Notebook?
@@ -122,12 +129,19 @@ import SwiftData
     /// block CRUD methods do this automatically.
     ///
     /// `extractedText` joins per-block payloads (`plainText` for text,
-    /// `ocrText` for ink, `transcript` for voice) with newline
-    /// separators in `sortIndex` order. `extractedTextHash` is SHA256
-    /// over the manifest of per-block `contentHash` values joined by
-    /// `|` — a leaf-block content change touches exactly one position
-    /// in the manifest; a reorder touches all positions so the hash
-    /// reflects ordering changes too.
+    /// `ocrText` for ink, `transcript` for voice) with blank lines
+    /// (`\n\n`) so adjacent blocks read as separate paragraphs to
+    /// Foundation Models, VoiceOver, and search. `extractedTextHash`
+    /// is SHA256 over the manifest of per-block `contentHash` values
+    /// joined by `|` — a leaf-block content change touches exactly
+    /// one position in the manifest; a reorder touches all positions
+    /// so the hash reflects ordering changes too.
+    ///
+    /// **Cost:** O(N log N) sort + O(N) join + one SHA256. Called per
+    /// mutation in the `NotebookClient` block methods today. At v1
+    /// page sizes (< ~50 blocks) this is sub-millisecond. A batched
+    /// transaction surface on `NotebookClient` is a future
+    /// optimization for paste / duplicate / bulk-reorder flows.
     func recomputeExtractedAggregates() {
         let ordered = (blocks ?? []).sorted { $0.sortIndex < $1.sortIndex }
         let payloads = ordered.compactMap { block -> String? in
@@ -137,7 +151,7 @@ import SwiftData
             case .voice: return block.transcript
             }
         }
-        extractedText = payloads.joined(separator: "\n")
+        extractedText = payloads.joined(separator: "\n\n")
 
         let manifest = ordered.map { $0.contentHash }.joined(separator: "|")
         extractedTextHash = PageBlock.sha256(manifest)

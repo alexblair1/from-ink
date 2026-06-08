@@ -54,6 +54,25 @@ import SwiftData
         set { anchorKindRaw = newValue.rawValue }
     }
 
+    /// True when the region's anchor is structurally complete given
+    /// its declared `anchorKind`. The dispatch panel and the indicator
+    /// adapter fail closed on invalid regions — they're surfaced as
+    /// orphans in dispatch (so the user can repair or delete) and the
+    /// canvas indicator does not render.
+    ///
+    ///   • `.inkRect`   → `rect` must have positive width and height
+    ///   • `.textRange` → `anchorBlockID` must be non-nil (the
+    ///     authoritative span lives on the text block; the region must
+    ///     know which block to query)
+    var isValid: Bool {
+        switch anchorKind {
+        case .inkRect:
+            return rectWidth > 0 && rectHeight > 0
+        case .textRange:
+            return anchorBlockID != nil
+        }
+    }
+
     // Bounding box — CloudKit-friendly scalars, projected through the
     // computed `rect` property below. Same shape as `NoteHeader` /
     // `NoteLink`. Read only when `anchorKind == .inkRect`.
