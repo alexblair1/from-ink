@@ -18,6 +18,12 @@ struct ToolbarWiringView: View {
 
     var body: some View {
         ToolbarView(model: .init(store: store, zones: zones))
+            // Same fade-on-selection pattern as the home brief tab strip
+            // (see HomeWiringView). The wrapper animation observes the
+            // store's `activeToolID` directly; SwiftUI cross-fades the
+            // inverted color states (paper-on-ink ↔ ink2-on-paper) across
+            // every ToolButtonView in the capsule simultaneously.
+            .animation(DesignSystem.standard.animation.standard, value: store.activeToolID)
     }
 }
 

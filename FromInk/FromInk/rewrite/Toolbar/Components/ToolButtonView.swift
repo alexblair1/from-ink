@@ -27,7 +27,6 @@ struct ToolButtonView: View {
                     x: 0,
                     y: model.shadowY
                 )
-                .animation(model.animation, value: model.foreground)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -49,7 +48,6 @@ extension ToolButtonView {
         let shadowColor: Color
         let shadowRadius: CGFloat
         let shadowY: CGFloat
-        let animation: Animation
     }
 }
 
@@ -74,6 +72,5 @@ extension ToolButtonView.Model {
         self.shadowColor = isActive ? ds.shadow.toolbarActiveButton.color : .clear
         self.shadowRadius = isActive ? ds.shadow.toolbarActiveButton.radius : 0
         self.shadowY = isActive ? ds.shadow.toolbarActiveButton.y : 0
-        self.animation = ds.animation.fast
     }
 }
