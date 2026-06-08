@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| Status | Proposed |
+| Status | Approved — ready to implement |
 | Owner | Solo |
-| Last updated | 2026-06-07 |
+| Last updated | 2026-06-08 |
 | Implements ticket | F-20 (Text experience) |
 | Companion docs | EDD — View Layer · EDD — Data Layer · EDD — Data Model · EDD — Toolbar · EDD — Design System · EDD — Dates · EDD — Localization |
 
@@ -20,7 +20,7 @@
 6. [Canvas geometry — canonical units & viewport scaling](#6-canvas-geometry--canonical-units--viewport-scaling)
 7. [SwiftData persistence](#7-swiftdata-persistence)
 8. [CloudKit translation](#8-cloudkit-translation)
-9. [Migration plan — V1 → V2 → V3](#9-migration-plan--v1--v2--v3)
+9. [Schema changes](#9-schema-changes)
 10. [The drag bar — block height UX](#10-the-drag-bar--block-height-ux)
 11. [Region anchors — ink rect vs text range](#11-region-anchors--ink-rect-vs-text-range)
 12. [Highlights — defaults & custom kinds](#12-highlights--defaults--custom-kinds)
@@ -91,11 +91,18 @@ This EDD supersedes nothing; it extends the data model EDD (block model), the vi
 | Author text | ✅ | ✅ | ✅ | ✅ |
 | Render voice memos | ✅ | ✅ | ✅ | ✅ |
 | Record voice memos | ✅ | ✅ | ✅ | ✅ |
-| Slash menu popover | ✅ (regardless of keyboard) | ❌ (size-class gate) | ❌ | ✅ |
-| Accessory bar | ✅ (soft keyboard only) | ✅ | ✅ | ❌ |
+| Slash menu popover | ✅ | ✅ (when hardware keyboard connected) | ❌ (no hardware kbd path) | ✅ |
+| Accessory bar | ✅ (soft keyboard only) | ✅ (soft keyboard only) | ✅ | ❌ |
 | Region creation gesture | Pencil two-finger hold OR selection menu | Selection menu | Selection menu | Right-click |
-| Drag bar (ink block height) | ✅ | ✅ (read-only) | ❌ (ink read-only) | ❌ |
+| Drag bar (ink block height) | ✅ | ❌ | ❌ | ❌ |
 | Keyboard shortcuts | ✅ (hardware kbd) | ✅ (hardware kbd) | ✅ (hardware kbd) | ✅ |
+
+**Hardware keyboard rule.** A hardware keyboard ALWAYS gets the slash menu, regardless of size class. The soft-keyboard accessory bar hides automatically when a hardware keyboard connects (UIKit's existing behaviour). So the matrix above is shorthand for two intermediate rules:
+
+- Slash menu shows when EITHER `horizontalSizeClass == .regular` OR a hardware keyboard is connected.
+- Accessory bar shows when the soft keyboard is up AND no hardware keyboard is connected.
+
+This closes the iPad-compact-with-hardware-keyboard gap (where neither surface would otherwise have been available).
 
 **Two device classes for input purposes:**
 
@@ -162,6 +169,11 @@ enum PageBlockKind: String, Codable, CaseIterable, Sendable {
     case text
     case ink
     case voice
+    // Planned for v1.1 — architecture supports the addition; adding a
+    // new kind is one enum case + one component + one adapter, no
+    // changes to the block stack, persistence, or sync layers.
+    //   case image
+    //   case video
 }
 ```
 
@@ -249,16 +261,15 @@ enum PageBlockKind: String, Codable, CaseIterable, Sendable {
     /// joined in `sortIndex` order. Drives full-text search, FM input, and
     /// VoiceOver "read entire page" composition.
     var extractedText: String? = nil
-    /// SHA256 of `extractedText` at last ML run. Invalidates summary / task
-    /// extraction caches when content changes meaningfully (see CLAUDE.md
-    /// caching strategy).
+    /// Aggregated hash. Composed from per-block `contentHash` values (see
+    /// §7.5) rather than hashed off `extractedText` directly, so block
+    /// reorders don't trip ML cache invalidation when no content actually
+    /// changed.
     var extractedTextHash: String = ""
-
-    /// Legacy single-drawing payload from V1. Retained for one release
-    /// after V2 migration as a read fallback; cleared in V3.
-    @Attribute(.externalStorage) var drawingData: Data? = nil
 }
 ```
+
+The legacy `NotePage.drawingData` and `NotePage.ocrText` fields are deleted in the same commit that adds the block model (no migration — see §9).
 
 ### 5.3 Block snapshot (value type for TCA State)
 
@@ -288,6 +299,8 @@ struct PageBlockSnapshot: Equatable, Identifiable, Sendable {
 
 `AttributedString` is `Equatable` and `Sendable` — safe in `State`. `Data` for `drawingData` is large; the snapshot path keeps a copy only while the active block is being edited. Inactive blocks hold a snapshot with `drawingData == nil` and resolve lazily via the `NotebookClient` when scrolled into view.
 
+**Equality cost.** `AttributedString.Equatable` is O(n) over runs and characters, so TCA's state-diff cost scales with the size of the active block's body. For typical note-taking workloads (a block holds one paragraph to one page of text, <10 KB), the cost is negligible. **Threshold:** if a block's archived `bodyData` exceeds 50 KB, switch the snapshot to a hash-based equality wrapper — store `body` alongside a precomputed `bodyHash: UInt64`, and define `==` as `bodyHash == bodyHash`. Until that threshold trips in profiling, the direct comparison ships.
+
 ### 5.4 Block kinds — invariants
 
 | Block kind | `bodyData` | `drawingData` | `audioData` | Notes |
@@ -304,13 +317,27 @@ The reducer enforces these invariants at the API boundary (`NotebookClient.inser
 
 The cross-platform handwriting problem is solved by a single rule: **ink is stored in canonical-canvas coordinates; rendering applies `viewport.width / canonicalWidth` as a scale factor.**
 
-### 6.1 The canonical canvas
+### 6.1 The canonical canvas — per-notebook
+
+Canonical width is per-notebook, **set on first ink stroke** to the authoring device's portrait width. iPad Pro 13" portrait records 1024pt; iPad 11" portrait records 834pt; iPad mini records 744pt. A new notebook with no ink yet defaults to 768pt; the value snaps to the authoring device on first stroke and never changes after.
 
 ```swift
+@Model final class Notebook {
+    // ... existing fields
+
+    /// Canonical canvas width for ink coordinates in this notebook.
+    /// Defaults to 768pt; bound on first stroke to the authoring
+    /// device's portrait width via `NotebookClient.bindCanonicalWidth(_:)`.
+    /// Never changes after the binding is set.
+    var canonicalCanvasWidth: Double = 768
+}
+
 enum CanvasGeometry {
-    /// The canonical canvas width. Chosen to match iPad portrait so iPad
-    /// users author at 1:1 — the natural default device for ink.
-    static let canonicalWidth: CGFloat = 768
+    /// Default canonical width for brand-new notebooks before any ink
+    /// lands. iPad portrait 11" reads as the cleanest default — iPad
+    /// users author at near-1:1; smaller devices scale down slightly;
+    /// larger devices scale up slightly.
+    static let defaultCanonicalWidth: CGFloat = 768
 
     /// Minimum scale factor. Below this, content overflows horizontally
     /// and the viewport adds a horizontal scroll affordance rather than
@@ -323,7 +350,13 @@ enum CanvasGeometry {
     static let hybridMaxScale: CGFloat = 1.5
 
     /// Compute the scale factor for a viewport width on a given page.
-    static func scale(viewportWidth: CGFloat, hasTextBlocks: Bool) -> CGFloat {
+    /// `canonicalWidth` is read from the notebook (see §6.1) — never
+    /// hardcoded to `defaultCanonicalWidth` at the call site.
+    static func scale(
+        viewportWidth: CGFloat,
+        canonicalWidth: CGFloat,
+        hasTextBlocks: Bool
+    ) -> CGFloat {
         let raw = viewportWidth / canonicalWidth
         let cap = hasTextBlocks ? hybridMaxScale : .greatestFiniteMagnitude
         return min(max(raw, minScale), cap)
@@ -331,16 +364,16 @@ enum CanvasGeometry {
 }
 ```
 
-### 6.2 Why a fixed canonical width
+### 6.2 Why per-notebook canonical width
 
-A fixed canonical width (768pt) makes everything else mechanical:
+A per-notebook canonical width makes the authoring experience deviceless: a user authoring on iPad Pro 13" draws at 1:1 on their own device, not at 1.33× of someone else's canonical assumption.
 
-- **Storage is platform-independent.** A PKDrawing recorded on iPhone goes to iPad and renders at 1.97× scale; the bytes don't change.
-- **Cross-device anchors are stable.** `NoteRegion.rectX/Y/W/H` are canonical-space units. A region at (100, 200) is at (100, 200) everywhere.
+- **Authoring is always 1:1.** No matter what device created the notebook, that device renders at scale 1.0.
+- **Cross-device anchors are stable.** `NoteRegion.rectX/Y/W/H` are canonical-space units. A region at (100, 200) is at (100, 200) everywhere — the rendering scale changes, the data doesn't.
 - **OCR is computed once.** OCR runs against the canonical drawing; the result is the same regardless of viewport.
 - **Portrait → landscape is a viewport change, not a data change.** No re-flow, no re-write.
 
-The alternative — normalized 0-1 coordinates — has the same theoretical properties but PencilKit doesn't natively support normalized units. We'd be transforming on every read and write. Canonical units are PencilKit-native.
+The alternative — normalized 0-1 coordinates — has the same theoretical properties but PencilKit doesn't natively support normalized units. We'd be transforming on every read and write. Canonical points are PencilKit-native.
 
 ### 6.3 Rendering scale per viewport
 
@@ -378,20 +411,86 @@ struct InkBlockView: View {
             drawingData: model.drawingData,
             tool: model.tool,
             penSettings: model.penSettings,
-            canonicalSize: CGSize(width: CanvasGeometry.canonicalWidth,
+            canonicalSize: CGSize(width: model.canonicalWidth,
                                    height: model.heightPoints),
             onDrawingChanged: model.onDrawingChanged,
             onLassoReady: model.onLassoReady
         )
-        .frame(width: CanvasGeometry.canonicalWidth, height: model.heightPoints)
+        .frame(width: model.canonicalWidth, height: model.heightPoints)
         .scaleEffect(model.scale, anchor: .topLeading)
-        .frame(width: CanvasGeometry.canonicalWidth * model.scale,
+        .frame(width: model.canonicalWidth * model.scale,
                height: model.heightPoints * model.scale)
         .accessibilityElement()
         .accessibilityLabel(model.accessibilityLabel)
     }
 }
 ```
+
+### 6.4.1 Per-block ink lifecycle (canvas pooling)
+
+A single `PKCanvasView` is ~4 MB resident (Metal layer, predicted-touch buffers, palm rejection state) plus the loaded `PKDrawing`. A 20-ink-block page with all-live canvases lands ~80 MB; a 50-block page lands ~200 MB. On iPad mini / base iPad this is hostile. The fix: only blocks that are on-screen or actively edited own a live `PKCanvasView`; off-screen blocks render as static images from `thumbnailData`.
+
+Each ink block sits in one of three states:
+
+```swift
+enum InkBlockLoadState: Equatable {
+    /// Far off-screen. Render nothing — just reserve scroll space equal
+    /// to (heightPoints × scale). No drawing loaded, no PKCanvasView,
+    /// no thumbnail in memory.
+    case placeholder
+
+    /// Off-screen but in warm range, OR on-screen but not actively
+    /// edited. Render a static UIImage from thumbnailData. No
+    /// PKCanvasView. Scroll-into-view promotes to .live.
+    case thumbnail(UIImage)
+
+    /// Has a live PKCanvasView. Strokes record into it. The only state
+    /// in which authoring is possible.
+    case live(drawingData: Data)
+}
+```
+
+**Range policy.** `PageBlockStackView` tracks viewport intersection per block and feeds visibility into the reducer:
+
+| Range | Definition | State |
+|---|---|---|
+| Active range | Visible in viewport + 1 block above + 1 below | `.live` |
+| Warm range | Active range + 2 blocks above + 2 below | `.thumbnail` |
+| Cold | Everything else | `.placeholder` |
+| Editing override | The currently-active block (`activeBlockID`) | `.live` regardless of viewport |
+
+**Memory math.** Same 50-block page, editing one block: 3 live ink blocks (~12 MB) + 4 thumbnails (~1 MB) + 43 placeholders (~0 MB) = ~13 MB total, down from ~200 MB. Memory scales with what's visible, not page length.
+
+**Reducer actions** (on `NotePageFeature`):
+
+```swift
+case blockEnteredActiveRange(UUID)
+case blockExitedActiveRange(UUID)
+case blockEnteredWarmRange(UUID)
+case blockExitedWarmRange(UUID)
+case blockDrawingLoaded(UUID, Data)
+case blockThumbnailRendered(UUID, UIImage)
+case blockActivated(UUID)
+```
+
+**Edge cases:**
+
+- **Rapid scroll thrashing.** Debounce `.live` promotions by 100ms. Thumbnails render instantly from disk.
+- **Active block scrolled off-screen.** Stays `.live` while it's `activeBlockID`. Demotes only when the user dismisses the keyboard or activates another block.
+- **First-load.** Every block starts as `.placeholder`; on appearance the visibility signal fires `.blockEnteredActiveRange` and the reducer loads `drawingData`. A `.thumbnail` fallback rendered from `thumbnailData` covers the one-frame load gap.
+- **Stale thumbnail after demote.** Demoting `.live → .thumbnail` renders a fresh thumbnail from the current PKDrawing via the existing `CanvasViewBridge` snapshot path, replacing `thumbnailData`.
+- **Newly-inserted ink block.** Starts `.live` (user just created one to draw in). If they scroll away before drawing anything, the demote produces an empty-canvas thumbnail.
+- **Text and voice blocks.** Don't need this lifecycle. `TextKit 2` is lighter (~500 KB per block) and `AVAudioPlayer` is tiny. Lifecycle is ink-only.
+
+**Persistence boundary.** The existing `CanvasViewBridge` pattern moves to per-block. `NotePageFeature` state holds a `[UUID: CanvasViewBridge]` for live blocks. Transitions that flush:
+- `.live → .thumbnail` demotion
+- Active block changes
+- Page swipe (existing `onDisappear`)
+- Scene phase backgrounded (existing hook)
+
+The flush logic itself (`snapshotForFlush()` → `CanvasViewBridge.persist(snapshot)`) is unchanged from today; only the cardinality changes from one-per-page to many-per-page.
+
+**Visibility signal.** iOS 17+'s `onScrollVisibilityChange(threshold:)` provides the per-child intersection callback. `PageBlockStackView` wires it on each block row; warm-range tracking extends the threshold or is computed in the reducer as "active range ± 2 blocks."
 
 ### 6.5 Text blocks are decoupled from ink scale
 
@@ -526,6 +625,45 @@ enum SlashInsertionAttribute: CodableAttributedStringKey {
 
 These attributes serialize through Path A (secure coding) by registering each key type with `NSKeyedArchiver`'s allowed classes at `NotebookClient` init.
 
+### 7.5 Per-block content hash
+
+`PageBlock` carries a `contentHash: String` field. `NotePage.extractedTextHash` is computed by hashing the concatenation of the per-block `contentHash` values in `sortIndex` order — not by hashing the joined `extractedText` directly.
+
+```swift
+@Model final class PageBlock {
+    // ... existing fields
+
+    /// SHA256 of the block's authoritative content:
+    ///   .text  → plainText
+    ///   .ink   → ocrText (or empty when OCR hasn't run)
+    ///   .voice → transcript
+    /// Recomputed on every block save. Drives NotePage.extractedTextHash.
+    var contentHash: String = ""
+}
+```
+
+**Why this shape:**
+
+- Reordering blocks changes `NotePage.extractedTextHash` (sort-order is part of the manifest), so ML output keyed to the old order can refresh.
+- Editing one block changes only that block's `contentHash`; the page hash changes too, but Foundation Models / summarization can elect to reprocess only the deltas by diffing the per-block manifest from the last run.
+- Without the per-block hash, every reorder would trip a full FM re-run even when no content changed.
+
+The page-level hash composition:
+
+```swift
+extension NotePage {
+    func recomputeExtractedTextHash() {
+        let manifest = (blocks ?? [])
+            .sorted { $0.sortIndex < $1.sortIndex }
+            .map { $0.contentHash }
+            .joined(separator: "|")
+        extractedTextHash = SHA256.hash(data: Data(manifest.utf8))
+            .compactMap { String(format: "%02x", $0) }
+            .joined()
+    }
+}
+```
+
 ---
 
 ## 8. CloudKit translation
@@ -576,16 +714,16 @@ The block model **localizes conflicts**. Pre-block-model, the single `drawingDat
 
 LWW per block is the v1 strategy. CRDT is an open question (§23).
 
-### 8.3 Schema deployment checklist
+### 8.3 Schema deployment checklist (future, when CloudKit is enabled)
 
-Per `CLAUDE.md` "CRITICAL pre-launch action":
+Per `CLAUDE.md` "CRITICAL pre-launch action" — applies once CloudKit is promoted:
 
-1. V2 schema deployed to **CloudKit Development** before any iCloud testing.
+1. The schema (with `PageBlock`) deployed to **CloudKit Development** before any iCloud testing.
 2. Exercise sync with multiple devices over a sample workload.
 3. Promote to **CloudKit Production** before App Store submission.
 4. Without (3), all users on the App Store build experience silent sync failures.
 
-The block model adds one record type (`CD_PageBlock`) and modifies one (`CD_NotePage`'s relationship list). Both are deployed in the same V2 promotion.
+The block model adds one record type (`CD_PageBlock`) and modifies one (`CD_NotePage`'s relationship list). Both are deployed in the same CloudKit schema promotion when the time comes.
 
 ### 8.4 CKAsset lifecycle
 
@@ -595,67 +733,22 @@ A device opening a page lazily downloads only the assets for blocks scrolled int
 
 ---
 
-## 9. Migration plan — V1 → V2 → V3
+## 9. Schema changes
 
-`VersionedSchema` per the data model EDD §10.
+**No migrations.** CloudKit is not yet enabled (`cloudKitDatabase: .none`) and there are no production users. Schema changes are direct edits; local stores that fail to open are reset by reinstalling the app on the dev simulator.
 
-### 9.1 V1 (current)
+PR 1 lands the full schema change in one commit:
 
-`NotePage` has `drawingData: Data?` and `ocrText: String?`. Single payload, ink-only.
+- Add `PageBlock` `@Model`.
+- Add `NotePage.blocks` relationship + `extractedText` + `extractedTextHash`.
+- Add `NoteRegion.anchorBlockID` + `anchorKindRaw`.
+- Add `Notebook.canonicalCanvasWidth` (§6.1).
+- Add `PageBlock.contentHash` (§7.5).
+- **Delete** `NotePage.drawingData` + `NotePage.ocrText` (now lives per-block on `PageBlock`).
 
-### 9.2 V2 (this EDD)
+No `VersionedSchema`, no idempotent migration loop, no fallback read paths. If a dev simulator has notebooks authored on the V1 schema, the store fails to open after the change and the user reinstalls.
 
-Additive schema:
-
-- Add `PageBlock` model.
-- Add `NotePage.blocks` relationship.
-- Add `NotePage.extractedText` + `extractedTextHash`.
-- Keep `NotePage.drawingData` + `ocrText` for read fallback during one release window.
-- Add `NoteRegion.anchorBlockID` + `anchorKindRaw` (see §11).
-
-Lightweight migration runs at first launch:
-
-```swift
-// FromInkSchemaV2 migration step
-forEach(NotePage.self) { page in
-    guard let data = page.drawingData, !data.isEmpty else { return }
-    let ink = PageBlock(
-        id: UUID(),
-        page: page,
-        sortIndex: 0,
-        kind: .ink,
-        heightPoints: CanvasView.standardPageHeight
-    )
-    ink.drawingData = data
-    ink.thumbnailData = page.thumbnailData
-    ink.ocrText = page.ocrText
-    ink.ocrUpdatedAt = page.ocrUpdatedAt
-    modelContext.insert(ink)
-
-    // Re-anchor existing regions to the new ink block.
-    for region in page.regions ?? [] {
-        region.anchorBlockID = ink.id
-        region.anchorKindRaw = NoteRegionAnchorKind.inkRect.rawValue
-    }
-
-    page.extractedText = page.ocrText
-}
-```
-
-The migration is idempotent — running it twice produces no extra blocks because the second run finds `drawingData == nil` (cleared lazily after a successful first read in V2 code paths).
-
-### 9.3 V3 (cleanup, future release)
-
-- Remove `NotePage.drawingData` + `ocrText` (now lives on `PageBlock`).
-- Remove `NoteRegion` legacy single-anchor fields if they become redundant (none currently are).
-
-V3 is gated on telemetry confirming no V1 fallback reads remain. The window is at least one full release cycle.
-
-### 9.4 V1 ↔ V2 interoperability during rollout
-
-CloudKit-side: V1 clients fetching V2 records see unknown fields (`PageBlock` records, new NotePage relationship) and ignore them. V2 clients writing back through V1 fields means a V1 client opening a page authored entirely in V2 sees `NotePage.drawingData == nil` and renders an empty page.
-
-This is acceptable for a single user across their own devices because the App Store rollout is contemporaneous — V1 users update to V2 within days. For a multi-week rollout (shared device, slow user), the EDD recommends gating V2 reads on a feature flag in the public CloudKit database so V2 isn't enabled until adoption is high enough.
+When CloudKit promotes to Production (or users land), this section gets a follow-up: the data model EDD's `VersionedSchema` framework reactivates, and additive migrations + the CloudKit Production schema deploy become a release gate. See the standing rule in user memory: skip migrations until CloudKit ships.
 
 ---
 
@@ -778,15 +871,14 @@ enum NoteRegionAnchorKind: String, Codable, Sendable {
     var id: UUID = UUID()
     var page: NotePage? = nil
 
-    /// Which block owns this region's anchor. Required in V2+.
+    /// Which block owns this region's anchor.
     var anchorBlockID: UUID? = nil
 
-    /// Discriminator. Defaults to `.inkRect` so V1 records read correctly
-    /// after migration.
+    /// Discriminator. Defaults to `.inkRect`.
     var anchorKindRaw: String = NoteRegionAnchorKind.inkRect.rawValue
 
     // MARK: Ink anchor (kind == .inkRect)
-    /// Canonical-canvas coordinates. Unchanged from V1.
+    /// Canonical-canvas coordinates.
     var rectX: Double = 0
     var rectY: Double = 0
     var rectWidth: Double = 0
@@ -1009,13 +1101,15 @@ struct SlashCommandPaletteFeature: Reducer {
 
 | Surface | Presentation | Trigger |
 |---|---|---|
-| Mac | `NSPopover` anchored at caret rect | Typing `/` at start of line or word boundary; or `⌘/` shortcut |
-| iPad regular + hardware kbd | `UIPopoverPresentationController` from caret rect | Typing `/`; or `⌘/` |
+| Mac | `NSPopover` anchored at caret rect | Typing `/` at start of line or word boundary; or `⌘⇧/` shortcut |
+| iPad regular + hardware kbd | `UIPopoverPresentationController` from caret rect | Typing `/`; or `⌘⇧/` |
 | iPad regular + soft kbd | `UIPopoverPresentationController` from caret rect | Typing `/` (slash is on the primary plane on iPad soft keyboard) |
-| iPad compact (Slide Over) | **No popover.** Accessory bar is the surface. | Slash typed = literal slash inserted. |
-| iPhone | **No popover.** Accessory bar is the surface. | Slash typed = literal slash inserted. |
+| iPad compact + hardware kbd | `UIPopoverPresentationController` from caret rect | Typing `/`; or `⌘⇧/` (the hardware keyboard rule overrides the size-class gate — see §3) |
+| iPad compact + soft kbd | **No popover.** Accessory bar is the surface. | Slash typed = literal slash inserted. |
+| iPhone + hardware kbd (rare) | `UIPopoverPresentationController` from caret rect | Typing `/`; or `⌘⇧/` |
+| iPhone + soft kbd | **No popover.** Accessory bar is the surface. | Slash typed = literal slash inserted. |
 
-The reducer doesn't know which presentation it's in — the wiring layer chooses.
+The reducer doesn't know which presentation it's in — the wiring layer chooses based on `horizontalSizeClass` AND hardware keyboard presence (`GCKeyboard.coalescedKeyboard != nil`). Hardware keyboard wins.
 
 ### 13.4 Filtering
 
@@ -1227,7 +1321,7 @@ The full set, identical across hardware-keyboard platforms (Mac, iPad+kbd, iPhon
 | ⌘⇧8 | Bulleted list |
 | ⌘⇧9 | Checklist |
 | ⌘K | Insert link |
-| ⌘/ | Open slash menu |
+| ⌘⇧/ | Open slash menu (⌘/ is reserved by the system for "Show All Help" on Mac and not overridable in practice) |
 | ⌘⇧H | Toggle highlight (last color) |
 | ⌘⇧R | Mark region from selection |
 | ⌘⇧D | Send to Dispatch |
@@ -1237,6 +1331,47 @@ The full set, identical across hardware-keyboard platforms (Mac, iPad+kbd, iPhon
 | ⌘G / ⌘⇧G | Find next / previous |
 
 All shortcuts dispatch reducer actions through `UIKeyCommand` (iOS/iPadOS) and `NSResponder` / first-responder chain (Mac). No platform branching in the reducer.
+
+### 17.5 Undo design — page-scoped, cascade rule
+
+Undo is **page-scoped** (Apple Notes' model). `⌘Z` undoes the most recent change anywhere on the current page; cross-page undo is not supported (page swipe commits the prior page's edits as a stable point).
+
+The implementation cascades across three undo managers, in priority order:
+
+| Layer | Owned by | Undoes |
+|---|---|---|
+| Active text block | `UITextView.undoManager` (TextKit 2 native) | Text inserts/deletes, format toggles, list operations within the active block |
+| Active ink block | `PKCanvasView.undoManager` (PencilKit native) | Stroke add/remove/erase within the active block |
+| Page-level | `NotePageFeature` logical undo stack | Block insert/delete/reorder, drag-bar height changes, region anchor changes, highlight applies |
+
+**Cascade rule on `⌘Z`:**
+
+1. Ask the active block's native undo manager first. If `canUndo`, send it `undo()` and stop.
+2. Otherwise ask the page-level reducer-managed stack. If non-empty, pop one entry and apply its inverse.
+3. If both are empty: no-op (visual flash on the page chrome if Reduce Motion is off; silent otherwise).
+
+`⌘⇧Z` (Redo) cascades the same way: native first, then page-level.
+
+**Page-level undo entries** are reducer actions plus their inverse:
+
+```swift
+enum PageUndoEntry: Equatable, Sendable {
+    case blockInserted(blockID: UUID, at: Int)
+    case blockDeleted(blockID: UUID, snapshot: PageBlockSnapshot, at: Int)
+    case blocksReordered(previousOrder: [UUID])
+    case blockHeightChanged(blockID: UUID, previousHeight: Double)
+    case regionAnchorChanged(regionID: UUID, previousAnchor: NoteRegionAnchor)
+    case highlightApplied(blockID: UUID, range: NSRange, previousAttribute: HighlightAttribute.Value?)
+}
+```
+
+`NotePageFeature.State.undoStack: [PageUndoEntry]` and `redoStack: [PageUndoEntry]` carry the page-level history. Standard "push on action commit, clear redo on new action" semantics. Cap at 100 entries per page; older entries fall off the bottom.
+
+**Boundary discipline.** The reducer does NOT push entries for native block actions — those live entirely in the native undo manager. A page-level entry is pushed only when the reducer mutates state directly (block insert, reorder, etc.). Without this rule, undo would double-fire (native undoes the text edit, then the reducer undoes its tracked "text changed" entry).
+
+**Cross-block subtlety.** Activating a different block doesn't drain the previous block's native undo manager — it lives with the block. If the user types in block A, switches to block B, types there, switches back to A, and hits `⌘Z`, the cascade asks block A's native manager (still holding A's edits) and undoes there. This matches user expectation.
+
+**Persistence.** Undo stacks are session-only. Page swipe / app background drains the page-level stack (the native managers persist as long as their `PKCanvasView`/`UITextView` instances do, which they don't across page swipes). This is consistent with Apple Notes: navigating away ends the undo session for that note.
 
 ---
 
@@ -1465,7 +1600,7 @@ Every custom gesture has a non-gesture alternative. The EDD's hard rule: if a fe
 | Pencil double-tap → toggle eraser | Tap eraser tool in toolbar (existing). |
 | Drag bar continuous drag | Accessibility action "Increase block height" / "Decrease block height" with 20pt steps. |
 | Highlight via selection | Selection menu → Highlight submenu (the same path keyboard users use). |
-| Slash menu via typing | `⌘/` keyboard shortcut. On iPhone, the accessory bar serves the same role. |
+| Slash menu via typing | `⌘⇧/` keyboard shortcut. On iPhone, the accessory bar serves the same role. |
 
 ### 19.7 Switch Control & Voice Control
 
@@ -1661,16 +1796,18 @@ Per `CLAUDE.md`: "Do not mock `VNRecognizeTextRequest` — use real fixtures of 
 
 ## 22. Refactor plan
 
-The block model and hybrid editor touch substantial existing code. The refactor sequence below ships behind a build flag (`FROMINK_HYBRID_EDITOR`) until V2 schema migration is verified.
+The block model and hybrid editor touch substantial existing code. The refactor sequence below ships incrementally — no build flag (no migrations means no staged rollout to gate; per the user memory rule, schema lands directly).
 
 ### 22.1 Phase 1 — schema (no UI change)
 
-1. Add `PageBlock` `@Model`, `PageBlockKind` enum, snapshot type.
-2. Add `NotePage.blocks` relationship + `extractedText` fields.
+1. Add `PageBlock` `@Model`, `PageBlockKind` enum, `PageBlockSnapshot` value type.
+2. Add `NotePage.blocks` relationship + `extractedText` + `extractedTextHash`.
 3. Add `NoteRegion.anchorBlockID` + `anchorKindRaw`.
-4. Add V2 migration step that materializes one ink block per existing page (§9).
-5. `NotebookClient` gains `insertBlock`, `updateBlock`, `deleteBlock`, `updateBlockHeight`, `reorderBlocks`. Legacy `saveDrawing` continues to delegate into the migrated block.
-6. Tests: migration produces expected blocks; existing region behavior unchanged.
+4. Add `Notebook.canonicalCanvasWidth`.
+5. Add `PageBlock.contentHash`.
+6. **Delete** `NotePage.drawingData` and `NotePage.ocrText` (these move to per-block).
+7. `NotebookClient` gains `insertBlock`, `updateBlock`, `deleteBlock`, `updateBlockHeight`, `reorderBlocks`. Existing `saveDrawing` retires; the call site that used it (`CanvasViewBridge.persist`) now writes into a block.
+8. Tests: block CRUD round-trips; region anchor discriminator persists.
 
 ### 22.2 Phase 2 — text block editor (text-only notes)
 
@@ -1722,7 +1859,7 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 ### 22.8 What gets deleted
 
 - `CanvasScreen`'s per-page header/link/region local `@State` collapses into `NotePageFeature` state.
-- Legacy `NoteHeader` + `NoteLink` consumer paths (kept during the NoteRegion migration) finally retire.
+- Legacy `NoteHeader` + `NoteLink` consumer paths (held over from the NoteRegion rollout) finally retire.
 - `CanvasScreen.headerPreviewImages` and friends move to `NotePageFeature` dependency cache.
 
 ---
@@ -1738,9 +1875,10 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 | Q5 | Read-aloud action — should highlights affect speech (pause, color-named callout) or be silent? Same question for regions. | Accessibility user research. |
 | Q6 | Pencil-in-blank-text auto-promotion to ink block — should we add a setting to disable for users who don't want it? | Beta feedback. |
 | Q7 | Block-level diff for FM input — do we send the whole `extractedText` on every change, or just the changed block? Latter is cheaper but FM may produce worse results with less context. | When summarization budget becomes a concern. |
-| Q8 | Should `image` and `embed` block kinds ship with V2 or wait for V3? Architecture supports them either way. | Product prioritization. |
+| Q8 | Should `image` and `embed` block kinds ship in v1 or wait for v1.1? Architecture supports them either way. | Product prioritization. |
 | Q9 | ActivityKit Live Activity for voice capture — v1 or follow-up? | Engineering capacity. |
 | Q10 | Multi-window on Mac/iPad — does opening the same note in two windows present any state-sync risk beyond LWW? | After Phase 5. |
+| Q11 | Image and video block kinds — slot into the same block stack (commented-out enum cases already noted in §5). Picker surfaces, storage caps for video (60s / 100MB cap recommended), and caption story all defer to v1.1. | Post-v1. |
 
 ---
 
@@ -1752,7 +1890,7 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 | 2026-06-07 | TextKit 2 + AttributedString as the text engine. | TextKit 2 is the only path to a custom layout pass that knows about ink blocks; AttributedString is the natural Swift data model. |
 | 2026-06-07 | Block-based document model (`PageBlock`). | Localizes CloudKit conflicts; gives natural VoiceOver reading order; lets text and ink coexist without coordinate transformations between layers. |
 | 2026-06-07 | Unified `NoteRegion` with `.inkRect` / `.textRange` anchor discriminator. | One dispatch surface, one indicator component, one lifecycle. Text-range anchor rides on AttributedString custom attribute so it survives edits for free. |
-| 2026-06-07 | Canonical canvas (768pt wide) for ink storage; viewport-relative scale at render time. | Unifies portrait/landscape + cross-platform with one rule; matches Apple Notes' behavior; PencilKit-native (no per-stroke transforms). |
+| 2026-06-07 | Canonical canvas (per-notebook, bound on first stroke to the authoring device's portrait width) for ink storage; viewport-relative scale at render time. | Authoring is always 1:1 on the originating device; cross-device anchors stable; PencilKit-native. Default 768pt for empty notebooks. |
 | 2026-06-07 | Drag bar is the visual handle for `PageBlock.heightPoints`. | The Apple Notes pattern; trivially fits the block model; accessibility action exposes the equivalent for non-gesture users. |
 | 2026-06-07 | Slash menu available on Mac + iPad regular; size-class gate (not platform gate). | iPad in Slide Over is visually iPhone; treating it as such keeps UX consistent. |
 | 2026-06-07 | Slash menu single-row mode-switching on iPhone, with one popover concession (`Aa` for dense formatting). | 44pt vertical budget doesn't fit dense menus; the Apple Notes pattern is the proven solution. |
@@ -1764,3 +1902,11 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 | 2026-06-07 | Custom rotors for Regions, Headings, Voice memos, Attachments. | Power feature for VoiceOver users; low implementation cost; ADA shortlist signal. |
 | 2026-06-07 | Color is never the only signal — highlights and regions always carry an icon overlay. | Differentiate Without Color compliance; protects colorblind users without a separate code path. |
 | 2026-06-07 | Reducer-action vocabulary IS the command vocabulary. One reducer, many chromes. | Voice Control "works for free"; testability; modularity. The thesis of the EDD. |
+| 2026-06-08 | No migrations until CloudKit ships. Schema changes land directly; dev simulator resets if store fails to open. | Pre-production with `cloudKitDatabase: .none`; the user has stated this rule explicitly. Reverts to standard `VersionedSchema` discipline once CloudKit promotes to Production. |
+| 2026-06-08 | Slash menu gates on (hardware-keyboard connected OR `horizontalSizeClass == .regular`) — hardware keyboard always wins. | Closes the iPad-compact-with-hardware-keyboard gap where neither surface would otherwise be available. |
+| 2026-06-08 | Drag bar visible only when ink is authorable (iPad regular with Pencil-capable hardware). | Read-only drag bar was a contradictory UX; ink is read-only on iPhone / Mac / iPad compact, so its sizing handle is hidden too. |
+| 2026-06-08 | Per-block PKCanvasView lifecycle (placeholder / thumbnail / live) with active-range buffer. | All-live canvases land 80–200MB on long pages; viewport-buffered lifecycle keeps memory bounded to ~15MB regardless of page length. |
+| 2026-06-08 | `⌘⇧/` (not `⌘/`) opens the slash menu. | `⌘/` is "Show All Help" on Mac and not overridable. |
+| 2026-06-08 | Undo is page-scoped with a native-first cascade (text/ink block native managers → page-level reducer stack). | Apple Notes' model; native handles in-block edits without double-counting via reducer entries. |
+| 2026-06-08 | Per-block `contentHash`; `NotePage.extractedTextHash` aggregates from the manifest of per-block hashes. | Reorders no longer invalidate ML caches when no content changed; deltas are computable for FM re-runs. |
+| 2026-06-08 | Image and video block kinds deferred to v1.1; architecture supports the addition. | Avoids scope creep on v1 while making the architectural seam explicit. |
