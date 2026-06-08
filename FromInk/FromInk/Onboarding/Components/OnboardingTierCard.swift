@@ -1,27 +1,28 @@
 import SwiftUI
 
-/// Compact tier card used for the yearly and monthly subscription
-/// options on the paywall. Visually paired with another instance of
-/// itself in an HStack below the lifetime hero card, so the two
-/// subscription options read as alternatives to the lifetime brand
-/// position rather than peer choices to it.
+/// Compact tier card used for all three subscription options
+/// (Lifetime, Yearly, Monthly) on the paywall. Three instances sit
+/// side-by-side in an HStack so every option occupies one-third of
+/// the row at equal visual weight.
 ///
 ///     ┌──────────────────┐
 ///     │  YEARLY      ●   │  ← kicker + selection indicator
 ///     │                  │
-///     │  $14.99/yr       │  ← medium serif price
+///     │  $14.99/yr       │  ← serif price
 ///     │  ABOUT $1.25/MO  │  ← optional small mono subtitle
 ///     └──────────────────┘
+///
+/// The subtitle slot is supported but unused in the current paywall —
+/// keeping all three cards subtitle-less preserves matching height
+/// across the row. The Model still accepts an optional subtitle for
+/// future surfaces (Settings → Plan upgrade card, focused purchase
+/// view from the dispatch panel) where a per-card caption would carry
+/// the entire pricing context.
 ///
 /// Selection state communicated by:
 /// - background tint: paper (unselected) vs surface (selected)
 /// - border weight: 1pt rule (unselected) vs 1.5pt ink (selected)
 /// - small filled-vs-hollow dot in the top-right
-///
-/// Same tap-to-select behavior as `OnboardingLifetimeCard`. The two
-/// component types share visual register but differ in size — the
-/// lifetime card commits to a hero treatment, the tier card stays
-/// compact.
 ///
 struct OnboardingTierCard: View {
     let model: Model

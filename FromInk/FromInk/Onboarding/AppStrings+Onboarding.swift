@@ -292,30 +292,23 @@ extension AppStrings {
             comment: "Lifetime tier headline — second line, italic ink-2 accent. The emotional payoff."
         )
         /// Lifetime tier body, three separate sentences rendered as a
-        /// stacked VStack under the headline. Each does one job:
-        ///   line 1: the lifetime UPDATES promise (Procreate-style)
-        ///   line 2: the lifetime DEVICES promise (iCloud scope)
-        ///   line 3: "No subscription." — the negative-space punch
+        /// Single-line body rendered under the headline. Carries all
+        /// three load-bearing notes from the previous three-line version
+        /// in one sentence:
+        ///   • UPDATES promise (Procreate-style)
+        ///   • DEVICES promise (iCloud scope)
+        ///   • "No subscription." — the negative-space punch
         ///
-        /// Per subscription EDD §5.3, line 3 must NOT be softened or
-        /// buried in translation. It is the one sentence that defines
-        /// what From Ink is against. Translators should preserve its
-        /// terseness even if the target language tends toward longer
-        /// phrasing.
-        static let subscriptionLifetimeBody1 = NSLocalizedString(
-            "onboarding.subscription.lifetime.body.1",
-            value: "From Ink, and every update we'll ever ship.",
-            comment: "Lifetime tier body line 1 of 3 — the Procreate-style lifetime updates commitment."
-        )
-        static let subscriptionLifetimeBody2 = NSLocalizedString(
-            "onboarding.subscription.lifetime.body.2",
-            value: "Yours, on every device you'll ever own.",
-            comment: "Lifetime tier body line 2 of 3 — clarifies practical scope (iCloud sync follows the user across devices)."
-        )
-        static let subscriptionLifetimeBody3 = NSLocalizedString(
-            "onboarding.subscription.lifetime.body.3",
-            value: "No subscription.",
-            comment: "Lifetime tier body line 3 of 3 — the negative-space punch. Per subscription EDD §5.3, this is the one sentence that defines what From Ink is against. Do NOT soften. Do NOT bury. Translators should preserve its terseness even if the target language tends toward longer phrasing."
+        /// Per subscription EDD §5.3, "No subscription." must NOT be
+        /// softened or buried in translation. It is the one sentence
+        /// that defines what From Ink is against, and it must remain a
+        /// distinct sentence (its own period) inside the line. The
+        /// preceding period before "No subscription." is the rhythm
+        /// break translators should preserve.
+        static let subscriptionLifetimeBody = NSLocalizedString(
+            "onboarding.subscription.lifetime.body",
+            value: "From Ink, every update, every device. No subscription.",
+            comment: "Lifetime tier body — single line under the headline. Carries the updates promise (every update), the devices promise (every device), and the negative-space punch (\"No subscription.\"). Per subscription EDD §5.3, the final \"No subscription.\" sentence must remain its own period-terminated sentence inside the line — translators preserve the rhythm break, do not soften, do not bury."
         )
 
         // YEARLY — trial-first framing with the post-trial annual cost.
@@ -461,12 +454,6 @@ extension AppStrings {
             value: "$19.99",
             comment: "Lifetime tier price. Placeholder until StoreKit integration replaces it with Product.displayPrice (locale-aware currency formatting)."
         )
-        static let subscriptionLifetimePriceCaption = NSLocalizedString(
-            "onboarding.subscription.lifetime.price.caption",
-            value: "pay once",
-            comment: "Small mono uppercase caption beneath the lifetime price. Distinguishes lifetime from per-period subscription tiers."
-        )
-
         static let subscriptionYearlyKicker = NSLocalizedString(
             "onboarding.subscription.yearly.kicker",
             value: "Yearly",

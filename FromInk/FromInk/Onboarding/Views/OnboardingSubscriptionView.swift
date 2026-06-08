@@ -1,18 +1,16 @@
 import SwiftUI
 
-/// Subscription screen — paywall with three vertically-stacked tier
-/// options and a reactive headline that changes based on the
+/// Subscription screen — paywall with three horizontally-arranged
+/// tier options and a reactive headline that changes based on the
 /// selected tier.
 ///
-/// Per subscription EDD §5 (revised), all three tiers render as
-/// equal-weight cards stacked in a list. The brand position lives in
-/// the headline + body above the cards, which update based on which
-/// tier is currently selected:
+/// All three tiers render as equal-weight cards in a single horizontal
+/// row to keep vertical real estate clear for the included-features
+/// list below. The brand position lives in the headline + body above
+/// the cards, which update based on which tier is currently selected:
 ///
 ///     LIFETIME selected →  "Pay once. Yours, forever."
-///                          "From Ink, and every update we'll ever ship."
-///                          "Yours, on every device you'll ever own."
-///                          "No subscription."
+///                          "From Ink, every update, every device. No subscription."
 ///     YEARLY selected   →  "Free for 7 days, then $14.99 a year."
 ///                          "Cancel anytime."
 ///     MONTHLY selected  →  "Free for 7 days, then $2.99 a month."
@@ -21,7 +19,8 @@ import SwiftUI
 /// Headline and body change at the same instant the tier selection
 /// changes. The cards below are visually equal (same component, same
 /// width, same spacing); the editorial layer above carries each tier's
-/// specific framing.
+/// specific framing. No card carries a tertiary subtitle — every card
+/// is `kicker + price`, matching height across all three.
 ///
 /// Feature list below the tier section is shared across all tiers —
 /// every paid customer gets the same From Ink Plus feature set,
@@ -49,11 +48,12 @@ struct OnboardingSubscriptionView: View {
                 // janky.
                 .animation(model.headlineAnimation, value: model.headlineLine1)
 
-            // Body — one or more sentences stacked vertically. Lifetime
-            // shows three lines (updates promise, devices promise, "No
-            // subscription." punch); yearly and monthly show a single
-            // "Cancel anytime." line. The VStack animates the count
-            // change when selection moves between tiers.
+            // Body — single line per tier. Lifetime carries the three
+            // load-bearing notes (updates, devices, "No subscription.")
+            // compressed into one sentence. Yearly / monthly carry
+            // "Cancel anytime." The view still iterates `bodyLines`
+            // because future tiers might want multi-line bodies, but
+            // every current entry is one line.
             VStack(alignment: .leading, spacing: model.bodyParagraphSpacing) {
                 ForEach(model.bodyLines, id: \.self) { line in
                     Text(line)
@@ -73,10 +73,14 @@ struct OnboardingSubscriptionView: View {
                 .frame(height: model.ruleHeight)
                 .padding(.top, model.tierRuleTopPadding)
 
-            // Three tier cards stacked vertically, equal width, equal
+            // Three tier cards arranged horizontally, equal width via
+            // each card's internal `.frame(maxWidth: .infinity)`, equal
             // visual weight. Selection state communicated by each
             // card's internal border + background tint + indicator dot.
-            VStack(spacing: model.tierCardSpacing) {
+            // Horizontal layout reclaims the vertical real estate that
+            // the previous stacked design consumed, making room for the
+            // included-features list below.
+            HStack(alignment: .top, spacing: model.tierCardSpacing) {
                 OnboardingTierCard(model: model.lifetimeCard)
                 OnboardingTierCard(model: model.yearlyCard)
                 OnboardingTierCard(model: model.monthlyCard)
@@ -142,14 +146,15 @@ extension OnboardingSubscriptionView.Model {
         self.headlineLine2 = copy.headlineLine2
         self.bodyLines = copy.bodyLines
 
-        // Three stacked tier cards. Each gets its own selection state.
-        // Lifetime carries a "pay once" subtitle to distinguish it from
-        // the per-period tiers; yearly and monthly carry the cadence
-        // directly in the price string so no subtitle is needed.
+        // Three horizontal tier cards. Each gets its own selection
+        // state. No card carries a subtitle — all three are `kicker +
+        // price`, matching height across the row. (The previous "pay
+        // once" subtitle on the lifetime card made it taller than the
+        // subscription cards, breaking the row's visual balance.)
         self.lifetimeCard = OnboardingTierCard.Model(
             kicker: AppStrings.Onboarding.subscriptionLifetimeKicker,
             price: AppStrings.Onboarding.subscriptionLifetimePriceMajor,
-            subtitle: AppStrings.Onboarding.subscriptionLifetimePriceCaption,
+            subtitle: nil,
             isSelected: selectedTier == .lifetime,
             onTap: { onTierSelected(.lifetime) },
             ds: ds
@@ -252,21 +257,17 @@ extension OnboardingSubscriptionView.Model {
     }
 
     /// Headline + body copy for the currently-selected tier. Each tier
-    /// has its own framing: lifetime carries the ownership commitment
-    /// across three lines (updates promise, devices promise, "No
+    /// carries a single body line: lifetime compresses the ownership
+    /// commitment into one sentence (updates / devices / "No
     /// subscription." punch); the subscription tiers lead with the
-    /// trial offer + cadence and close with a single reassurance line.
+    /// trial offer + cadence and close with "Cancel anytime."
     private static func copy(for tier: SubscriptionTier) -> (headlineLine1: String, headlineLine2: String, bodyLines: [String]) {
         switch tier {
         case .lifetime:
             return (
                 headlineLine1: AppStrings.Onboarding.subscriptionLifetimeHeadlineLine1,
                 headlineLine2: AppStrings.Onboarding.subscriptionLifetimeHeadlineLine2,
-                bodyLines: [
-                    AppStrings.Onboarding.subscriptionLifetimeBody1,
-                    AppStrings.Onboarding.subscriptionLifetimeBody2,
-                    AppStrings.Onboarding.subscriptionLifetimeBody3
-                ]
+                bodyLines: [AppStrings.Onboarding.subscriptionLifetimeBody]
             )
         case .yearly:
             return (

@@ -88,11 +88,16 @@ struct OnboardingWiringView: View {
         )
     }
 
-    /// Restore / Privacy / Terms link row rendered directly below the
-    /// subscription primary CTA. Other steps return nil — the chrome is
-    /// regulatory and only relevant at the purchase decision point.
-    /// Actions are no-ops until the StoreKit + privacy/terms URL wiring
-    /// lands; the UI itself is the contract here.
+    /// Restore / Privacy / Terms link row, rendered ABOVE the primary
+    /// CTA in the footer (subscription step only). Placement-above is
+    /// load-bearing: the CTA is bottom-anchored, so chrome above it
+    /// grows the footer's top without shifting the CTA's screen Y.
+    /// Putting chrome BELOW the CTA — as an earlier revision did —
+    /// shifts the CTA Y between steps, which jumps when the user
+    /// swipes back. Other steps return nil so the chrome only renders
+    /// at the purchase decision point. Actions are no-ops until the
+    /// StoreKit + privacy/terms URL wiring lands; the UI itself is
+    /// the contract here.
     private var legalChromeModel: OnboardingLegalChrome.Model? {
         guard store.step == .subscription else { return nil }
         return OnboardingLegalChrome.Model(
