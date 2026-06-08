@@ -265,7 +265,6 @@ extension HomeDailyBrief.Model {
         nonFocalOpacity: Double = 1.0,
         nonFocalIsInteractive: Bool = true,
         isWheelMode: Bool = false,
-        isFocusMode: Bool = false,
         ds: DesignSystem = .standard
     ) {
         self.metaRow = metaRow
@@ -308,13 +307,13 @@ extension HomeDailyBrief.Model {
 
         // Hide the editor's note when any of:
         //  • wheel mode is active (the wheel is the focal surface)
-        //  • focus mode is active (user explicitly collapsed the brief)
         //  • there are no paragraphs (Foundation Models couldn't
         //    produce a brief — see `localization_edd.md §5`).
-        // The tabs below continue rendering events / reminders /
-        // birthdays regardless; the editor's note is editorial
-        // commentary, not the data itself.
-        self.showsEditorsNote = !isWheelMode && !isFocusMode && !editorsNote.paragraphs.isEmpty
+        // Focus mode is not checked here because focus mode removes
+        // the entire `HomeDailyBrief` from the layout one level up in
+        // `HomeScreenView`; if this Model is being built at all, the
+        // brief is meant to be visible.
+        self.showsEditorsNote = !isWheelMode && !editorsNote.paragraphs.isEmpty
         self.editorsNoteOpacity = nonFocalOpacity
         self.editorsNoteIsInteractive = nonFocalIsInteractive
         self.editorsNoteScrimAction = onScrimTap

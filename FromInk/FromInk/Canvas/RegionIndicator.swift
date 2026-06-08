@@ -171,6 +171,7 @@ extension RegionIndicator.Model {
         snapshot: NoteRegionSnapshot,
         onEditHeaderTapped: @escaping () -> Void = {},
         onEditLinkTapped: @escaping () -> Void = {},
+        onEditEventTapped: @escaping () -> Void = {},
         onManageTapped: @escaping () -> Void = {},
         extraBadges: [RegionIndicator.Model.Badge] = [],
         ds: DesignSystem = .standard
@@ -193,6 +194,14 @@ extension RegionIndicator.Model {
             badges.append(.pdf(onTap: onEditLinkTapped, ds: ds))
         case .broken:
             badges.append(.broken(onTap: onEditLinkTapped, ds: ds))
+        }
+        if snapshot.eventKitIdentifier != nil {
+            // The region anchors an EKEvent or EKReminder. Tap routes
+            // to the dispatch edit flow (same UI used from the
+            // dispatch panel) which fetches the live event via
+            // EventKitService.fetchEventDraft and presents the modal
+            // in edit mode.
+            badges.append(.event(onTap: onEditEventTapped, ds: ds))
         }
         badges.append(contentsOf: extraBadges)
         self.badges = badges
@@ -279,6 +288,17 @@ extension RegionIndicator.Model.Badge {
             // a brand-violating red.
             background: ds.colors.ink3,
             accessibilityLabel: AppStrings.RegionIndicator.brokenLinkBadgeAccessibility,
+            onTap: onTap
+        )
+    }
+
+    static func event(onTap: @escaping () -> Void, ds: DesignSystem) -> Self {
+        Self(
+            id: .event,
+            iconSystemName: "calendar",
+            iconColor: ds.colors.paperOnInk,
+            background: ds.colors.ink2,
+            accessibilityLabel: AppStrings.RegionIndicator.eventBadgeAccessibility,
             onTap: onTap
         )
     }

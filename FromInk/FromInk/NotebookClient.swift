@@ -109,18 +109,24 @@ struct NotebookClient: Sendable {
     var updateHistoryStatus: @Sendable (_ entryID: UUID, _ status: String) async throws -> Void
 
     // MARK: - Regions
-    /// Create a new `NoteRegion` on the given page. Either or both
-    /// associations may be supplied at creation time: pass
-    /// `headerOCRText` for the bookmark/header path, pass
-    /// `linkDestination` for the link path, pass both for a region
-    /// that opens with two badges from the start. Both nil mints a
-    /// region with no associations — useful for tests / edge cases
-    /// but normally the user picks at least one in the lasso menu.
+    /// Create a new `NoteRegion` on the given page. Any combination of
+    /// associations may be supplied at creation time:
+    /// - `headerOCRText` for the bookmark/header path
+    /// - `linkRecognizedText` + `linkDestination` for the link path
+    ///   (NB: the link path must NOT pass `headerOCRText` — doing so
+    ///   would mark the region as a header AND a link, causing a
+    ///   duplicate row in the dispatch panel)
+    /// - `eventKitIdentifier` for the lasso → calendar/reminder path
+    /// All nil mints a region with no associations — useful for tests
+    /// and edge cases but normally the user picks at least one in the
+    /// lasso menu.
     var addRegion: @Sendable (
         _ pageID: UUID,
         _ rect: CGRect,
         _ headerOCRText: String?,
-        _ linkDestination: NoteRegionLinkDestination?
+        _ linkRecognizedText: String?,
+        _ linkDestination: NoteRegionLinkDestination?,
+        _ eventKitIdentifier: String?
     ) async throws -> NoteRegionSnapshot
 
     /// Set or clear a region's OCR'd header text. Passing `nil`
@@ -335,7 +341,7 @@ extension NotebookClient: DependencyKey {
         deleteLink: { _ in throw CancellationError() },
         recordHistory: { _, _ in throw CancellationError() },
         updateHistoryStatus: { _, _ in throw CancellationError() },
-        addRegion: { _, _, _, _ in throw CancellationError() },
+        addRegion: { _, _, _, _, _, _ in throw CancellationError() },
         updateRegionHeader: { _, _ in throw CancellationError() },
         updateRegionLink: { _, _ in throw CancellationError() },
         deleteRegion: { _ in throw CancellationError() },

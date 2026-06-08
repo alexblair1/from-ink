@@ -17,7 +17,17 @@ struct HomeScreenView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: stickyHeaderHeight)
 
-                    HomeDailyBrief(model: model.dailyBrief)
+                    // The brief — large date, lede, editor's note, and
+                    // the calendar/reminders/birthdays tab section —
+                    // disappears entirely in focus mode. The wiring view
+                    // passes nil for `dailyBrief` when `isFocusMode` is
+                    // true; the absence of the model is the encoding of
+                    // the visibility decision. The notebook / PDF / voice
+                    // memo shelves below stay visible since they're the
+                    // user's working surface, not the daily-brief frame.
+                    if let dailyBrief = model.dailyBrief {
+                        HomeDailyBrief(model: dailyBrief)
+                    }
 
                     Group {
                         if !model.notebooks.isEmpty {
@@ -86,7 +96,11 @@ struct HomeScreenView: View {
 extension HomeScreenView {
     struct Model {
         let topBar: HomeTopBar.Model
-        let dailyBrief: HomeDailyBrief.Model
+        /// nil when focus mode is active. The brief includes the large
+        /// date masthead, the lede, the editor's note, and the
+        /// calendar / reminders / birthdays tabs — all part of the
+        /// daily-brief frame that focus mode collapses away.
+        let dailyBrief: HomeDailyBrief.Model?
         let shelf: HomeNotebookShelf.Model
         let notebooks: [HomeNotebookShelf.NotebookCardModel]
         /// Recent PDFs section. `nil` when the library has no imported
@@ -115,7 +129,7 @@ extension HomeScreenView {
 extension HomeScreenView.Model {
     init(
         topBar: HomeTopBar.Model,
-        dailyBrief: HomeDailyBrief.Model,
+        dailyBrief: HomeDailyBrief.Model?,
         shelf: HomeNotebookShelf.Model,
         notebooks: [HomeNotebookShelf.NotebookCardModel],
         recentPDFs: HomeRecentPDFsShelf.Model? = nil,

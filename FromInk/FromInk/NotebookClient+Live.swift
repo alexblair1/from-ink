@@ -581,7 +581,7 @@ extension NotebookClient {
             },
 
             // MARK: - Regions
-            addRegion: { pageID, rect, headerOCRText, linkDestination in
+            addRegion: { pageID, rect, headerOCRText, linkRecognizedText, linkDestination, eventKitIdentifier in
                 try await MainActor.run {
                     let ctx = modelContext.context()
                     guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
@@ -597,7 +597,9 @@ extension NotebookClient {
                         rect: rect,
                         createdAt: calendarContext.now(),
                         sortOrder: nextSort,
-                        headerOCRText: headerOCRText
+                        headerOCRText: headerOCRText,
+                        linkRecognizedText: linkRecognizedText,
+                        eventKitIdentifier: eventKitIdentifier
                     )
                     apply(linkDestination, to: region)
                     ctx.insert(region)

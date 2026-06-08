@@ -224,7 +224,12 @@ struct HomeWiringView: View {
     private var homeScreenModel: HomeScreenView.Model {
         HomeScreenView.Model(
             topBar: topBarModel,
-            dailyBrief: dailyBriefModel,
+            // Focus mode collapses the entire daily-brief frame (large
+            // date, lede, editor's note, and the calendar/reminders/
+            // birthdays tab section). The shelves below stay visible
+            // — focus mode is about removing the daily-brief framing,
+            // not the user's notebooks.
+            dailyBrief: store.isFocusMode ? nil : dailyBriefModel,
             shelf: shelfModel,
             notebooks: notebookCards,
             recentPDFs: recentPDFsModel,
@@ -326,8 +331,7 @@ struct HomeWiringView: View {
             tabSection: buildTabSection(),
             nonFocalOpacity: store.isWheelOpen ? 0 : 1.0,
             nonFocalIsInteractive: !store.isWheelOpen,
-            isWheelMode: store.isWheelOpen,
-            isFocusMode: store.isFocusMode
+            isWheelMode: store.isWheelOpen
         )
     }
 

@@ -442,6 +442,8 @@ enum DocumentKind: String, Codable {
 
 ### 4.6 NoteHeader
 
+> **STATUS: SUPERSEDED.** `NoteHeader` and `NoteLink` (§4.7) are both replaced by the unified `NoteRegion` (§4.10) as of the 2026-06 region-tool migration. The two models remain in the schema while migration tooling completes; new persistence work uses `NoteRegion`. This section documents the historical shape; consumers should treat it as legacy. **Do not add new fields or call sites to `NoteHeader`.**
+
 ```swift
 @Model final class NoteHeader {
     var id: UUID = UUID()
@@ -479,6 +481,8 @@ enum DocumentKind: String, Codable {
 **Why individual rect fields instead of `Data`-encoded `CGRect`?** CloudKit indexes scalar fields for efficient queries. If we ever need to query headers by position (e.g. "all headers in the top third of the page"), scalar fields support this. `Data` does not.
 
 ### 4.7 NoteLink
+
+> **STATUS: SUPERSEDED.** Replaced by the unified `NoteRegion` (§4.10) alongside `NoteHeader`. See §4.6 status note. Do not add new fields or call sites to `NoteLink`.
 
 ```swift
 @Model final class NoteLink {
@@ -589,6 +593,93 @@ enum DocumentKind: String, Codable {
 ```
 
 **This model does NOT sync.** Toolbar side, handedness, and last-opened notebook are per-device preferences. They live in a separate `ModelContainer` with `cloudKitDatabase: .none`, even after the synced container moves to `.private(...)` in Phase 3.
+
+### 4.10 NoteRegion
+
+`NoteRegion` is a lasso-selected anchor on a `NotePage` that carries any combination of associations: an OCR'd header text, a link destination (external URL, page, notebook, or PDF reference), and an EventKit identifier for an anchored calendar event or reminder. Replaces the pair of `NoteHeader` (§4.6) and `NoteLink` (§4.7), which together couldn't represent a region that's both a header AND an event, or a link AND an event, without producing duplicate records.
+
+```swift
+@Model final class NoteRegion {
+    var id: UUID = UUID()
+
+    // Bounding box — CloudKit-friendly scalars, projected through
+    // the computed `rect` property below. Same shape as the legacy
+    // NoteHeader / NoteLink so the migration is purely additive.
+    var rectX: Double = 0
+    var rectY: Double = 0
+    var rectWidth: Double = 0
+    var rectHeight: Double = 0
+
+    var createdAt: Date = Date()
+    var sortOrder: Int = 0
+
+    /// True iff the region currently anchors to handwriting on the
+    /// page. Flipped to false by the erasure sweeper when the strokes
+    /// inside `rect` are gone.
+    var isAnchored: Bool = true
+
+    /// OCR'd header text — the canonical marker for "this region was
+    /// marked as a header." The dispatch panel's header list filters
+    /// on `headerOCRText != nil`. The link-creation path must NOT
+    /// write to this field (it has its own `linkRecognizedText`).
+    var headerOCRText: String? = nil
+
+    /// OCR'd label captured at link-creation time. Distinct from
+    /// `headerOCRText` so that adding a link to a region does NOT
+    /// also mark it as a header. nil when the link has no associated
+    /// label or the region isn't a link.
+    var linkRecognizedText: String? = nil
+
+    // Link destination — exactly one of the four target fields is
+    // non-nil in any valid persisted state. Flat optional fields
+    // rather than a closed enum so CloudKit syncs each independently
+    // and partial writes are tolerable.
+    var linkExternalURL: String? = nil
+    var linkTargetPageID: UUID? = nil
+    var linkTargetNotebookID: UUID? = nil
+    var linkTargetPDFID: UUID? = nil
+
+    /// EventKit identifier for a calendar event or reminder anchored
+    /// to this region. Set at lasso → Task & Brief completion when
+    /// the dispatch modal successfully routes to Calendar or
+    /// Reminders. Resolved at render time via `EKEventStore.event(
+    /// withIdentifier:)` / `calendarItem(withIdentifier:)`. nil when
+    /// the region carries no EK association.
+    var eventKitIdentifier: String? = nil
+
+    var page: NotePage? = nil
+
+    init(
+        id: UUID = UUID(),
+        page: NotePage? = nil,
+        rect: CGRect,
+        createdAt: Date = Date(),
+        sortOrder: Int = 0,
+        isAnchored: Bool = true,
+        headerOCRText: String? = nil,
+        linkRecognizedText: String? = nil,
+        linkExternalURL: String? = nil,
+        linkTargetPageID: UUID? = nil,
+        linkTargetNotebookID: UUID? = nil,
+        linkTargetPDFID: UUID? = nil,
+        eventKitIdentifier: String? = nil
+    ) {
+        // ... assignments ...
+    }
+}
+```
+
+**Marker semantics — load-bearing.** The dispatch panel filters its header list by `headerOCRText != nil` and its link list by `linkDestination != .none`. The two fields are deliberately distinct so that a region can be a link (with `linkRecognizedText` populated as a display label) without also surfacing as a header — and vice versa. Conflating the two via a single `ocrText` field is the bug that bit the codebase in June 2026 (links over previously-marked-header handwriting produced phantom duplicate header rows); the split into two fields is the canonical fix. **Future contributors: do NOT add a generic `ocrText: String` field. The semantic distinction is the design.**
+
+**At-most-one-per-kind, enforced at the API boundary.** The model permits all fields to be set independently (CloudKit-friendly optional storage); the `NotebookClient` enforces "one header text, one link destination" at the `addRegion` / `updateRegionHeader` / `updateRegionLink` boundary. A region with header + link + event is valid (and intended); a region with two link destinations is not (`updateRegionLink` clears the other three target fields when setting one).
+
+**Associations outlive the region.** When the erasure sweeper detects the strokes inside `rect` are gone, it flips `isAnchored = false` rather than deleting the region. The canvas stops rendering the indicator, but link / event associations live on, visible in the dispatch panel. If `headerOCRText` is also cleared AND no other associations remain, the region is deleted outright.
+
+**Why the `eventKitIdentifier` is a flat String, not a separate `CalendarItemLink` join table.** The integration matrix EDD's V1 row treats native EventKit as a primary integration without server-side metadata; a separate join table would add joins to every region render without buying anything that `EKEventStore.event(withIdentifier:)` doesn't already provide locally. If V2 ever adds remote-source events (e.g. shared Linear or Notion calendars), a `CalendarItemLink` join may be added then; the region's `eventKitIdentifier` field would remain for native EK items and the new field for the V2 path.
+
+**Snapshot normalization.** `NoteRegionSnapshot` collapses empty strings to nil for `headerOCRText`, `linkRecognizedText`, and `eventKitIdentifier`. The model permits empty strings for CloudKit-write tolerance, but the UI treats them as the no-association state. This is the canonical contract for any future string field added to `NoteRegion`: store-tolerant, read-strict.
+
+**Why scalar rect fields instead of `Data`-encoded `CGRect`?** Same reasoning as §4.6 — CloudKit indexes scalar fields for efficient queries. If a future feature ever queries regions by position (e.g. "all regions in the top third of the page"), scalar fields support this.
 
 ---
 

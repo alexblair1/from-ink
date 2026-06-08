@@ -376,7 +376,7 @@ final class HomeFeatureTests: XCTestCase {
 
         store.exhaustivity = .off
 
-        await store.send(.foregrounded)
+        await store.send(.foregrounded) 
 
         // Settle effects (briefRefresh + dayContentFetch). With
         // non-exhaustive testing we don't assert on the action

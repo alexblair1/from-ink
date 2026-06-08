@@ -57,7 +57,22 @@ import SwiftData
     /// region's edit sheet; cleared by the erasure sweeper when the
     /// underlying ink is gone (surfacing OCR text anchored to
     /// non-existent strokes would lie).
+    ///
+    /// **Marker semantics.** Non-nil `headerOCRText` is the canonical
+    /// marker for "this region was marked as a header." The dispatch
+    /// panel's header list filters on it. The link-creation path must
+    /// NOT write to this field — it has its own `linkRecognizedText`
+    /// below. Conflating the two would cause a region marked as both
+    /// a header AND a link to surface as a duplicate header row.
     var headerOCRText: String? = nil
+
+    /// OCR'd text captured at link-creation time, used only as a
+    /// display label on link rows in the dispatch panel. Distinct
+    /// from `headerOCRText` so that adding a link to a region does
+    /// NOT mark it as a header (and vice versa). nil when the link
+    /// has no associated text, or when the region isn't a link at
+    /// all.
+    var linkRecognizedText: String? = nil
 
     // Link destination — exactly one of the four target fields is
     // non-nil in any valid persisted state. Stored as flat optional
@@ -74,6 +89,15 @@ import SwiftData
     /// require a schema bump.
     var linkTargetPDFID: UUID? = nil
 
+    /// EventKit identifier for a calendar event or reminder anchored
+    /// to this region. Set at lasso → Task & Brief completion when
+    /// the dispatch modal successfully routes to Calendar or
+    /// Reminders. Resolved at render time via
+    /// `EKEventStore.event(withIdentifier:)` / `calendarItem(...)`
+    /// to fetch the live event for the badge label and tap-to-edit.
+    /// nil when the region carries no EK association.
+    var eventKitIdentifier: String? = nil
+
     var page: NotePage? = nil
 
     init(
@@ -84,10 +108,12 @@ import SwiftData
         sortOrder: Int = 0,
         isAnchored: Bool = true,
         headerOCRText: String? = nil,
+        linkRecognizedText: String? = nil,
         linkExternalURL: String? = nil,
         linkTargetPageID: UUID? = nil,
         linkTargetNotebookID: UUID? = nil,
-        linkTargetPDFID: UUID? = nil
+        linkTargetPDFID: UUID? = nil,
+        eventKitIdentifier: String? = nil
     ) {
         self.id = id
         self.page = page
@@ -99,10 +125,12 @@ import SwiftData
         self.sortOrder = sortOrder
         self.isAnchored = isAnchored
         self.headerOCRText = headerOCRText
+        self.linkRecognizedText = linkRecognizedText
         self.linkExternalURL = linkExternalURL
         self.linkTargetPageID = linkTargetPageID
         self.linkTargetNotebookID = linkTargetNotebookID
         self.linkTargetPDFID = linkTargetPDFID
+        self.eventKitIdentifier = eventKitIdentifier
     }
 
     var rect: CGRect {

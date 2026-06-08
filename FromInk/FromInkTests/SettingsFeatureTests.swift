@@ -31,7 +31,11 @@ final class SettingsFeatureTests: XCTestCase {
                 loadAppearance: { .dark },
                 saveAppearance: { _ in },
                 loadHandedness: { .left },
-                saveHandedness: { _ in }
+                saveHandedness: { _ in },
+                loadHasSeenOnboarding: { true },
+                markOnboardingCompleted: { },
+                loadOnboardingStep: { nil },
+                saveOnboardingStep: { _ in }
             )
         }
 
@@ -101,7 +105,11 @@ final class SettingsFeatureTests: XCTestCase {
                     savedAppearance.setValue(setting)
                 },
                 loadHandedness: { .right },
-                saveHandedness: { _ in }
+                saveHandedness: { _ in },
+                loadHasSeenOnboarding: { true },
+                markOnboardingCompleted: { },
+                loadOnboardingStep: { nil },
+                saveOnboardingStep: { _ in }
             )
         }
 
@@ -139,7 +147,11 @@ final class SettingsFeatureTests: XCTestCase {
                 loadHandedness: { .right },
                 saveHandedness: { handedness in
                     savedHandedness.setValue(handedness)
-                }
+                },
+                loadHasSeenOnboarding: { true },
+                markOnboardingCompleted: { },
+                loadOnboardingStep: { nil },
+                saveOnboardingStep: { _ in }
             )
         }
 

@@ -51,7 +51,8 @@ struct HomeFeature: Reducer {
         var isWarped: Bool = false
         /// Focus mode hides the editor's note + the calendar tab body
         /// so the home screen reduces to the masthead + notebook shelf.
-        /// User-toggled via the eye / eye.slash button in the top bar.
+        /// User-toggled via the `calendar.badge.minus` / `calendar.badge.plus`
+        /// button in the top bar.
         /// Ephemeral — does not persist across app launches.
         var isFocusMode: Bool = false
         var searchText: String = ""
@@ -193,7 +194,7 @@ struct HomeFeature: Reducer {
         /// new tab.
         case briefTabTapped(BriefTab)
         case settingsTapped
-        /// User tapped the eye / eye.slash button in the top bar.
+        /// User tapped the calendar visibility toggle in the top bar.
         /// Toggles `isFocusMode` and collapses any active brief tab so
         /// the user returns to a clean expanded state on exit.
         case focusModeToggled

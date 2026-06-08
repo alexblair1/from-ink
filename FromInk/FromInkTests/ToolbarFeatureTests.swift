@@ -88,7 +88,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadAppearance: { .system },
                     saveAppearance: { _ in },
                     loadHandedness: { .right },
-                    saveHandedness: { _ in }
+                    saveHandedness: { _ in },
+                    loadHasSeenOnboarding: { true },
+                    markOnboardingCompleted: { },
+                    loadOnboardingStep: { nil },
+                    saveOnboardingStep: { _ in }
                 )
             }
         )
@@ -326,7 +330,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadAppearance: { .system },
                     saveAppearance: { _ in },
                     loadHandedness: { .right },
-                    saveHandedness: { _ in }
+                    saveHandedness: { _ in },
+                    loadHasSeenOnboarding: { true },
+                    markOnboardingCompleted: { },
+                    loadOnboardingStep: { nil },
+                    saveOnboardingStep: { _ in }
                 )
             }
         )
@@ -365,7 +373,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadAppearance: { .system },
                     saveAppearance: { _ in },
                     loadHandedness: { .right },
-                    saveHandedness: { _ in }
+                    saveHandedness: { _ in },
+                    loadHasSeenOnboarding: { true },
+                    markOnboardingCompleted: { },
+                    loadOnboardingStep: { nil },
+                    saveOnboardingStep: { _ in }
                 )
             }
         )
@@ -403,7 +415,11 @@ final class ToolbarFeatureTests: XCTestCase {
                     loadAppearance: { .system },
                     saveAppearance: { _ in },
                     loadHandedness: { .right },
-                    saveHandedness: { _ in }
+                    saveHandedness: { _ in },
+                    loadHasSeenOnboarding: { true },
+                    markOnboardingCompleted: { },
+                    loadOnboardingStep: { nil },
+                    saveOnboardingStep: { _ in }
                 )
             }
         )

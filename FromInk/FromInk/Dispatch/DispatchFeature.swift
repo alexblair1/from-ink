@@ -182,6 +182,16 @@ struct DispatchFeature: Reducer {
         /// Resolution of each task in stack mode (drives the progress bar).
         var resolved: [UUID: Resolution] = [:]
 
+        /// EventKit identifier returned by StoreKit on successful create/
+        /// update of a calendar event or reminder, keyed by the originating
+        /// task's UUID. Mail destinations contribute nothing here (the EK
+        /// identifier on `sendCompleted` is nil for mail). Read by the
+        /// completion handler in `CanvasScreen` so the routed history entry
+        /// can record the identifier and so the canvas can anchor a
+        /// `NoteRegion` to the new EK item for tap-to-edit (§3 of the
+        /// integration matrix EDD's V1 row).
+        var resolvedEKIdentifiers: [UUID: EventKitIdentifier] = [:]
+
         var saveState: SaveState = .idle
         var completion: Completion? = nil
 
@@ -716,6 +726,9 @@ struct DispatchFeature: Reducer {
                 state.saveState = .idle
                 if let id = state.currentTask?.id {
                     state.resolved[id] = .sent
+                    if let ekID {
+                        state.resolvedEKIdentifiers[id] = ekID
+                    }
                 }
                 // Auto-link the freshly created EK item back to the
                 // source notebook. Conditions:

@@ -117,6 +117,15 @@ struct CanvasScreen: View {
     @State private var pendingHeaderText: String = ""
     @State private var editingRegionLinkID: UUID? = nil
 
+    /// Captured from `lassoContentRect` when the lasso menu's
+    /// "Task & Brief" action presents the dispatch flow. Used by
+    /// `handleDispatchCompletion` to anchor a `NoteRegion` to the
+    /// freshly-created EventKit item, so the lasso → event flow
+    /// produces a visible bounding box on the canvas (parity with
+    /// the lasso → header flow). nil when no lasso-originated
+    /// dispatch is in flight.
+    @State private var pendingLassoEventRect: CGRect? = nil
+
 
     // MARK: - Routing
 
@@ -205,19 +214,59 @@ struct CanvasScreen: View {
             // the panel without us re-recording the routing.
             syncDispatchPanelData()
         case .finished:
-            // Create mode — record any tasks that were sent.
-            for dispatchTask in store.tasks {
-                guard store.resolved[dispatchTask.id] == .sent else { continue }
-                let integration = integrationAtCompletion(store: store)
+            // Create mode — record any tasks that were sent. We pull
+            // the title from `dispatchTask.line` (what the user
+            // confirmed in the modal) rather than the outer `task.title`
+            // (often empty for lasso-originated flows that seed an
+            // InkTask with no title until OCR resolves later). The EK
+            // identifier comes from the store's resolvedEKIdentifiers
+            // map, populated when sendCompleted fires with a non-nil id.
+            let integration = integrationAtCompletion(store: store)
+            let sentTasks = store.tasks.filter { store.resolved[$0.id] == .sent }
+
+            for dispatchTask in sentTasks {
+                let ekID = store.resolvedEKIdentifiers[dispatchTask.id]
+                let routedTask = InkTask(title: dispatchTask.line)
                 let result = RoutingResult(
                     integration: integration,
                     destinationURL: destinationURL(integration: integration, line: dispatchTask.line),
-                    eventKitIdentifier: nil
+                    eventKitIdentifier: ekID
                 )
-                saveRoutedItem(task: task, result: result)
+                saveRoutedItem(task: routedTask, result: result)
+            }
+
+            // Anchor a NoteRegion to the freshly-created EK item so
+            // the canvas grows a visible bounding box (parity with the
+            // lasso → header flow). Calendar/Reminders only — Mail has
+            // no EK item to anchor to. We anchor to the FIRST sent
+            // task only: lasso flows are single-task by construction,
+            // and a multi-task brief shouldn't reuse the lasso geometry
+            // for every task.
+            let regionRect = pendingLassoEventRect
+            pendingLassoEventRect = nil
+            if let rect = regionRect,
+               integration == .calendar || integration == .reminders,
+               let firstSent = sentTasks.first,
+               let ekID = store.resolvedEKIdentifiers[firstSent.id] {
+                let pid = pageID
+                Task {
+                    do {
+                        let snap = try await notebookClient.addRegion(
+                            pid, rect, nil, nil, nil, ekID
+                        )
+                        await MainActor.run { regions.append(snap) }
+                    } catch {
+                        // Silent — the EK item still exists in the
+                        // user's calendar; only the canvas anchor
+                        // failed to persist.
+                    }
+                }
             }
         case .cancelled:
-            break
+            // User backed out of the dispatch flow — release any
+            // captured rect so the NEXT lasso event doesn't reuse
+            // stale geometry.
+            pendingLassoEventRect = nil
         }
         // Lifecycle (dispatchFlow = nil) is owned by NotebookScreen,
         // which clears the binding when the store reports a completion.
@@ -317,6 +366,11 @@ struct CanvasScreen: View {
             onTaskBrief: {
                 guard let image = lassoMenuImage else { return }
                 showLassoMenu = false
+                // Stash the lasso rect for the dispatch completion
+                // handler — when the user sends to Calendar/Reminders
+                // we anchor a NoteRegion here with the resulting EK
+                // identifier so the canvas grows a visible bounding box.
+                pendingLassoEventRect = lassoContentRect
                 // Present Dispatch immediately with the line section in
                 // its extracting state — the user sees the modal land
                 // right away rather than a 200–500ms blank wait while
@@ -339,10 +393,21 @@ struct CanvasScreen: View {
                 let rect = lassoContentRect
                 let pid = pageID
                 Task {
-                    let text = await LassoOCR.recognize(image: image, correct: false)
+                    let raw = await LassoOCR.recognize(image: image, correct: false)
+                    // The data model identifies a region as a header by
+                    // `headerOCRText != nil`. If Vision returns empty
+                    // text the user's "Mark Header" intent would be
+                    // silently dropped (region stored with empty header,
+                    // snapshot strips it to nil, dispatch panel filter
+                    // skips it). Fall back to a localized placeholder
+                    // the user can rename via the existing edit sheet.
+                    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let headerText = trimmed.isEmpty
+                        ? AppStrings.RegionIndicator.headerOCRFallback
+                        : trimmed
                     do {
                         let snap = try await notebookClient.addRegion(
-                            pid, rect, text, nil
+                            pid, rect, headerText, nil, nil, nil
                         )
                         await MainActor.run {
                             regions.append(snap)
@@ -540,8 +605,12 @@ struct CanvasScreen: View {
         }
         .onChange(of: dispatchPanelStore.navigateToHeaderID) { _, headerID in
             guard let headerID else { return }
-            if let header = headers.first(where: { $0.id == headerID }) {
-                let y = max(0, header.rect.minY - 120)
+            // The dispatch panel populates header rows from `regions`
+            // (see `syncDispatchPanelData`), so the navigate-to-header
+            // lookup must resolve against the same source. The legacy
+            // `headers` array is an empty stub post-NoteRegion migration.
+            if let region = regions.first(where: { $0.id == headerID }) {
+                let y = max(0, region.rect.minY - 120)
                 canvasScrollTarget = CGPoint(x: 0, y: y)
             }
             dispatchPanelStore.send(.dismissed)
@@ -806,6 +875,7 @@ struct CanvasScreen: View {
                         snapshot: region,
                         onEditHeaderTapped: { beginEditingRegionHeader(regionID) },
                         onEditLinkTapped: { beginEditingRegionLink(regionID) },
+                        onEditEventTapped: { beginEditingRegionEvent(regionID) },
                         onManageTapped: { managingRegionID = regionID }
                     )
                 )
@@ -824,9 +894,41 @@ struct CanvasScreen: View {
         guard let region = regions.first(where: { $0.id == regionID }) else { return }
         editingRegionLinkID = regionID
         pendingLinkContentRect = region.rect
-        pendingLinkOCRText = region.headerOCRText ?? ""
+        // Read the link's recognized text from `linkRecognizedText`
+        // (not `headerOCRText`) — they're separate fields now so a
+        // link with no recognized text isn't treated as a header.
+        pendingLinkOCRText = region.linkRecognizedText ?? ""
         isRecognizingLink = false
         isLinkSheetVisible = true
+    }
+
+    /// Routes a tap on the region's calendar badge to the existing
+    /// dispatch edit flow. Mirrors `presentDispatchEditFlow(for:)`
+    /// from the dispatch panel path — same modal, same edit semantics
+    /// (destination strip hidden because `model.isEditing == true`).
+    /// Silent no-op if the region has no EK identifier; that shouldn't
+    /// happen because the badge only renders when `eventKitIdentifier
+    /// != nil`, but the guard keeps the function safe to call
+    /// unconditionally.
+    private func beginEditingRegionEvent(_ regionID: UUID) {
+        guard let region = regions.first(where: { $0.id == regionID }),
+              let identifier = region.eventKitIdentifier else { return }
+        let placeholder = InkTask(title: region.headerOCRText ?? "")
+        let store = Store(
+            initialState: DispatchFeature.State(
+                tasks: [DispatchTask(line: placeholder.title, originatingTask: placeholder)]
+            )
+        ) {
+            DispatchFeature()
+        }
+        store.send(.openForEditingEvent(identifier))
+        dispatchFlow = DispatchFlow(
+            task: placeholder,
+            store: store,
+            onCompletion: { completion in
+                handleDispatchCompletion(completion, task: placeholder, store: store)
+            }
+        )
     }
 
     private func deleteRegion(_ regionID: UUID) {
@@ -927,11 +1029,18 @@ struct CanvasScreen: View {
         let pid = pageID
         Task {
             do {
+                // Link's OCR text goes into `linkRecognizedText`, NOT
+                // `headerOCRText`. The dispatch panel's header filter
+                // uses `headerOCRText != nil` as the "is a header"
+                // marker; writing the link's OCR text there would
+                // surface this link as a phantom header row.
                 let snap = try await notebookClient.addRegion(
                     pid,
                     rect,
+                    nil,
                     text.isEmpty ? nil : text,
-                    .external(url)
+                    .external(url),
+                    nil
                 )
                 await MainActor.run { regions.append(snap) }
             } catch {
@@ -965,9 +1074,13 @@ struct CanvasScreen: View {
 
         let linkItems: [DispatchLinkItem] = regions.compactMap { r in
             guard case .external(let url) = r.linkDestination else { return nil }
+            // Read the link's recognized text from `linkRecognizedText`
+            // (not `headerOCRText`). The two fields are deliberately
+            // distinct so a region can be a link without also being a
+            // header in the dispatch panel.
             return DispatchLinkItem(
                 id: r.id,
-                recognizedText: r.headerOCRText ?? "",
+                recognizedText: r.linkRecognizedText ?? "",
                 url: url
             )
         }

@@ -562,6 +562,18 @@ struct CanvasView: UIViewRepresentable {
                 height: contentBounds.height
             )
             onLassoReady(image, viewRect, contentBounds)
+
+            // Clear PencilKit's native dashed-outline selection so it
+            // doesn't render on top of our branded lasso UI. The two-
+            // finger-hold path doesn't need this — the toolbar pops
+            // `.region` off the stack after the gesture, which switches
+            // the tool to `.pen` via the binding and naturally drops
+            // the selection. The manually-selected `.region` path keeps
+            // `.region` active, so PKLassoTool's selection persists
+            // unless we explicitly clear it. Assigning a fresh
+            // PKLassoTool drops the prior tool's selection without
+            // changing the tool kind from the user's perspective.
+            canvasView.tool = PKLassoTool()
         }
 
         // MARK: - UIGestureRecognizerDelegate

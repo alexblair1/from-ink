@@ -36,11 +36,13 @@ struct HomeTopBar: View {
 
             Spacer()
 
-            // Focus-mode toggle. Eye / eye.slash semantic: open eye =
-            // "everything is visible" (off, tap to enter focus), slash
-            // eye = "things hidden" (on, tap to exit). Lives between
-            // the masthead and the document Menu so the right-edge
-            // anchor stays on the canonical compose icon.
+            // Focus-mode toggle. `calendar.badge.minus` when the calendar
+            // is visible (tap to remove it) and `calendar.badge.plus`
+            // when it's hidden (tap to add it back). The +/- semantic
+            // is more direct than the eye / eye.slash pair it replaced:
+            // the icon literally shows what tapping will do. Lives
+            // between the masthead and the document Menu so the right-
+            // edge anchor stays on the canonical compose icon.
             Button(action: model.onFocusModeToggled) {
                 Image(systemName: model.focusModeIcon)
                     .font(.system(size: model.iconSize, weight: .regular))
@@ -111,9 +113,10 @@ extension HomeTopBar {
         /// disabled item would imply the user is one fix away from
         /// scanning, which they're not.
         let scanDocumentAvailable: Bool
-        /// `eye` when focus mode is OFF (tap to enter), `eye.slash`
-        /// when focus mode is ON (tap to exit). Resolved on the
-        /// Model so the view stays declarative.
+        /// `calendar.badge.minus` when focus mode is OFF (calendar
+        /// visible, tap to remove) and `calendar.badge.plus` when
+        /// focus mode is ON (calendar hidden, tap to add it back).
+        /// Resolved on the Model so the view stays declarative.
         let focusModeIcon: String
         let focusModeAccessibilityLabel: String
         let trailingIcon: String
@@ -154,7 +157,7 @@ extension HomeTopBar.Model {
         self.importFileMenuLabel = AppStrings.DocumentImport.importFileMenuItem
         self.scanDocumentMenuLabel = AppStrings.DocumentImport.scanDocumentMenuItem
         self.scanDocumentAvailable = scanDocumentAvailable
-        self.focusModeIcon = isFocusMode ? "eye.slash" : "eye"
+        self.focusModeIcon = isFocusMode ? "calendar.badge.plus" : "calendar.badge.minus"
         self.focusModeAccessibilityLabel = isFocusMode
             ? AppStrings.Home.focusModeExitAccessibilityLabel
             : AppStrings.Home.focusModeEnterAccessibilityLabel

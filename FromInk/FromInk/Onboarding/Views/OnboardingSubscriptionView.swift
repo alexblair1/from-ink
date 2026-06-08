@@ -35,10 +35,7 @@ struct OnboardingSubscriptionView: View {
             OnboardingKicker(model: model.kicker)
                 .padding(.bottom, model.kickerBottomPadding)
 
-            (Text(model.headlineLine1)
-                .foregroundStyle(model.headlineColor)
-             + Text(verbatim: " ")
-             + Text(model.headlineLine2)
+            (Text(model.headlineLine1).foregroundStyle(model.headlineColor) + Text(verbatim: " ") + Text(model.headlineLine2)
                 .italic()
                 .foregroundStyle(model.headlineAccentColor))
                 .font(model.headlineFont)
@@ -255,7 +252,7 @@ extension OnboardingSubscriptionView.Model {
     }
 
     /// Headline + body copy for the currently-selected tier. Each tier
-    /// has its own framing: lifetime carries the ownership commitment  
+    /// has its own framing: lifetime carries the ownership commitment
     /// across three lines (updates promise, devices promise, "No
     /// subscription." punch); the subscription tiers lead with the
     /// trial offer + cadence and close with a single reassurance line.

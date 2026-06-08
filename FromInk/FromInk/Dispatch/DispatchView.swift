@@ -653,9 +653,20 @@ struct DispatchView: View {
         kind: Model.PickerOverlay.CalendarPickerKind,
         date: Date
     ) -> some View {
+        // Time pickers snap to 5-minute intervals on every set —
+        // matches Calendar.app / Reminders.app behavior. SwiftUI's
+        // DatePicker doesn't expose a native `minuteInterval` for
+        // the wheel style, so we round the bound value in the setter.
+        // Read-side passes through untouched so a snap doesn't fight
+        // the user mid-spin; the round happens when the parent commits.
         let binding = Binding(
             get: { date },
-            set: { model.onCalendarPickerChanged?(kind, $0) }
+            set: { newValue in
+                let snapped = kind.isTime
+                    ? Self.roundDateToFiveMinutes(newValue, calendar: model.calendar)
+                    : newValue
+                model.onCalendarPickerChanged?(kind, snapped)
+            }
         )
         if kind.isTime {
             DatePicker(selection: binding, displayedComponents: [.hourAndMinute]) {
@@ -681,7 +692,24 @@ struct DispatchView: View {
         }
     }
 
-    @ViewBuilder
+    /// Rounds a date's minute component to the nearest 5-minute
+    /// boundary using the supplied calendar so the snap respects the
+    /// user's locale (calendar identifier + timezone) rather than the
+    /// process default.
+    /// Bias: nearest, with .5 rounding up (10:32 → 10:30, 10:33 → 10:35).
+    ///
+    /// `Calendar.dateInterval(of: .minute, for:)` zeros seconds and
+    /// nanoseconds Calendar-natively; `Calendar.date(byAdding: .minute,
+    /// value:, to:)` handles all hour / day / month / year rollovers
+    /// including DST transitions. Both per the dates EDD — don't
+    /// inline raw `addingTimeInterval` arithmetic on minutes.
+    static func roundDateToFiveMinutes(_ date: Date, calendar: Calendar) -> Date {
+        let minute = calendar.component(.minute, from: date)
+        let snapped = Int((Double(minute) / 5.0).rounded()) * 5
+        let startOfMinute = calendar.dateInterval(of: .minute, for: date)?.start ?? date
+        return calendar.date(byAdding: .minute, value: snapped - minute, to: startOfMinute) ?? date
+    }
+
     private func singleSelectList(
         _ choices: [Model.PickerChoice],
         selected: String?,

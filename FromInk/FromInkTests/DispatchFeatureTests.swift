@@ -460,6 +460,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedURL.value, URL(string: "https://meet.example.com/abc"))
@@ -486,6 +487,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertNil(savedURL.value)
@@ -739,6 +741,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedLocation.value, "Apple Park")
@@ -806,6 +809,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedRecurrence.value, .monthly)
@@ -831,6 +835,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedRecurrence.value, .never)
@@ -884,6 +889,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         // Single-Int? wraps to a singleton [Int] for EventKit.
@@ -910,6 +916,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedAlarms.value, [])
@@ -936,6 +943,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertEqual(savedAlarms.value, [0])
@@ -1136,6 +1144,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("ek-existing")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "ek-existing"
             $0.completion = .finished
         }
 
@@ -1171,6 +1180,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-new")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-new"
             $0.completion = .finished
         }
 
@@ -1201,6 +1211,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-1")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-1"
             $0.completion = .finished
         }
         XCTAssertNil(savedURL.value)
@@ -1402,6 +1413,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.receive(.sendCompleted("event-42")) {
             $0.saveState = .idle
             $0.resolved[$0.tasks[0].id] = .sent
+            $0.resolvedEKIdentifiers[$0.tasks[0].id] = "event-42"
             $0.completion = .finished
         }
 
@@ -1637,6 +1649,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.send(.sendCompleted("ek-event-123")) {
             $0.saveState = .idle
             $0.resolved[$0.currentTask!.id] = .sent
+            $0.resolvedEKIdentifiers[$0.currentTask!.id] = "ek-event-123"
             $0.completion = .finished
         }
         await store.finish()
@@ -1671,6 +1684,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.send(.sendCompleted("ek-reminder-42")) {
             $0.saveState = .idle
             $0.resolved[$0.currentTask!.id] = .sent
+            $0.resolvedEKIdentifiers[$0.currentTask!.id] = "ek-reminder-42"
             $0.completion = .finished
         }
         await store.finish()
@@ -1704,6 +1718,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.send(.sendCompleted("ek-existing-7")) {
             $0.saveState = .idle
             $0.resolved[$0.currentTask!.id] = .sent
+            $0.resolvedEKIdentifiers[$0.currentTask!.id] = "ek-existing-7"
             $0.completion = .finished
         }
         await store.finish()
@@ -1734,6 +1749,7 @@ final class DispatchFeatureTests: XCTestCase {
         await store.send(.sendCompleted("ek-x")) {
             $0.saveState = .idle
             $0.resolved[$0.currentTask!.id] = .sent
+            $0.resolvedEKIdentifiers[$0.currentTask!.id] = "ek-x"
             $0.completion = .finished
         }
         await store.finish()

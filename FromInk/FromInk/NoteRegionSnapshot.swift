@@ -23,7 +23,16 @@ struct NoteRegionSnapshot: Equatable, Identifiable, Sendable {
     /// region as an orphan visible only in the dispatch panel (false).
     let isAnchored: Bool
     let headerOCRText: String?
+    /// OCR'd label captured at link-creation time. Distinct from
+    /// `headerOCRText` so a link region doesn't also surface in the
+    /// header list. nil when the link carries no label or the region
+    /// isn't a link.
+    let linkRecognizedText: String?
     let linkDestination: NoteRegionLinkDestination
+    /// EventKit identifier when this region anchors a calendar event
+    /// or reminder. Resolved at render time via `EventKitService.
+    /// fetchEventDraft` for the badge label and tap-to-edit flow.
+    let eventKitIdentifier: String?
 
     /// True when at least one badge would render. The view layer can
     /// use this to early-out the indicator render. `.broken` counts
@@ -32,6 +41,7 @@ struct NoteRegionSnapshot: Equatable, Identifiable, Sendable {
     /// the broken-link badge and tapping into the edit sheet.
     var hasAnyAssociation: Bool {
         if headerOCRText != nil { return true }
+        if eventKitIdentifier != nil { return true }
         switch linkDestination {
         case .none: return false
         case .external, .page, .notebook, .pdf, .broken: return true
@@ -70,7 +80,9 @@ extension NoteRegionSnapshot {
         // permits empty strings for CloudKit flexibility, but the UI
         // treats them as "no header").
         self.headerOCRText = (model.headerOCRText?.isEmpty == false) ? model.headerOCRText : nil
+        self.linkRecognizedText = (model.linkRecognizedText?.isEmpty == false) ? model.linkRecognizedText : nil
         self.linkDestination = NoteRegionLinkDestination(model: model)
+        self.eventKitIdentifier = (model.eventKitIdentifier?.isEmpty == false) ? model.eventKitIdentifier : nil
     }
 }
 

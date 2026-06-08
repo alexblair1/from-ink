@@ -97,7 +97,7 @@ final class NotebookFeatureTests: XCTestCase {
             deleteLink: { _ in throw CancellationError() },
             recordHistory: { _, _ in throw CancellationError() },
             updateHistoryStatus: { _, _ in throw CancellationError() },
-            addRegion: { _, _, _, _ in throw CancellationError() },
+            addRegion: { _, _, _, _, _, _ in throw CancellationError() },
             updateRegionHeader: { _, _ in throw CancellationError() },
             updateRegionLink: { _, _ in throw CancellationError() },
             deleteRegion: { _ in throw CancellationError() },

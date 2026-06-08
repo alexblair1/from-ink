@@ -32,6 +32,12 @@ extension AppStrings {
             comment: "VoiceOver label for the broken-link icon shown on a NoteRegion indicator when the persisted link target can't be parsed."
         )
 
+        static let eventBadgeAccessibility = NSLocalizedString(
+            "regionIndicator.badge.event",
+            value: "Calendar event",
+            comment: "VoiceOver label for the calendar icon shown on a NoteRegion indicator when the region anchors an EventKit event or reminder. Tap routes to the dispatch edit flow for the event."
+        )
+
         static let manageAccessibility = NSLocalizedString(
             "regionIndicator.manage",
             value: "Manage region",
@@ -90,6 +96,12 @@ extension AppStrings {
             "regionIndicator.headerEdit.cancel",
             value: "Cancel",
             comment: "Cancel button for the NoteRegion header edit modal."
+        )
+
+        static let headerOCRFallback = NSLocalizedString(
+            "regionIndicator.header.ocrFallback",
+            value: "Untitled header",
+            comment: "Placeholder text stored as a NoteRegion's headerOCRText when the user marks a lasso selection as a header but Vision OCR returns empty. Without a placeholder the region would be filtered out of the dispatch panel's header list because the panel uses headerOCRText != nil as the 'is a header' marker. The user can rename via the existing header edit sheet."
         )
     }
 }
