@@ -194,7 +194,11 @@ struct LayoutTokens: Sendable {
         toolbarCapsuleMinPillGap: 40,
         toolbarCapsuleInternalRuleWidth: 26,
         toolbarCapsuleButtonSize: 50,
-        toolbarCapsuleActiveScale: 1.06,
+        // Active scale removed (1.0). `scaleEffect` inside a ScrollView
+        // clips at scroll bounds, cropping the top of the active button
+        // when it sits flush against the capsule wall. Color inversion
+        // (paper-on-ink) is sufficient signal for the active state.
+        toolbarCapsuleActiveScale: 1.0,
         inkReadoutChipSize: 22,
         inkReadoutChipInnerRingWidth: 1.5,
         inkReadoutChipOuterRingWidth: 1,
@@ -236,22 +240,26 @@ struct ShadowTokens: Sendable {
 
     static let standard = ShadowTokens(
         toolbarCapsulePrimary: Shadow(
-            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.22),
-            radius: 22,
+            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.10),
+            radius: 18,
             x: 0,
-            y: 14
+            y: 10
         ),
         toolbarCapsuleAmbient: Shadow(
-            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.12),
-            radius: 6,
+            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.05),
+            radius: 4,
             x: 0,
-            y: 3
+            y: 2
         ),
+        // Active button shadow disabled — the inverted color already
+        // signals selection clearly, and a halo inside the tight capsule
+        // padding reads as smudge rather than elevation. Kept as a token
+        // for future tuning rather than removed from the design system.
         toolbarActiveButton: Shadow(
-            color: Color(red: 31 / 255, green: 29 / 255, blue: 26 / 255).opacity(0.55),
-            radius: 8,
+            color: .clear,
+            radius: 0,
             x: 0,
-            y: 4
+            y: 0
         )
     )
 }
