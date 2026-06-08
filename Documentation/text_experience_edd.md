@@ -46,7 +46,7 @@ This EDD specifies the premium note-taking experience: a hybrid surface where ty
 The architecture rests on five load-bearing decisions:
 
 1. **A page is an ordered list of blocks** (`text` | `ink` | `voice`), not a single buffer. Hybrid composition becomes a sort-order over typed records, not a layout puzzle inside a flat document.
-2. **TextKit 2 + AttributedString** is the text engine on every platform. `AttributedString` is the persisted form; TextKit 2 owns layout.
+2. **SwiftUI `TextEditor` + `AttributedString`** is the text engine on every platform (iOS 26 rich text APIs). `AttributedString` is the persisted form. If a load-bearing capability (custom attribute round-trip, caret rect for slash anchoring, selection-menu extension) fails the spike, fall back to a `UIViewRepresentable` wrapping `UITextView` over TextKit 2 — same data shape, more code.
 3. **`NoteRegion` carries an anchor discriminator** (`.inkRect` | `.textRange`). One dispatch panel, one set of badges, one lifecycle — text-anchored regions ride on an `AttributedString` custom attribute so they move with text edits for free.
 4. **A canonical canvas (768pt wide) is the storage coordinate space for ink.** Every viewport renders at `viewport.width / 768` scale. Portrait→landscape, iPad→iPhone, iPad→Mac collapse to the same scaling rule.
 5. **The reducer-action vocabulary IS the command vocabulary.** Voice Control, Switch Control, slash menu, accessory bar, keyboard shortcuts, and menu bar entries all dispatch the same actions. One reducer, many chromes.
@@ -136,7 +136,7 @@ Per the view layer EDD §4, every view is one of three tiers. The boundary is th
 
 | View | Tier | Imports TCA | Notes |
 |---|---|---|---|
-| `TextBlockView` | Component | No | TextKit 2 wrapper; reads `AttributedString` + range callbacks via `Model` |
+| `TextBlockView` | Component | No | SwiftUI `TextEditor` with `AttributedString` (iOS 26 rich text APIs); UIKit `UITextView` bridge as fallback if a custom-attribute capability is missing. |
 | `InkBlockView` | Component | No | PKCanvasView wrapper at canonical scale; same imperative boundary as today's `CanvasView` |
 | `VoiceBlockView` | Component | No | Audio player + transcript editor |
 | `DragBarView` | Component | No | The handle between blocks; emits height changes via closure |
@@ -584,7 +584,7 @@ Cons: requires careful registration of custom attribute classes for secure codin
 Pros: pure Swift; custom attributes via `AttributeScopes.AppAttributes` are first-class Codable.
 Cons: larger payloads; AttributedString's Codable conformance is newer and has had edge-case regressions.
 
-**Decision: Path A.** The block-level encoding cost is bounded (one block = one human-sized text passage), the secure-coding registration happens once at `NotebookClient` initialization, and the payload is compact enough to fit comfortably under CloudKit's per-record limit even without externalStorage promotion. We use externalStorage anyway for consistency with `drawingData`.
+**Decision: prefer Path B; fall back to Path A.** The iOS 26 `TextEditor` rich-text APIs make `AttributedString`'s native Codable path the most natural choice — same encoder all the way through the editor, no `NSAttributedString` bridge. Switch to Path A if Codable round-trip drops a custom attribute (`RegionAnchorAttribute`, `HighlightAttribute`, `SlashInsertionAttribute`) in practice. The spike for the text engine (§4 view tier note) covers this check.
 
 ### 7.4 Custom AttributedString attributes
 
@@ -1422,7 +1422,7 @@ struct CaptureResult: Equatable, Sendable {
 }
 ```
 
-The live value wraps `SFSpeechRecognizer` with `requiresOnDeviceRecognition = true` for privacy. iOS 26's on-device recognizer covers all locales we ship to (per the localization EDD). The audio file is written to the application-support directory at capture time; on commit, it moves into the synced model container and CKAsset-promotes.
+The live value wraps **`SpeechAnalyzer` with a `SpeechTranscriber` module** (iOS 26's modern on-device path — long-form quality, ~2× faster than equivalent Whisper-class models). `SFSpeechRecognizer` becomes the fallback only for locales `SpeechTranscriber` doesn't yet support; the `SpeechService` dependency abstracts both behind a single interface so callers don't branch. Audio file is written to the application-support directory at capture time; on commit, it moves into the synced model container and CKAsset-promotes.
 
 ### 18.2 Voice block UI
 
@@ -1879,6 +1879,7 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 | Q9 | ActivityKit Live Activity for voice capture — v1 or follow-up? | Engineering capacity. |
 | Q10 | Multi-window on Mac/iPad — does opening the same note in two windows present any state-sync risk beyond LWW? | After Phase 5. |
 | Q11 | Image and video block kinds — slot into the same block stack (commented-out enum cases already noted in §5). Picker surfaces, storage caps for video (60s / 100MB cap recommended), and caption story all defer to v1.1. | Post-v1. |
+| Q12 | When iOS 27 adoption is high enough, evaluate single-pass multimodal Foundation Models for the OCR + extraction pipeline (image → `@Generable` SessionOutput in one call). Current two-stage (Vision → text → FM) ships unchanged on iOS 26; multimodal is purely an optimization opportunity for v1.1+. | iOS 27 adoption telemetry. |
 
 ---
 
@@ -1910,3 +1911,8 @@ The block model and hybrid editor touch substantial existing code. The refactor 
 | 2026-06-08 | Undo is page-scoped with a native-first cascade (text/ink block native managers → page-level reducer stack). | Apple Notes' model; native handles in-block edits without double-counting via reducer entries. |
 | 2026-06-08 | Per-block `contentHash`; `NotePage.extractedTextHash` aggregates from the manifest of per-block hashes. | Reorders no longer invalidate ML caches when no content changed; deltas are computable for FM re-runs. |
 | 2026-06-08 | Image and video block kinds deferred to v1.1; architecture supports the addition. | Avoids scope creep on v1 while making the architectural seam explicit. |
+| 2026-06-08 | SwiftUI `TextEditor` + `AttributedString` (iOS 26 rich text APIs) is the primary text engine; UIKit `UITextView` bridge over TextKit 2 is the documented fallback. | Apple's iOS 26 rich-text editing APIs (WWDC25 session 280) cover our requirements natively; the UIKit wrapper is meaningful code we avoid writing if the spike passes. |
+| 2026-06-08 | Prefer `AttributedString` Codable (Path B) for block body serialization; fall back to `NSKeyedArchiver` (Path A) only if a custom attribute drops in round-trip. | Native to the `TextEditor` APIs and `AttributeScopes`; one encoding system through the editor and storage. |
+| 2026-06-08 | `SpeechService` targets `SpeechAnalyzer` + `SpeechTranscriber` (iOS 26); `SFSpeechRecognizer` is the fallback only for unsupported locales. | The new framework is materially better for long-form transcripts (~2× faster, higher quality), which is the load-bearing voice-memo UX. |
+| 2026-06-08 | Multimodal Foundation Models (iOS 27, image input) parked as an open question for v1.1 OCR pipeline replacement; v1 ships the existing two-stage pipeline unchanged. | We target iOS 26 for v1; multimodal is a pure optimization, not a v1 dependency. |
+| 2026-06-08 | No Liquid Glass anywhere in the app — opaque paper-and-ink chrome only. | Brand decision; preserves the editorial aesthetic. See user memory `feedback_no_liquid_glass.md`. |
