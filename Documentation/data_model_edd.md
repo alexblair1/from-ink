@@ -375,6 +375,10 @@ enum DocumentKind: String, Codable {
 
 **`thumbnailData`:** Pre-rendered page preview stored as `@Attribute(.externalStorage)`. Generated when a page is saved, used by home screen notebook cards. Avoids re-rendering PaperMarkup on the fly for every card in the scroll view.
 
+> **2026-06-09 schema evolution — PageBlock supersedes per-page content fields.** The text experience EDD's block model (`text_experience_edd.md` §5) splits `NotePage`'s content fields into discrete `PageBlock` entities, each with its own payload (`bodyData` for text, `drawingData` + `thumbnailData` for ink, `audioData` + `transcript` for voice). The fields shown above (`drawingData`, `thumbnailData`, `ocrText`, `typedText`) are retiring as the PageBlock model rolls out — see `text_experience_edd.md` §5 for the authoritative current schema and §22.10 for the deletion list.
+>
+> **PageBlock's text payload now stores a block tree, not an AttributedString.** `PageBlock.bodyData: Data?` holds `JSONEncoder().encode(RichTextDocument)` — a versioned, Codable block tree (paragraph / heading / codeBlock / bulletList / orderedList / blockquote / divider with inline marks). This is the SwiftData-safe form for a recursive Codable type: SwiftData destructures typed Codable properties into composite columns and crashes at runtime when handed an `indirect enum`; storing the encoded `Data` blob keeps the schema flat and content evolutions out of SwiftData migrations (the document carries its own `version: Int` for forward-compatibility).
+
 ### 4.4 Tag
 
 ```swift

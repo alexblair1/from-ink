@@ -709,8 +709,23 @@ This is not unique to the canvas. The same pattern applies to:
 - **External display mirroring** — frame updates run at 60fps and must not hit the reducer.
 - **`AVAudioRecorder`** if audio capture ever ships — peak metering at 30Hz.
 - **Companion mode handoff** via `NSUserActivity` — intermediate updates do not need to flow through state.
+- **The text editor** — keystrokes are 5–15Hz typically but selection/caret events fire on every layout pass. The text editor wraps a UIKit `UITextView` (TextKit 1, hand-built stack) inside a `UIViewRepresentable`. Body and selection changes flow back to the reducer; chrome rendering (block-decorations via `NSLayoutManager.drawBackground`) stays inside UIKit — see `text_experience_edd.md` §5.3 for why TextKit 1 is the required engine and §22.4 for the editor structure.
 
 The general rule: **if the source emits events faster than ~10Hz, debounce or threshold before sending to the store.**
+
+### 10.5 Per-block components at the page level (hybrid composition)
+
+A page is an ordered list of `PageBlock`s. The view layer renders each block as its own SwiftUI component view:
+
+- `TextBlockView` — wraps `TextKitEditorView` (the UITextView wrapper above); body content is a `RichTextDocument`.
+- `InkBlockView` — wraps a per-block `PKCanvasView` at canonical scale (`text_experience_edd.md` §6.4).
+- `VoiceBlockView` — playback + waveform; pure SwiftUI.
+- `DividerBlockView` — page-level divider between other blocks.
+- `ImageBlockView` — future.
+
+`PageBlockStackView` is a SwiftUI `VStack { ForEach(blocks) { renderer.render($0) } }`. Each block view is a stateless Component with its own `Model` flat-resolved by the page adapter. The page-level VStack handles drag-bar height adjustments between blocks (§10) and pencil-in-blank-text auto-promotion (§10.4 of the text experience EDD).
+
+This is "Option A at the page level" (per-block SwiftUI components), distinct from "Option B inside a Text PageBlock" (one UITextView for flowing text). The split is deliberate: media blocks (ink / voice / image) are not paragraphs and don't belong in a unified text view; flowing prose inside a Text PageBlock benefits from a single UITextView's native selection / caret / undo behavior.
 
 ---
 

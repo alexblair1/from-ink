@@ -271,7 +271,111 @@ enum PageBlockKind: String, Codable, CaseIterable, Sendable {
 
 The legacy `NotePage.drawingData` and `NotePage.ocrText` fields are deleted in the same commit that adds the block model (no migration — see §9).
 
-### 5.3 Block snapshot (value type for TCA State)
+### 5.3 Text content — the block-tree document
+
+> **Architectural decision (2026-06-09).** A Text PageBlock's content is a
+> **`RichTextDocument` (block tree)**, not a single `AttributedString`. The
+> decision was forced by what manual testing exposed:
+>
+> 1. Apple's `TextEditor` (SwiftUI, iOS 26) does not paint `PresentationIntent`
+>    block-level kinds — headings, lists, blockquote, codeBlock,
+>    thematicBreak all persist semantically but render as plain prose.
+> 2. `UITextView(usingTextLayoutManager: true)` (TextKit 2) has the same
+>    behavior — confirmed by a verbatim swap in the production editor.
+> 3. The custom-`NSLayoutManager` path requires **TextKit 1** —
+>    `drawBackground(forGlyphRange:at:)` only fires under
+>    `NSLayoutManager`, never under `NSTextLayoutManager`. PoC verified
+>    2026-06-09: a hand-built TextKit 1 stack with a `BlockDecoratingLayoutManager`
+>    subclass DOES paint block-level chrome.
+>
+> A block tree expressed as a rigid Codable schema (ProseMirror-style) lets us
+> map each block kind to its own visual treatment — either as its own
+> SwiftUI view at the page level or as a paragraph-with-blockType-tag inside
+> the Text PageBlock's UITextView. `PresentationIntent` is dropped as the
+> in-storage representation; it is **not used** anywhere in the From Ink data
+> model going forward.
+
+#### The schema
+
+```swift
+struct RichTextDocument: Codable, Equatable, Sendable {
+    /// Migration anchor — every encoded document carries the schema
+    /// version it was written under. Decoder dispatches on this to
+    /// translate older shapes forward. SwiftData migrations stay
+    /// schema-flat; content shape migrations live HERE.
+    var version: Int
+
+    /// Ordered list of top-level blocks. Empty array is a valid
+    /// document (an empty block).
+    var blocks: [Block]
+}
+
+/// `indirect` because containers hold child blocks. Codable conformance
+/// is hand-written — synthesised CodingKeys for an `indirect enum`
+/// produce a shape SwiftData destructures incorrectly when stored as
+/// a typed property. We never hand SwiftData this type directly — only
+/// the encoded `Data` blob (see §7.3).
+indirect enum Block: Codable, Equatable, Sendable {
+    case paragraph(inline: [Inline])
+    case heading(level: Int, inline: [Inline])       // level 1...3
+    case codeBlock(text: String, languageHint: String?)  // leaf — no marks
+    case bulletList(items: [ListItem])
+    case orderedList(items: [ListItem])
+    case blockquote(children: [Block])               // container
+    case divider                                     // leaf — no payload
+}
+
+struct ListItem: Codable, Equatable, Sendable {
+    /// A list item holds one or more blocks. The first is always a
+    /// paragraph; subsequent blocks (typically a nested list) are
+    /// optional. Codable verifies this invariant on decode.
+    var content: [Block]
+}
+
+struct Inline: Codable, Equatable, Sendable {
+    var text: String
+    var marks: [Mark]
+}
+
+/// Inline emphasis. Add cases as the editor grows; the decoder is
+/// lenient — unknown future cases are dropped from the inline run
+/// rather than throwing, so a v1 client opening a v2 document keeps
+/// the text and only loses the unfamiliar emphasis.
+enum Mark: Codable, Hashable, Sendable {
+    case bold
+    case italic
+    case underline
+    case strikethrough
+    case code
+    case highlight(HighlightKind)
+    case link(URL)
+}
+
+enum HighlightKind: String, Codable, Hashable, Sendable {
+    case yellow, red, blue, green
+}
+```
+
+#### Containment rules
+
+The schema's invariants — enforced by Codable conformance and the
+reducer:
+
+| Block | Role | May contain |
+|---|---|---|
+| `paragraph` | leaf | inline runs |
+| `heading(level:)` | leaf | inline runs |
+| `codeBlock` | leaf | plain text only (no marks) |
+| `bulletList` / `orderedList` | container | `[ListItem]` |
+| `listItem` | container | first child is `paragraph`, optional second is nested list |
+| `blockquote` | container | any blocks |
+| `divider` | leaf | nothing |
+
+These rules are the schema's heart. A rigid containment table is what
+makes the editing UX feel flexible — every valid edit produces a valid
+tree; invalid states are unreachable.
+
+### 5.4 Block snapshot (value type for TCA State)
 
 Per `CLAUDE.md` and the data layer EDD, `@Model` objects never enter TCA `State`. The reducer reads `PageBlockSnapshot`:
 
@@ -282,10 +386,15 @@ struct PageBlockSnapshot: Equatable, Identifiable, Sendable {
     let kind: PageBlockKind
     let heightPoints: Double
 
-    // Payload — at most one of these is non-nil
-    let body: AttributedString?
-    let drawingData: Data?
-    let voice: VoiceSnapshot?
+    // Payload — at most one of these is populated
+    let document: RichTextDocument?    // for .text blocks
+    let drawingData: Data?              // for .ink blocks
+    let voice: VoiceSnapshot?           // for .voice blocks
+
+    /// Backreference for Voice → Transcript flow (§18 scenario C). The
+    /// text block created from a transcribed voice block carries the
+    /// source voice block's ID so the reader can play the original.
+    let sourceVoiceBlockID: UUID?
 
     struct VoiceSnapshot: Equatable, Sendable {
         let audioURL: URL?
@@ -297,15 +406,15 @@ struct PageBlockSnapshot: Equatable, Identifiable, Sendable {
 }
 ```
 
-`AttributedString` is `Equatable` and `Sendable` — safe in `State`. `Data` for `drawingData` is large; the snapshot path keeps a copy only while the active block is being edited. Inactive blocks hold a snapshot with `drawingData == nil` and resolve lazily via the `NotebookClient` when scrolled into view.
+`RichTextDocument` is a value type with synthesised `Equatable` — safe and cheap to compare in `State`. `Data` for `drawingData` is large; the snapshot path keeps a copy only while the active block is being edited. Inactive blocks hold a snapshot with `drawingData == nil` and resolve lazily via the `NotebookClient` when scrolled into view.
 
-**Equality cost.** `AttributedString.Equatable` is O(n) over runs and characters, so TCA's state-diff cost scales with the size of the active block's body. For typical note-taking workloads (a block holds one paragraph to one page of text, <10 KB), the cost is negligible. **Threshold:** if a block's archived `bodyData` exceeds 50 KB, switch the snapshot to a hash-based equality wrapper — store `body` alongside a precomputed `bodyHash: UInt64`, and define `==` as `bodyHash == bodyHash`. Until that threshold trips in profiling, the direct comparison ships.
+**Equality cost.** `RichTextDocument.Equatable` is O(n) over blocks + inline runs. Typical note-taking workloads (one block holding one paragraph to one page of text, hundreds of inline runs at most) compare in well under 1ms. **Threshold:** if a block's encoded `bodyData` exceeds 50 KB, switch the snapshot to a hash-based equality wrapper — store `document` alongside a precomputed `documentHash: UInt64`, and define `==` as `documentHash == documentHash`. Until that threshold trips in profiling, the direct comparison ships.
 
-### 5.4 Block kinds — invariants
+### 5.5 PageBlock kind invariants
 
 | Block kind | `bodyData` | `drawingData` | `audioData` | Notes |
 |---|---|---|---|---|
-| `.text` | required (may be empty `AttributedString`) | nil | nil | `plainText` mirror always present |
+| `.text` | required (JSON of `RichTextDocument`; may be an empty document with `blocks: []`) | nil | nil | `plainText` mirror always present, derived from inline runs |
 | `.ink` | nil | required (may be empty `PKDrawing`) | nil | `ocrText` populated by OCR service |
 | `.voice` | nil | nil | required during capture; may be cleared post-capture to keep transcript-only | `transcript` required |
 
@@ -556,74 +665,41 @@ var page: NotePage? = nil
 
 Same pattern as `NoteHeader`, `NoteLink`, `NoteRegion`. Avoids SwiftData's "duplicate inverse" runtime error.
 
-### 7.3 AttributedString serialization
+### 7.3 RichTextDocument serialization
 
-Two viable paths, picked once and held:
-
-**Path A — `NSKeyedArchiver` of `NSAttributedString` bridged from `AttributedString`** (recommended)
+`PageBlock.bodyData: Data?` stores **`JSONEncoder().encode(richTextDocument)`** — never an `AttributedString`. The block tree's `Codable` conformance is the only persistence boundary; SwiftData treats `bodyData` as opaque bytes, sidestepping the recursive-Codable destructuring crash that ships when a polymorphic `indirect enum` is handed to SwiftData as a typed property.
 
 ```swift
 // Encode
-let ns = NSAttributedString(textBlock.body)
-let data = try NSKeyedArchiver.archivedData(
-    withRootObject: ns, requiringSecureCoding: true
-)
+let data = try JSONEncoder().encode(snapshot.document)
 
 // Decode
-guard let ns = try NSKeyedUnarchiver.unarchivedObject(
-    ofClass: NSAttributedString.self, from: data
-) else { throw TextBlockDecodingError.archiverReturnedNil }
-let body = AttributedString(ns)
+let document = try JSONDecoder().decode(RichTextDocument.self, from: data)
 ```
 
-Pros: round-trips all `NSAttributedString` attributes including custom ones; same path AppKit/UIKit use; predictable size.
-Cons: requires careful registration of custom attribute classes for secure coding.
+**Versioning.** `RichTextDocument.version: Int` is checked on every decode. The decoder dispatches on the value to translate older shapes forward — content-shape migrations live here, NOT in SwiftData's `VersionedSchema`. Because the encoded JSON is opaque to SwiftData, the @Model schema can stay flat across content evolutions.
 
-**Path B — `JSONEncoder` of `AttributedString` directly**
+**Forward compatibility.** The `Mark` decoder is lenient: cases it doesn't recognise (a v2 mark a v1 client opens) are dropped from the inline run, but the surrounding `text` survives. The user sees plain text where the unknown emphasis would have been, never a broken document. The same lenience applies to unknown `Block` cases — they decode as a `paragraph` carrying the failed block's textual content as a single inline run, preserving the user's words.
 
-Pros: pure Swift; custom attributes via `AttributeScopes.AppAttributes` are first-class Codable.
-Cons: larger payloads; AttributedString's Codable conformance is newer and has had edge-case regressions.
+**Path A (`NSKeyedArchiver` of `NSAttributedString`) and Path B (`JSONEncoder` of `AttributedString`) are both deleted.** Neither survives the block-tree pivot. Existing `PageBlockSnapshot.encodeBody` and `decodeBody` helpers continue to exist as the single encode/decode boundary, but their internals switch to the JSON-of-RichTextDocument path. Tests pin the round-trip.
 
-**Decision: prefer Path B; fall back to Path A.** The iOS 26 `TextEditor` rich-text APIs make `AttributedString`'s native Codable path the most natural choice — same encoder all the way through the editor, no `NSAttributedString` bridge. Switch to Path A if Codable round-trip drops a custom attribute (`RegionAnchorAttribute`, `HighlightAttribute`, `SlashInsertionAttribute`) in practice. The spike for the text engine (§4 view tier note) covers this check.
+### 7.4 Marks — the inline emphasis vocabulary
 
-### 7.4 Custom AttributedString attributes
+Replacing the prior `FromInkAttributes` `AttributedString` scope, inline emphasis is now expressed via the `Mark` enum (§5.3). The vocabulary at v1:
 
-Three custom attribute keys carry app semantics:
+| Mark | Visual at v1 | Inline-only? |
+|---|---|---|
+| `.bold` | semibold weight | yes |
+| `.italic` | italic style | yes |
+| `.underline` | single underline | yes |
+| `.strikethrough` | single strikethrough | yes |
+| `.code` | monospaced span, soft tint | yes |
+| `.highlight(HighlightKind)` | colored span background | yes |
+| `.link(URL)` | underlined accent foreground, tap routes via deep-link handler | yes |
 
-```swift
-extension AttributeScopes {
-    struct FromInkAttributes: AttributeScope {
-        let regionAnchor: RegionAnchorAttribute   // UUID — see §11
-        let highlight: HighlightAttribute         // HighlightKind — see §12
-        let slashInsertion: SlashInsertionAttribute  // SlashCommand — see §13
-    }
+**Adding a mark.** Three steps: add the enum case to `Mark`; teach the editor renderer (UITextView's attribute conversion) how to map it; teach the slash-menu / selection-menu UI how to apply it. The decoder is forward-compatible — the new case appears in v(n+1) clients automatically without breaking v(n).
 
-    var fromInk: FromInkAttributes.Type { FromInkAttributes.self }
-}
-
-enum RegionAnchorAttribute: CodableAttributedStringKey {
-    typealias Value = UUID
-    static let name = "fromink.regionAnchor"
-    static let inheritedByAddedText = false
-    static let invalidationConditions: Set<AttributedString.AttributeInvalidationCondition>? = nil
-}
-
-enum HighlightAttribute: CodableAttributedStringKey {
-    typealias Value = HighlightKind  // see §12
-    static let name = "fromink.highlight"
-    static let inheritedByAddedText = false
-}
-
-enum SlashInsertionAttribute: CodableAttributedStringKey {
-    typealias Value = SlashCommandID
-    static let name = "fromink.slashInsertion"
-    static let inheritedByAddedText = false
-}
-```
-
-`inheritedByAddedText = false` is load-bearing — when the user types after a region anchor, the new characters do NOT inherit the anchor. The anchor stays bounded to the originally-marked text.
-
-These attributes serialize through Path A (secure coding) by registering each key type with `NSKeyedArchiver`'s allowed classes at `NotebookClient` init.
+**Region anchors no longer live in inline marks.** A NoteRegion that anchors to a span of text addresses the span by **block path + character offset** (see §11), not by a `regionAnchor` attribute on an `AttributedString`. The `RegionAnchorAttribute` / `HighlightAttribute` / `SlashInsertionAttribute` AttributedString-scope keys are deleted along with the prior `AttributeScopes.FromInkAttributes` story; `HighlightKind` survives as the payload of `Mark.highlight`.
 
 ### 7.5 Per-block content hash
 
@@ -885,12 +961,18 @@ enum NoteRegionAnchorKind: String, Codable, Sendable {
     var rectHeight: Double = 0
 
     // MARK: Text anchor (kind == .textRange)
-    /// No offsets stored. The truth lives in the text block's
-    /// AttributedString as a `RegionAnchorAttribute` whose value
-    /// equals this region's id. At read time, the editor finds the
-    /// range by querying spans where the attribute equals this id.
-    /// AttributedString maintains the span through inserts/deletes —
-    /// that is the "regions move with text" mechanic.
+    /// Block tree path identifying the leaf block holding the anchored
+    /// span — typically a paragraph or heading ID inside the Text
+    /// PageBlock's `RichTextDocument`. Stored as an array of block
+    /// IDs (root → leaf) so a nested block (e.g. a list item's
+    /// paragraph) is addressable.
+    var anchorBlockPath: [UUID]? = nil
+
+    /// Character offset range within the leaf block's joined inline
+    /// text. Encoded as UTF-16 code units to align with what the
+    /// editor's UITextView reports natively.
+    var anchorStartOffset: Int = 0
+    var anchorEndOffset: Int = 0
 
     // Existing association fields — unchanged.
     var headerOCRText: String? = nil
@@ -908,11 +990,20 @@ enum NoteRegionAnchorKind: String, Codable, Sendable {
 ### 11.1 Reading a text-anchored region
 
 ```swift
-// Inside the text editor (TextKit 2 + AttributedString-backed storage)
-func range(for region: NoteRegion, in body: AttributedString) -> Range<AttributedString.Index>? {
-    body.runs[\.fromInk.regionAnchor].first { run in
-        run.fromInk.regionAnchor == region.id
-    }?.range
+/// Resolve a region's anchored span inside a Text PageBlock's
+/// document. Returns `nil` if the path no longer exists (block was
+/// deleted) or the offsets exceed the leaf's text length (span
+/// deleted).
+func range(for region: NoteRegion, in document: RichTextDocument) -> RegionSpan? {
+    guard let path = region.anchorBlockPath,
+          let leaf = document.block(at: path) else { return nil }
+    let text = leaf.joinedInlineText
+    guard region.anchorEndOffset <= text.utf16.count else { return nil }
+    return RegionSpan(
+        path: path,
+        startUTF16: region.anchorStartOffset,
+        endUTF16: region.anchorEndOffset
+    )
 }
 ```
 
@@ -921,102 +1012,99 @@ func range(for region: NoteRegion, in body: AttributedString) -> Range<Attribute
 ```swift
 // Selection menu → "Mark Region" path
 let regionID = UUID()
-var attributed = block.body
-attributed[selectedRange].fromInk.regionAnchor = regionID
+let (path, startOffset, endOffset) = state.document.span(for: state.selection)
 
 let region = NoteRegion(
     id: regionID,
     page: page,
-    anchorBlockID: block.id,
-    anchorKindRaw: NoteRegionAnchorKind.textRange.rawValue
+    anchorBlockID: textBlockID,
+    anchorKindRaw: NoteRegionAnchorKind.textRange.rawValue,
+    anchorBlockPath: path,
+    anchorStartOffset: startOffset,
+    anchorEndOffset: endOffset
 )
 modelContext.insert(region)
-block.body = attributed  // attribute span now lives in the AttributedString
 ```
+
+The selection's `path` is the chain of block IDs from the document root to the leaf containing the caret. The offsets are UTF-16 code units inside the leaf's joined inline text. Both come from the editor's selection model — see the editor architecture section.
 
 ### 11.3 The "regions move with text" guarantee
 
-Because the AttributedString attribute is the anchor truth:
+Anchors track edits because the block path and offsets are kept in sync with the document by the reducer on every mutation:
 
-| User action | Attribute response |
+| User action | Anchor response |
 |---|---|
-| Type text BEFORE the region span | Attribute span shifts forward by inserted length. |
-| Type text WITHIN the region span | Attribute span extends to include new text (because `inheritedByAddedText` is false, only inserts at the boundary respect the rule — see below). |
-| Type text AFTER the region span | Attribute span unaffected. |
-| Delete text within the region span | Attribute span shrinks. |
-| Delete the entire region span | Attribute disappears. Region's `isAnchored` flips false on next save. |
+| Type text BEFORE the region span (same leaf) | `anchorStartOffset` and `anchorEndOffset` shift forward by inserted UTF-16 length. |
+| Type text WITHIN the region span | `anchorEndOffset` grows by inserted length; `anchorStartOffset` unchanged. |
+| Type text AFTER the region span | Offsets unchanged. |
+| Delete text within the region span | `anchorEndOffset` shrinks by deleted length. |
+| Delete the entire region span | Offsets collapse to equal values. Region's `isAnchored` flips false on next save. |
+| Move text into a new block (split paragraph) | Path updates to the new leaf; offsets recomputed relative to the new leaf's text. |
+| Delete the entire leaf block | Path no longer resolves. Region's `isAnchored` flips false. |
 
-**Insert-at-boundary precision.** `inheritedByAddedText = false` means typing at the *trailing* boundary does NOT extend the region — important for headers ("Q3 Budget" stays "Q3 Budget" when the user types space-and-more after it). Inserts strictly inside the span extend it. This matches user expectation.
+The reducer's `applyEdit(_:)` step walks every NoteRegion attached to the active block after a mutation and adjusts the offsets / path. Cheap: O(regions × edits_per_save).
+
+**Trailing-edge precision.** Typing at the trailing edge of an anchored span (e.g. cursor is at position `anchorEndOffset`) extends the span only if the user holds the *extend* gesture (selection menu's "extend region"). Default behavior: anchor stays bounded; new characters belong to surrounding text. Matches the "Q3 Budget" stays "Q3 Budget" expectation.
 
 ### 11.4 The detach sweeper — text-anchor variant
 
-The existing erasure sweeper on `CanvasFeature` flips `isAnchored = false` when ink inside a region's rect is erased. The text-anchor analog is simpler: on every block save, walk the AttributedString's regionAnchor attribute spans. Any region ID with no surviving span flips to `isAnchored = false`. If the region also carries no other associations, it's deleted outright (existing logic).
+The existing erasure sweeper on `CanvasFeature` flips `isAnchored = false` when ink inside a region's rect is erased. The text-anchor analog: on every block save, walk every NoteRegion with anchor kind `.textRange`. If its `anchorBlockPath` no longer resolves OR `anchorStartOffset == anchorEndOffset` (span collapsed by deletion), flip to `isAnchored = false`. If the region also carries no other associations, it's deleted outright (existing logic).
 
 ### 11.5 Indicator rendering across anchor kinds
 
 `RegionIndicator` is one component. The adapter resolves an anchor-kind-aware Model:
 
 - **Ink rect:** indicator renders at `(rect * scale)` in viewport coordinates, positioned absolutely within the ink block.
-- **Text range:** indicator renders inline as a TextKit attribute, drawing a thin border around the spanned text using the block's text layout. Badges stack to the right of the spanned text or float to a side margin per layout heuristics.
+- **Text range:** indicator renders inline using the editor's caret-rect API for the start and end of the anchored UTF-16 range. Badges stack to the right of the spanned text or float to a side margin per layout heuristics.
 
 Both surface the same badge row (header / link / event), same ellipsis chip, same tap actions. Different anchor renderers, identical Model API.
 
 ---
 
-## 12. Highlights — defaults & custom kinds
+## 12. Highlights — colors + semantic kinds
 
-Highlights are a custom AttributedString attribute. Default colors are visual; custom kinds carry semantic meaning.
+Highlights are inline emphasis carried by `Mark.highlight(HighlightKind)` (see §5.3). Default color kinds are visual; the link kind is semantic.
 
 ```swift
-enum HighlightKind: Codable, Hashable, Sendable {
-    case color(HighlightColor)
-    case link(URL)
-    case event(eventKitID: String)
-    case pdf(pdfID: UUID, page: Int?)
-
-    enum HighlightColor: String, Codable, CaseIterable, Sendable {
-        case yellow, red, blue, green
-    }
+enum HighlightKind: String, Codable, Hashable, Sendable {
+    case yellow
+    case red
+    case blue
+    case green
 }
 ```
+
+**Note on scope.** The original v1 design carried richer highlight kinds (link / event / pdf) on the highlight attribute. Those moved to first-class block-level constructs or `Mark.link(URL)` to keep `HighlightKind` simple. A user "highlights" a span (color-only emphasis); the dispatch pipeline handles semantic associations via `NoteRegion` instead.
 
 ### 12.1 Application
 
 ```swift
-// Selection menu → "Highlight" submenu
-case .highlightApplied(let kind, let range):
-    var attributed = state.activeBlockBody
-    attributed[range].fromInk.highlight = kind
-    state.activeBlockBody = attributed
-    return .run { _ in try await notebookClient.updateBlockBody(blockID, attributed) }
+// Selection menu → "Highlight" submenu (Yellow, Red, Blue, Green)
+case .highlightApplied(let color):
+    state.document.applyMark(.highlight(color), to: state.selection)
+    return .send(.persistRequested)
 ```
 
 ### 12.2 Rendering
 
-The TextKit 2 layout fragment renderer:
-
-- `.color(.yellow)` → translucent yellow background, no foreground change.
-- `.color(.red)`, `.blue`, `.green` → likewise, contrast-checked.
-- `.link(url)` → underline + accent color + tappable; opens via the existing link router.
-- `.event(eventKitID)` → translucent calendar tint + small calendar SF Symbol prefix; tap opens EventKit detail.
-- `.pdf(...)` → translucent PDF tint + document symbol; tap opens the PDF viewer at the page.
+Inside the Text PageBlock's UITextView, each highlighted inline run carries a translucent background fill at the highlight kind's color, no foreground change. The `BlockDecoratingLayoutManager` does NOT need to draw highlights — the standard `NSAttributedString.Key.backgroundColor` set when flattening the block tree to NSAttributedString is what TextKit 1 renders for the background fill.
 
 ### 12.3 Accessibility — color is not the only signal
 
-Custom highlight kinds always render with **an icon prefix** in addition to color. A user with colorblindness or with "Differentiate Without Color" enabled sees the icon and knows the kind. Default-color highlights without semantic kind get a small dot prefix when "Differentiate Without Color" is on, so even color-only highlights become distinguishable.
+When "Differentiate Without Color" is on, highlighted runs get a small leading dot character or hairline underline so color-only emphasis remains distinguishable.
 
 ### 12.4 Persistence
 
-Highlights persist as part of the AttributedString. No separate model. Removing a highlight is a single AttributedString update; survives all CloudKit sync paths because it's encoded in `bodyData`.
+Highlights persist as `Mark.highlight(_)` cases inside the RichTextDocument's inline runs. No separate model. Removing a highlight is a single inline-marks update; survives all CloudKit sync paths because it's encoded in `bodyData`.
 
 ### 12.5 The interaction with NoteRegion
 
-A `.link(url)` highlight and a `.textRange` `NoteRegion` with an external URL are different things:
+A highlighted span and a `.textRange` NoteRegion can coexist on the same text:
 
-- **Highlight** = inline visual treatment. Lightweight. Survives only in the AttributedString.
+- **Highlight** = inline visual treatment. Lightweight. Lives in the document's inline marks.
 - **Region** = anchor for the dispatch pipeline. Carries header text, link target, EventKit ID, multiple associations. Surfaces in the dispatch panel.
 
-They can coexist on the same text range. A user can highlight "Q3 Budget" in yellow AND mark it as a region with a calendar event. The renderer composes both: yellow background + region border + badges.
+A user can highlight "Q3 Budget" yellow AND mark it as a region with a calendar event. The renderer composes both: yellow background from the inline mark + region border + badges from the NoteRegion overlay.
 
 ---
 
@@ -1118,6 +1206,32 @@ When the user types `/he` the matched commands narrow to those whose titleKey co
 ### 13.5 Keyboard navigation (popover surfaces only)
 
 Arrow keys move `selectedID`. Enter commits. Escape dismisses. Typing more filters; backspace through the slash dismisses.
+
+### 13.6 What commands DO — block-tree mutations
+
+A slash command's `commandSelected` action in the reducer mutates the document. There is no "intent" attribute pass; the block tree's shape IS the formatting.
+
+| Command | Mutation |
+|---|---|
+| `heading1` / `heading2` / `heading3` | Replace the paragraph block containing the caret with a `.heading(level:)` block carrying the same inline runs. |
+| `body` | Replace the block containing the caret with a `.paragraph` block carrying the same inline runs (works to "exit" headings, lists, blockquote, code). |
+| `blockQuote` | Wrap the block containing the caret in a `.blockquote(children: [block])`. Successive invocations on the same block re-wrap (rare). |
+| `code` | Replace the block containing the caret with a `.codeBlock(text:languageHint:)`, discarding any inline marks (code blocks are plain text). |
+| `bulletedList` | If the current block is already a list item, no-op. Otherwise replace the current paragraph with a `.bulletList(items: [.init(content: [paragraph])])`. |
+| `numberedList` | Same as bulletedList but `.orderedList`. |
+| `checklist` | (deferred) Same shape, custom `ListItem.isChecked: Bool` flag. |
+| `divider` | Insert a `.divider` block after the block containing the caret. Caret moves to a fresh paragraph after the divider. |
+| `link` / `event` / `pdfAttach` / `voiceMemo` / `image` / `region` / `dispatch` | (each deferred — defers to its own subsystem; see §14 — voice scenarios in §18) |
+
+**Enter on empty list item exits the list.** The reducer's text-input handler watches for `Return` typed while the caret is at the start of an empty `listItem`'s leading paragraph. The handler:
+
+1. Removes that empty `listItem` from the parent `bulletList` / `orderedList`.
+2. Inserts a fresh `.paragraph` block after the list, with the caret seeded at offset 0.
+3. If removing the empty item drained the list to zero items, the list block is removed too.
+
+Same handler covers `Tab` (nest into a parent listItem's nested list) and `Shift+Tab` (outdent — promote a nested item to its parent's level).
+
+**Slash typed inside a code block is literal.** Code blocks are plain text; the slash menu doesn't open inside them. Same rule as Notion.
 
 ---
 
@@ -1377,7 +1491,28 @@ enum PageUndoEntry: Equatable, Sendable {
 
 ## 18. Voice-to-text architecture
 
-Voice is a first-class capture surface, not just system dictation. System dictation continues to work in any text block via the keyboard's microphone key — that path requires no special handling. This section covers the **voice memo block** and the **voice-first capture surface**.
+Voice spans three distinct flows. Each maps to a separate UI affordance and reducer action; the underlying `SpeechService` (§18.1) and `PageBlockKind.voice` payload (§5) compose all three.
+
+### 18.0 The three voice flows
+
+**Scenario A — Dictation INTO a block.** The user is typing inside a Text PageBlock, taps a mic affordance (slash command `/dictate`, accessory bar mic icon, or keyboard shortcut), and speaks. `SpeechService` streams partial transcripts; the reducer inserts the recognized text as inline runs into the **currently-focused block** — same path as keyboard input. No new block is created. No audio is stored. Schema impact: none — pure UI flow.
+
+**Scenario B — Voice recording block.** The user invokes `/voiceMemo` (or the accessory bar voice icon) and records audio. A new **Voice PageBlock** is created on the page; recording captures into `PageBlock.audioData`. The block's view (`VoiceBlockView`) is a peer of `TextBlockView` / `InkBlockView` with playback controls: play/pause, scrubber, duration, waveform. No transcript needed at capture time — the user can request transcription later via the block's menu. Schema: existing `PageBlockKind.voice` already covers this.
+
+**Scenario C — Voice → transcript → text block.** Composes A + B. Starting from an existing voice block (or recording one fresh), the user taps "Transcribe" in the block's menu. `SpeechService.transcribeFile(url:locale:)` produces a transcript. The reducer:
+
+1. Creates a new **Text PageBlock** below the voice block.
+2. Seeds its `RichTextDocument` with one or more `.paragraph` blocks containing the transcript.
+3. Writes the source voice block's UUID into `PageBlock.sourceVoiceBlockID` on the new text block so a "play original" affordance can appear next to the transcribed text.
+4. Leaves the voice block in place (user can delete manually if they don't want to keep the audio).
+
+Schema impact: add `sourceVoiceBlockID: UUID?` to PageBlock. One optional UUID column.
+
+**Order of implementation:** Scenario B ships first (it's the foundation — `PageBlockKind.voice` + a player view). Scenario A follows once `SpeechService` exists. Scenario C composes from A + B and lands last.
+
+---
+
+Voice is a first-class capture surface, not just system dictation. System dictation continues to work in any text block via the keyboard's microphone key — that path requires no special handling. The sections below cover the **voice memo block** and the **voice-first capture surface** that underpin scenarios B and C.
 
 ### 18.1 `SpeechService` dependency
 
@@ -1798,69 +1933,81 @@ Per `CLAUDE.md`: "Do not mock `VNRecognizeTextRequest` — use real fixtures of 
 
 The block model and hybrid editor touch substantial existing code. The refactor sequence below ships incrementally — no build flag (no migrations means no staged rollout to gate; per the user memory rule, schema lands directly).
 
-### 22.1 Phase 1 — schema (no UI change)
+> **2026-06-09 revision.** Phases 1, 2, 3 are substantially shipped — `PageBlock` schema, `NotebookClient` block CRUD, `TextEditingFeature` reducer, `TextBlockView`, `SlashCommandPaletteFeature` with vocabulary + filter, notebook type picker. The text-experience branch has 11 commits already on `alex-blair/text-experience`.
+>
+> The block-tree pivot supersedes the parts of Phase 2/3 that built on `AttributedString` + `PresentationIntent`. Phase 2.5 below is the migration path.
 
-1. Add `PageBlock` `@Model`, `PageBlockKind` enum, `PageBlockSnapshot` value type.
-2. Add `NotePage.blocks` relationship + `extractedText` + `extractedTextHash`.
-3. Add `NoteRegion.anchorBlockID` + `anchorKindRaw`.
-4. Add `Notebook.canonicalCanvasWidth`.
-5. Add `PageBlock.contentHash`.
-6. **Delete** `NotePage.drawingData` and `NotePage.ocrText` (these move to per-block).
-7. `NotebookClient` gains `insertBlock`, `updateBlock`, `deleteBlock`, `updateBlockHeight`, `reorderBlocks`. Existing `saveDrawing` retires; the call site that used it (`CanvasViewBridge.persist`) now writes into a block.
-8. Tests: block CRUD round-trips; region anchor discriminator persists.
+### 22.1 Phase 1 — schema (no UI change) — **SHIPPED**
 
-### 22.2 Phase 2 — text block editor (text-only notes)
+PageBlock @Model, NotePage.blocks, NoteRegion anchor discriminator, Notebook.canonicalCanvasWidth, PageBlock.contentHash, NotebookClient CRUD all on the branch.
 
-7. Add `TextBlockView` (TextKit 2 + AttributedString).
-8. Add `TextEditingFeature` with format/block/list actions.
-9. Wire into `textNote` notebooks — currently a stub. This becomes the proving ground for the editor without disturbing existing ink notebooks.
-10. Add `AppStrings+TextEditing.swift`.
-11. Tests: format toggles, block-type changes, AttributedString round-trips.
+### 22.2 Phase 2 — text block editor (AttributedString version) — **SUPERSEDED, partially shipped**
 
-### 22.3 Phase 3 — accessory bar + slash menu (iPhone + Mac)
+The first pass of `TextEditingFeature` + `TextBlockView` shipped on top of `AttributedString` + `PresentationIntent`. Manual testing exposed that `PresentationIntent` does not paint visually under TextEditor or TextKit 2 — see §5.3. The reducer's contracts (selection-aware block formatting, slash trigger, debounced persist, palette wiring) all survive; the content shape and the editor view change.
 
-12. Add `TextAccessoryBarView` (component), mode state machine.
-13. Add `SlashCommandPaletteFeature` + popover view.
-14. Wire keyboard shortcuts (`UIKeyCommand`, `NSMenuItem`).
-15. Wire selection menu extensions (`UIEditMenuInteraction`, `NSMenu`).
-16. Tests: slash filtering, mode transitions, command dispatch.
+### 22.3 Phase 3 — slash command palette — **PARTIALLY SHIPPED**
 
-### 22.4 Phase 4 — voice blocks
+Vocabulary, registry, popover, filter, keyboard-nav state, selection-aware actions all on the branch. The palette's UI ships unchanged; what each command DOES changes to mutate the block tree (§13.6). Keyboard shortcuts and selection-menu integrations not yet shipped.
 
-17. Add `SpeechService` dependency with live + test values.
-18. Add `VoiceCaptureFeature` reducer.
-19. Add `VoiceBlockView` + capture screen + permissions integration.
-20. Wire home-screen voice-first surface + Siri shortcut.
-21. Tests: capture state machine, transcript persistence, locale handling.
+### 22.4 Phase 2.5 — block tree refactor (NEW, supersedes the AttributedString approach)
 
-### 22.5 Phase 5 — hybrid composition (iPad ink + text in one page)
+The pivot. Each commit isolates one concern so review can confirm one thing at a time. All on `alex-blair/text-experience`.
 
-22. Add `InkBlockView` as a per-block PKCanvasView wrapper at canonical scale (§6).
-23. Add `DragBarView`.
-24. Add `PageBlockStackView` (feature view that interleaves block components with drag bars).
-25. Refactor `CanvasScreen` to render via `PageBlockStackView`. The existing per-page state shrinks dramatically; most behavior moves into `NotePageFeature` and per-block features.
-26. Implement Pencil-in-blank-text → new ink block (§10.4).
-27. Tests: block reorder, height adjustment, hybrid composition snapshot.
+1. **`RichTextDocument` value types** — define `Block`, `ListItem`, `Inline`, `Mark`, `HighlightKind` in `FromInk/FromInk/RichTextDocument.swift`. Hand-written Codable conformance for `indirect enum Block`. Lenient decoder for forward-compatibility. Round-trip tests, including unknown future cases.
+2. **`PageBlockSnapshot` refactor** — replace `body: AttributedString?` with `document: RichTextDocument?`. Update `PageBlockSnapshot.encodeBody` / `decodeBody` helpers to JSON-encode the document. Tests pin the new round-trip and confirm the schema version field travels through.
+3. **`TextEditingFeature` rewrite** — replace `editingBody: AttributedString` with `document: RichTextDocument`. Selection model: `BlockTreeSelection` (block path + UTF-16 offset range inside the leaf). Slash commands and inline formatting actions mutate the document. Reducer tests are largely rewritten — old AttributedString tests retire.
+4. **`TextKitEditorView` rewrite** — delete the broken TextKit 2 version. New view hand-builds the TextKit 1 stack with a `BlockDecoratingLayoutManager` subclass. Flattens the document to NSAttributedString (paragraph per leaf block, `blockType` tag attribute per paragraph). Parses keystroke edits back into document mutations. Manages `typingAttributes` after every block-format change.
+5. **`BlockDecoratingLayoutManager`** — extended from the PoC. Draws blockquote bar + tint, code block tint + indent, list bullets / numbers (via custom drawBackground rather than NSTextList, since UITextView's NSTextList honoring is unreliable), divider hairline. Heading typography lives in paragraph attributes, no custom drawing needed.
+6. **`TextBlockView` swap** — switch to the new editor. Model surface stays the same so the wiring view and adapter don't move.
+7. **NoteRegion text-range anchor migration** — drop `RegionAnchorAttribute` and the corresponding `AttributeScopes.FromInkAttributes`. Update `NoteRegion` schema with `anchorBlockPath`, `anchorStartOffset`, `anchorEndOffset`. Reducer step keeps anchors in sync on every document mutation.
+8. **Delete the PoC** — `SlashEditorPoC.swift` and the temporary home-screen button overlay. Reducer is the truth now.
 
-### 22.6 Phase 6 — region anchor extension
+### 22.5 Phase 3 (continued) — text editing chrome
 
-28. Extend `NoteRegion` writes to support `.textRange` anchor.
-29. Extend `RegionIndicator` adapter to resolve text-range models.
-30. Extend the dispatch panel to surface text-anchored regions identically.
-31. Tests: text edits move the anchor span; deletion sweeps `isAnchored`.
+9. **Caret-anchored slash popover** — replace fixed-corner positioning with `UIPopoverPresentationController` anchored at the editor's caret rect on iPad regular / Mac.
+10. **`TextAccessoryBarView`** — iPhone + iPad compact soft-keyboard accessory bar with mode switching + Aa popover (§14.4).
+11. **`UIKeyCommand` set** — ⌘B/I/U/⇧⌘K/⌘⌥1-3/⌘⌥0/⌘⇧7-9/⌘⇧D/⌘⇧/ wired to the same reducer actions as the slash menu.
+12. **`NSMenu` set** on Mac (parallel to UIKeyCommand).
+13. **Selection menu extensions** — `UIEditMenuInteraction` adds Mark Region, Highlight ▸, Send to Dispatch; `NSMenu` mirrors on Mac.
 
-### 22.7 Phase 7 — accessibility hardening
+### 22.6 Phase 4 — voice blocks
 
-32. Add custom rotors.
-33. Wire all accessibility action names.
-34. Add the CI audit test.
-35. Update PR template with the audit checklist.
+14. `SpeechService` dependency (live + test).
+15. Scenario B first — `VoiceBlockView` + capture flow + permission integration.
+16. Scenario A — `/dictate` slash command + accessory bar mic icon insert into the active text block.
+17. Scenario C — Transcribe action on a voice block creates a seeded text block linked via `sourceVoiceBlockID`.
+18. Home-screen voice-first surface + Siri shortcut.
+19. Tests: each scenario's reducer flow, mocked SpeechService.
 
-### 22.8 What gets deleted
+### 22.7 Phase 5 — hybrid composition (iPad ink + text in one page)
 
-- `CanvasScreen`'s per-page header/link/region local `@State` collapses into `NotePageFeature` state.
-- Legacy `NoteHeader` + `NoteLink` consumer paths (held over from the NoteRegion rollout) finally retire.
-- `CanvasScreen.headerPreviewImages` and friends move to `NotePageFeature` dependency cache.
+20. `InkBlockView` (per-block PKCanvasView at canonical scale, §6).
+21. `DragBarView`.
+22. `PageBlockStackView` (feature view interleaving per-block components with drag bars). Each kind is its own SwiftUI view — TextBlockView, InkBlockView, VoiceBlockView, DividerBlockView (page-level), ImageBlockView (later).
+23. Refactor `CanvasScreen` to render via `PageBlockStackView`. `NotePageFeature` lifts state out of `CanvasScreen`'s @State.
+24. Pencil-in-blank-text → new ink block (§10.4).
+
+### 22.8 Phase 6 — region anchor extension (text-range integration)
+
+25. Extend dispatch panel to surface text-anchored regions identically. Most of the schema work lands in Phase 2.5; this step is the dispatch / RegionIndicator integration.
+
+### 22.9 Phase 7 — accessibility hardening
+
+26. Custom rotors.
+27. Accessibility action names on every block kind's component.
+28. CI audit test.
+29. PR template update.
+
+### 22.10 What gets deleted in the refactor
+
+- `TextKitEditorView` (TextKit 2 version) — replaced by the TextKit 1 version.
+- `SlashEditorPoC.swift` — replaced by the production editor.
+- The temporary "PoC" button on `HomeWiringView.swift`.
+- `AttributeScopes.FromInkAttributes` — superseded by the `Mark` enum and NoteRegion-fielded text anchors.
+- `RegionAnchorAttribute`, `HighlightAttribute`, `SlashInsertionAttribute` AttributedString scope keys — replaced by document-level concepts.
+- `CanvasScreen`'s per-page header/link/region local `@State` (collapses into `NotePageFeature` in Phase 5).
+- Legacy `NoteHeader` + `NoteLink` consumer paths (Phase 5).
+- `CanvasScreen.headerPreviewImages` (Phase 5).
 
 ---
 
