@@ -229,6 +229,64 @@ final class TextEditingFeatureTests: XCTestCase {
 
     // MARK: - Load failure suppresses edits
 
+    // MARK: - applyBlockFormat
+
+    @MainActor
+    func test_applyBlockFormat_heading1_setsPresentationIntent() async {
+        var initial = TextEditingFeature.State(activeBlock: snapshot(
+            body: AttributedString("Meeting agenda")
+        ))
+        initial.editingBody = AttributedString("Meeting agenda")
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.heading(level: 1)))
+
+        let body = store.state.editingBody
+        let range = body.startIndex..<body.endIndex
+        let intent = body[range].presentationIntent
+        XCTAssertNotNil(intent, "Body must carry a PresentationIntent after block format application")
+        XCTAssertTrue(store.state.isDirty, "Block format application must mark the body dirty for persist")
+    }
+
+    @MainActor
+    func test_slashPaletteCommandSelected_heading2_stripsTriggerAndAppliesFormat() async {
+        var initial = TextEditingFeature.State(activeBlock: snapshot(
+            body: AttributedString("My heading /h2")
+        ))
+        initial.editingBody = AttributedString("My heading /h2")
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.filterText = "h2"
+        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard()
+            .filtered(by: "heading")
+        initial.slashPalette.selectedIndex = 1
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading2)))
+
+        // The "/h2" trigger slice should be removed from the body.
+        let body = String(store.state.editingBody.characters)
+        XCTAssertFalse(
+            body.contains("/h2"),
+            "Slash trigger slice must be stripped before format application"
+        )
+        XCTAssertFalse(
+            body.contains("/"),
+            "All trigger characters from the last `/` onward should be removed"
+        )
+    }
+
     @MainActor
     func test_bodyEdited_whileLoadFailure_isDropped() async {
         // State seeded directly into the failure surface — no

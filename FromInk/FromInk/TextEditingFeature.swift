@@ -22,6 +22,11 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 /// encodeBody(_:)` so the encoding path (Path B with `FromInkAttributes`
 /// scope) lives in one place. The reducer is encoder-agnostic.
 ///
+/// **Slash command palette.** Scoped under `.slashPalette`; the
+/// reducer detects the trigger character in `bodyEdited` (a `/` at
+/// the very end of the body, preceded by whitespace or start-of-
+/// document) and forwards selected commands to the format applier.
+///
 /// **Equality cost.** `AttributedString.Equatable` is O(n). Typical
 /// block sizes are <10 KB so per-action diff cost is negligible. The
 /// 50 KB threshold from EDD §5.3 hasn't tripped — when it does, the
@@ -30,8 +35,6 @@ struct TextEditingFeature: Reducer {
 
     @ObservableState
     struct State: Equatable {
-        /// The block being edited. nil when no text block is active
-        /// (e.g. page just loaded, no blocks yet).
         var activeBlock: PageBlockSnapshot? = nil
 
         /// In-flight edit buffer for the active session. Mirrors
@@ -42,34 +45,20 @@ struct TextEditingFeature: Reducer {
         /// **Contract:** `editingBody` is the authoritative draft
         /// while editing. `activeBlock.body` is the last-loaded
         /// snapshot from disk — useful for "discard changes" but
-        /// never read by the editor itself. Treat the two as
-        /// distinct sources, with `editingBody` winning during
-        /// active edits.
+        /// never read by the editor itself.
         var editingBody: AttributedString = AttributedString()
 
-        /// Set when `editingBody` has unsaved changes since the last
-        /// successful persist. Surfaces a "saving…" affordance and
-        /// gates the navigate-away flush path.
         var isDirty: Bool = false
 
-        /// Surface for the load-failure state (decode error,
-        /// orphan block). Renders the bodyDecodeFailed placeholder
-        /// in `TextBlockView` rather than an empty editor.
         var loadFailure: LoadFailure? = nil
 
-        /// Non-nil when the most recent persist attempt failed. The
-        /// wiring view renders a banner so the user has a signal
-        /// that their changes haven't landed; the next `.bodyEdited`
-        /// triggers a fresh persist attempt that clears this on
-        /// success. Resets to nil on `activeBlockChanged`.
-        ///
-        /// String reason only — the action stays clock-free so the
-        /// reducer doesn't have to take `CalendarContext` as a
-        /// dependency. If a timestamp becomes useful for auto-
-        /// dismissing the banner, capture it in the wiring view's
-        /// `onChange` handler rather than threading a clock through
-        /// the reducer.
         var lastPersistFailureReason: String? = nil
+
+        /// Slash command palette state, scoped under this feature so
+        /// the trigger detection in `bodyEdited` and the command
+        /// dispatch in `slashPalette(.commandSelected)` both live in
+        /// the same reducer body.
+        var slashPalette: SlashCommandPaletteFeature.State = .init()
 
         enum LoadFailure: Equatable, Sendable {
             case bodyDecodeFailed
@@ -79,33 +68,30 @@ struct TextEditingFeature: Reducer {
 
     @CasePathable
     enum Action: Equatable {
-        /// Wire a freshly loaded snapshot into the editor. Replaces
-        /// any prior in-flight edit session; the caller is expected
-        /// to flush first if `isDirty` is true.
         case activeBlockChanged(PageBlockSnapshot?)
 
-        /// User typed; in-flight body update.
         case bodyEdited(AttributedString)
 
-        /// Debounced commit triggered by `.bodyEdited` after the
-        /// debounce window. Encodes via `PageBlockSnapshot.encodeBody`
-        /// and writes through `NotebookClient.updateBlockBody`.
         case persistRequested
-
-        /// Encode + persist succeeded. Clears `isDirty` and
-        /// `lastPersistFailure`.
         case persistCompleted
-
-        /// Encode or persist failed. Logged via OSLog and surfaced
-        /// via `lastPersistFailureReason` so the wiring view can
-        /// render a banner; `isDirty` stays true so a future commit
-        /// retries.
         case persistFailed(reason: String)
 
-        /// Synchronous flush requested by the wiring view (navigate-
-        /// away, scene background). Cancels any in-flight debounce
-        /// and persists immediately if dirty.
         case flush
+
+        /// Apply a block-level format to the active paragraph.
+        /// Mutates `editingBody`'s `PresentationIntent` for the
+        /// paragraph containing the caret (or the whole body if
+        /// no selection is tracked yet — v1).
+        case applyBlockFormat(BlockFormat)
+
+        case slashPalette(SlashCommandPaletteFeature.Action)
+    }
+
+    /// Block formats wired in this commit. The full vocabulary
+    /// (blockQuote, code, lists) lands as their handlers ship.
+    enum BlockFormat: Equatable, Sendable {
+        case heading(level: Int)   // 1, 2, 3
+        case body
     }
 
     @Dependency(\.notebookClient) var notebookClient
@@ -115,11 +101,13 @@ struct TextEditingFeature: Reducer {
     private static let debounceMilliseconds: Int = 600
 
     var body: some Reducer<State, Action> {
+        Scope(state: \.slashPalette, action: \.slashPalette) {
+            SlashCommandPaletteFeature()
+        }
+
         Reduce { state, action in
             switch action {
             case .activeBlockChanged(let snapshot):
-                // Resolve load-failure surfaces up front so the view
-                // can render the right placeholder before any edit.
                 if let snapshot {
                     if snapshot.pageID == nil {
                         state.loadFailure = .orphan
@@ -135,17 +123,57 @@ struct TextEditingFeature: Reducer {
                 state.editingBody = snapshot?.body ?? AttributedString()
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
+                state.slashPalette.isOpen = false
                 return .cancel(id: Self.persistCancelID)
 
             case .bodyEdited(let new):
                 guard state.loadFailure == nil else { return .none }
+                let priorEnd = String(state.editingBody.characters)
                 state.editingBody = new
                 state.isDirty = true
-                return .run { send in
-                    try await clock.sleep(for: .milliseconds(Self.debounceMilliseconds))
-                    await send(.persistRequested)
+
+                // Slash trigger detection. Open the palette when the
+                // newly-typed character is `/` AND it sits at the end
+                // of the body AND is preceded by whitespace or start-
+                // of-document. Keeps the palette out of in-paragraph
+                // `/` insertions (paths, fractions) — matches the
+                // EDD §13 "never intercept" rule for ambiguous cases.
+                let newChars = String(new.characters)
+                if state.slashPalette.isOpen {
+                    // Already open — update the filter from the
+                    // characters typed AFTER the triggering `/`. We
+                    // find the LAST `/` in the new buffer and
+                    // everything after it becomes the filter.
+                    if let lastSlash = newChars.lastIndex(of: "/") {
+                        let filter = String(newChars[newChars.index(after: lastSlash)...])
+                        // If the user has navigated past the slash
+                        // (backspaced through it or pressed enter
+                        // putting whitespace before it), close the
+                        // palette.
+                        if filter.contains(where: { $0.isNewline }) {
+                            return .merge(
+                                schedulePersist(),
+                                .send(.slashPalette(.dismissed))
+                            )
+                        }
+                        return .merge(
+                            schedulePersist(),
+                            .send(.slashPalette(.filterChanged(filter)))
+                        )
+                    } else {
+                        // The triggering `/` is gone — dismiss.
+                        return .merge(
+                            schedulePersist(),
+                            .send(.slashPalette(.dismissed))
+                        )
+                    }
+                } else if shouldOpenPalette(prior: priorEnd, current: newChars) {
+                    return .merge(
+                        schedulePersist(),
+                        .send(.slashPalette(.openRequested))
+                    )
                 }
-                .cancellable(id: Self.persistCancelID, cancelInFlight: true)
+                return schedulePersist()
 
             case .persistRequested:
                 return persistEffect(state: state)
@@ -168,8 +196,46 @@ struct TextEditingFeature: Reducer {
                     .cancel(id: Self.persistCancelID),
                     persistEffect(state: state)
                 )
+
+            case .applyBlockFormat(let format):
+                guard state.loadFailure == nil else { return .none }
+                applyBlockFormat(format, to: &state.editingBody)
+                state.isDirty = true
+                return schedulePersist()
+
+            case .slashPalette(.commandSelected(let command)):
+                // Strip the triggering `/<filter>` slice before
+                // applying the command so the inserted markup
+                // doesn't leave the trigger characters behind.
+                stripSlashTrigger(from: &state.editingBody)
+                // Route the command to its handler. Only the v1-
+                // available block format commands run today; the
+                // rest are no-ops at the reducer level (the parent
+                // wiring layer will gain handlers as they ship).
+                let formatAction = blockFormatAction(for: command)
+                if let formatAction {
+                    state.isDirty = true
+                    return .merge(
+                        .send(formatAction),
+                        schedulePersist()
+                    )
+                }
+                return schedulePersist()
+
+            case .slashPalette:
+                return .none
             }
         }
+    }
+
+    // MARK: - Helpers
+
+    private func schedulePersist() -> Effect<Action> {
+        .run { send in
+            try await clock.sleep(for: .milliseconds(Self.debounceMilliseconds))
+            await send(.persistRequested)
+        }
+        .cancellable(id: Self.persistCancelID, cancelInFlight: true)
     }
 
     private func persistEffect(state: State) -> Effect<Action> {
@@ -185,5 +251,68 @@ struct TextEditingFeature: Reducer {
                 await send(.persistFailed(reason: error.localizedDescription))
             }
         }
+    }
+
+    /// True when the most recent edit inserted a `/` that should
+    /// trigger the palette. Specifically: the new body ends with `/`,
+    /// the prior body did NOT end with `/`, and the character
+    /// preceding the `/` (if any) is whitespace, newline, or the
+    /// document start.
+    private func shouldOpenPalette(prior: String, current: String) -> Bool {
+        guard current.last == "/" else { return false }
+        guard prior.last != "/" else { return false }
+        // The `/` is the last char; check what's before it.
+        let beforeSlash = current.dropLast()
+        if let prev = beforeSlash.last {
+            return prev.isWhitespace || prev.isNewline
+        }
+        // `/` is at position 0 — start of document.
+        return true
+    }
+
+    /// Strips the `/<filter>` slice from the end of the body so the
+    /// applied command doesn't leave the trigger characters behind.
+    /// Matches the simplest "trigger at end of body" detection in
+    /// `shouldOpenPalette`; mid-document triggering is a polish
+    /// follow-up.
+    private func stripSlashTrigger(from body: inout AttributedString) {
+        var chars = String(body.characters)
+        guard let lastSlash = chars.lastIndex(of: "/") else { return }
+        chars = String(chars[..<lastSlash])
+        body = AttributedString(chars)
+    }
+
+    /// Maps a `SlashCommand` to the corresponding `applyBlockFormat`
+    /// action, or `nil` for commands that aren't wired in this commit.
+    private func blockFormatAction(for command: SlashCommand) -> Action? {
+        switch command {
+        case .heading1:  return .applyBlockFormat(.heading(level: 1))
+        case .heading2:  return .applyBlockFormat(.heading(level: 2))
+        case .heading3:  return .applyBlockFormat(.heading(level: 3))
+        case .body:      return .applyBlockFormat(.body)
+        default:         return nil
+        }
+    }
+
+    /// Replaces the active block's body with a representation that
+    /// carries the requested `PresentationIntent`. v1 applies the
+    /// intent to the whole body — selection-aware paragraph targeting
+    /// arrives with the selection observer in the accessory-bar
+    /// chrome commit. TextEditor + AttributedString resolve the
+    /// intent into visual heading styling natively (iOS 26+ rich
+    /// text APIs from WWDC25 session 280).
+    private func applyBlockFormat(
+        _ format: BlockFormat,
+        to body: inout AttributedString
+    ) {
+        let intent: PresentationIntent
+        switch format {
+        case .heading(let level):
+            intent = PresentationIntent(.header(level: level), identity: 1)
+        case .body:
+            intent = PresentationIntent(.paragraph, identity: 1)
+        }
+        let range = body.startIndex..<body.endIndex
+        body[range].presentationIntent = intent
     }
 }

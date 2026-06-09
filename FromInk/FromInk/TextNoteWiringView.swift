@@ -38,6 +38,8 @@ struct TextNoteWiringView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             dismissChrome
+
+            slashPaletteOverlay
         }
         .task { store.send(.onAppear) }
         .onDisappear {
@@ -69,6 +71,58 @@ struct TextNoteWiringView: View {
                 store.send(.textBlocksReloadRequested)
             }
         ))
+    }
+
+    /// Slash command palette overlay. Renders as a floating popover
+    /// near the editor's top-leading edge when `slashPalette.isOpen`
+    /// is true. Caret-anchored positioning is a polish follow-up;
+    /// for v1 the popover sits in a consistent corner of the
+    /// content frame so the user always finds it in the same place.
+    @ViewBuilder
+    private var slashPaletteOverlay: some View {
+        if store.textEditing.slashPalette.isOpen {
+            slashPalettePopover
+                .transition(.opacity)
+                .accessibilityAddTraits(.isModal)
+        }
+    }
+
+    private var slashPalettePopover: some View {
+        let rows: [SlashMenuPopoverView.Row] = store
+            .textEditing
+            .slashPalette
+            .matchedCommands
+            .enumerated()
+            .map { index, descriptor in
+                SlashMenuPopoverView.Row(
+                    id: descriptor.id,
+                    icon: descriptor.icon,
+                    title: descriptor.title,
+                    shortcutHint: descriptor.shortcutHint,
+                    isSelected: index == store.textEditing.slashPalette.selectedIndex,
+                    isComingSoon: descriptor.availability == .comingSoon,
+                    onTap: {
+                        store.send(.textEditing(.slashPalette(.commandSelected(descriptor.id))))
+                    }
+                )
+            }
+
+        return VStack {
+            HStack {
+                SlashMenuPopoverView(model: .init(
+                    rows: rows,
+                    filterText: store.textEditing.slashPalette.filterText
+                ))
+                .padding(.top, ds.spacing.xxl)
+                .padding(.leading, ds.spacing.lg + ds.spacing.md)
+                Spacer()
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.send(.textEditing(.slashPalette(.dismissed)))
+        }
     }
 
     /// Dismiss chrome — top-right X. The text variant has no canvas
