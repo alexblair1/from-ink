@@ -56,27 +56,15 @@ struct TextBlockView: View {
 
     private var editor: some View {
         ZStack(alignment: .topLeading) {
-            TextEditor(
-                text: Binding(
-                    get: { model.body },
-                    set: { model.onBodyEdited($0) }
-                ),
-                selection: Binding(
-                    get: { model.selection },
-                    set: { model.onSelectionChanged($0) }
-                )
-            )
-            .font(model.bodyFont)
-            .foregroundStyle(model.bodyColor)
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            .accessibilityLabel(model.editorAccessibilityLabel)
-            .accessibilityHint(model.accessibilityHint)
+            editorEngine
+                .accessibilityLabel(model.editorAccessibilityLabel)
+                .accessibilityHint(model.accessibilityHint)
 
-            // Inline placeholder — SwiftUI's TextEditor has no native
-            // prompt, so we overlay one. Fades to clear as soon as
-            // any character lands. `.allowsHitTesting(false)` keeps
-            // taps reaching the editor underneath.
+            // Inline placeholder — neither TextEditor nor UITextView
+            // surfaces a usable prompt for AttributedString content,
+            // so we overlay one. Fades to clear as soon as any
+            // character lands. `.allowsHitTesting(false)` keeps taps
+            // reaching the editor underneath.
             if model.isBodyEmpty {
                 Text(model.emptyBlockPlaceholder)
                     .font(model.bodyFont)
@@ -89,6 +77,60 @@ struct TextBlockView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    /// Per-platform editor engine. On iOS / visionOS we use a
+    /// TextKit 2-backed UITextView wrapper so block-level
+    /// `PresentationIntent` (headings, lists, blockQuote, codeBlock,
+    /// thematicBreak) actually renders — SwiftUI's TextEditor honors
+    /// inline attributes only and silently drops block-level intents
+    /// at the visual layer. macOS still uses TextEditor until the
+    /// NSTextView equivalent ships in a follow-up commit (gap on the
+    /// text-experience plan).
+    @ViewBuilder
+    private var editorEngine: some View {
+        #if os(iOS) || os(visionOS)
+        TextKitEditorView(
+            body: Binding(
+                get: { model.body },
+                set: { model.onBodyEdited($0) }
+            ),
+            selection: Binding(
+                get: { model.selection },
+                set: { model.onSelectionChanged($0) }
+            ),
+            font: Self.serifBodyFont(),
+            foregroundColor: UIColor(model.bodyColor)
+        )
+        #else
+        TextEditor(
+            text: Binding(
+                get: { model.body },
+                set: { model.onBodyEdited($0) }
+            ),
+            selection: Binding(
+                get: { model.selection },
+                set: { model.onSelectionChanged($0) }
+            )
+        )
+        .font(model.bodyFont)
+        .foregroundStyle(model.bodyColor)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        #endif
+    }
+
+    #if os(iOS) || os(visionOS)
+    /// Serif body font for the UITextView engine — matches the
+    /// `.system(.body, design: .serif)` token used by the SwiftUI
+    /// fallback and the "Notebook content: New York serif" rule
+    /// in CLAUDE.md. Built off the system body preferred font so
+    /// Dynamic Type scaling continues to work.
+    private static func serifBodyFont() -> UIFont {
+        let base = UIFont.preferredFont(forTextStyle: .body)
+        let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
+        return UIFont(descriptor: descriptor, size: 0)
+    }
+    #endif
 
     // MARK: - Empty / failure placeholders
 
