@@ -149,6 +149,37 @@ struct TextEditingFeature: Reducer {
         Reduce { state, action in
             switch action {
             case .activeBlockChanged(let snapshot):
+                // Two distinct paths:
+                //
+                // 1. **Same block re-seating.** Almost always a
+                //    SwiftData echo of our own persist — NotebookFeature
+                //    observes the store, refreshes pages, reloads
+                //    blocks, fires .activeBlockChanged with the same
+                //    snapshot. The editor's editingBody / selection /
+                //    palette are the live source of truth; overwriting
+                //    them from the snapshot would jump the caret to
+                //    endIndex, blank the slash palette mid-typing, and
+                //    reset the dirty flag on edits the user may have
+                //    queued since the persist debounce started. Refresh
+                //    only the failure state + the activeBlock metadata.
+                //
+                // 2. **Different block (or first load).** The user
+                //    switched pages or opened the screen — reset
+                //    everything from the new snapshot.
+                if let snapshot,
+                   let current = state.activeBlock,
+                   snapshot.id == current.id {
+                    state.activeBlock = snapshot
+                    if snapshot.pageID == nil {
+                        state.loadFailure = .orphan
+                    } else if snapshot.bodyDecodeFailed {
+                        state.loadFailure = .bodyDecodeFailed
+                    } else {
+                        state.loadFailure = nil
+                    }
+                    return .none
+                }
+
                 if let snapshot {
                     if snapshot.pageID == nil {
                         state.loadFailure = .orphan

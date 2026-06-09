@@ -134,6 +134,50 @@ final class TextEditingFeatureTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func test_activeBlockChanged_sameBlockEcho_preservesEditorState() async {
+        // Regression: SwiftData echoes our own persist back through
+        // NotebookFeature.storeDidChange → loadTextBlocks →
+        // activeBlockChanged(sameSnapshot). The editor's editingBody,
+        // selection, and (critically) the open slash palette MUST NOT
+        // be reset by that echo — doing so dismisses the palette
+        // ~600ms after the user types `/`, jumps the caret to
+        // endIndex, and clears the dirty flag on edits queued since
+        // the persist started.
+        let initialBody = AttributedString("Meeting notes")
+        let initialSnap = snapshot(body: initialBody)
+
+        var initial = TextEditingFeature.State(activeBlock: initialSnap)
+        initial.editingBody = initialBody
+        // Simulate live editor state: open palette, mid-edit dirty
+        // flag, custom selection — exactly what's on State the
+        // moment the SwiftData echo lands.
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.triggerOffset = 13
+        initial.slashPalette.filterText = ""
+        initial.isDirty = true
+        let liveSelection = AttributedTextSelection(range: initialBody.endIndex..<initialBody.endIndex)
+        initial.selection = liveSelection
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // Echo: same block id, same body, same pageID. Failure-state
+        // refresh is the only allowed mutation.
+        await store.send(.activeBlockChanged(initialSnap)) {
+            $0.activeBlock = initialSnap
+        }
+
+        XCTAssertTrue(store.state.slashPalette.isOpen, "Palette must stay open on same-block echo")
+        XCTAssertEqual(store.state.slashPalette.triggerOffset, 13, "Trigger offset must survive echo")
+        XCTAssertTrue(store.state.isDirty, "Dirty flag must survive echo — user may have edits queued")
+        XCTAssertEqual(store.state.editingBody, initialBody, "editingBody must not be reseated")
+    }
+
     // MARK: - bodyEdited + debounced persist
 
     @MainActor
