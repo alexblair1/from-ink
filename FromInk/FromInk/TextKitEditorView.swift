@@ -169,9 +169,9 @@ struct TextKitEditorView: UIViewRepresentable {
             ])
         }
         // Wrap the conversion in a mutable copy so we can apply the
-        // default font/color underneath any explicit per-run font
-        // (e.g. TextKit 2's heading auto-sizing). Per-run attributes
-        // override the base.
+        // default font/color underneath any explicit per-run font.
+        // Per-run attributes (e.g. inline bold from
+        // InlinePresentationIntent) override the base.
         let mutable = NSMutableAttributedString(attributedString: converted)
         let full = NSRange(location: 0, length: mutable.length)
         mutable.enumerateAttributes(in: full, options: []) { attrs, range, _ in
@@ -182,7 +182,150 @@ struct TextKitEditorView: UIViewRepresentable {
                 mutable.addAttribute(.foregroundColor, value: defaultColor, range: range)
             }
         }
+
+        // PresentationIntent is a semantic attribute — TextKit 2
+        // round-trips and serializes it but never paints it. To make
+        // headings look like headings, lists like lists, blockquotes
+        // like blockquotes, etc., we walk the intent and translate
+        // it into concrete visual attributes (font, paragraph style,
+        // color) that UITextView's text layout actually renders.
+        // This is what every native-feeling rich text editor on iOS
+        // does — Notes, Bear, Things — there's no "automatic" path.
+        applyPresentationStyling(to: mutable, defaultFont: defaultFont, defaultColor: defaultColor)
+
         return mutable
+    }
+
+    /// Walk every paragraph that carries a `PresentationIntent` and
+    /// apply the visual attributes UITextView actually renders. The
+    /// intent itself stays on the attributed string so persistence
+    /// continues to round-trip the semantic structure unchanged.
+    private static func applyPresentationStyling(
+        to mutable: NSMutableAttributedString,
+        defaultFont: UIFont,
+        defaultColor: UIColor
+    ) {
+        let full = NSRange(location: 0, length: mutable.length)
+        mutable.enumerateAttribute(
+            .presentationIntentAttributeName,
+            in: full,
+            options: []
+        ) { value, range, _ in
+            guard let intent = value as? PresentationIntent, range.length > 0 else { return }
+            let kinds = intent.components.map(\.kind)
+            applyIntentVisuals(
+                kinds: kinds,
+                to: mutable,
+                range: range,
+                defaultFont: defaultFont,
+                defaultColor: defaultColor
+            )
+        }
+    }
+
+    /// Translate a stack of PresentationIntent kinds (leaf first,
+    /// container next) into NSAttributedString visual attributes
+    /// over the given range. The visual choices match the editorial
+    /// aesthetic in CLAUDE.md: New York serif for headings, the
+    /// existing ink color tokens for accents, monospaced system for
+    /// code, NSTextList markers for list items.
+    private static func applyIntentVisuals(
+        kinds: [PresentationIntent.Kind],
+        to mutable: NSMutableAttributedString,
+        range: NSRange,
+        defaultFont: UIFont,
+        defaultColor: UIColor
+    ) {
+        // Start with the defaults; each kind layered on top can
+        // override font, paragraph style, foreground.
+        var font: UIFont = defaultFont
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.paragraphSpacingBefore = 4
+        paragraphStyle.paragraphSpacing = 4
+        var foreground: UIColor = defaultColor
+        var didApplyTextList = false
+
+        for kind in kinds {
+            switch kind {
+            case .header(let level):
+                let pointSize: CGFloat = level == 1 ? 28 : (level == 2 ? 22 : 18)
+                let descriptor = UIFont.systemFont(ofSize: pointSize, weight: .semibold)
+                    .fontDescriptor
+                    .withDesign(.serif) ?? UIFont.systemFont(ofSize: pointSize, weight: .semibold).fontDescriptor
+                font = UIFont(descriptor: descriptor, size: 0)
+                paragraphStyle.paragraphSpacingBefore = 8
+                paragraphStyle.paragraphSpacing = 6
+
+            case .blockQuote:
+                if let italicDescriptor = defaultFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                    font = UIFont(descriptor: italicDescriptor, size: 0)
+                }
+                paragraphStyle.firstLineHeadIndent = 20
+                paragraphStyle.headIndent = 20
+                paragraphStyle.paragraphSpacingBefore = 6
+                paragraphStyle.paragraphSpacing = 6
+                foreground = defaultColor.withAlphaComponent(0.7)
+
+            case .codeBlock:
+                font = UIFont.monospacedSystemFont(
+                    ofSize: defaultFont.pointSize,
+                    weight: .regular
+                )
+                paragraphStyle.firstLineHeadIndent = 12
+                paragraphStyle.headIndent = 12
+
+            case .listItem:
+                paragraphStyle.firstLineHeadIndent = 0
+                paragraphStyle.headIndent = 24
+                // The marker attaches via NSTextList on the parent
+                // kind below — set the indents here so the layout
+                // is correct even if textLists ends up empty for any
+                // reason.
+
+            case .unorderedList:
+                if !didApplyTextList {
+                    paragraphStyle.textLists = [NSTextList(markerFormat: .disc, options: 0)]
+                    didApplyTextList = true
+                }
+
+            case .orderedList:
+                if !didApplyTextList {
+                    paragraphStyle.textLists = [NSTextList(markerFormat: .decimal, options: 0)]
+                    didApplyTextList = true
+                }
+
+            case .thematicBreak:
+                // A divider paragraph. Replace the run's content
+                // with a NSTextAttachment that draws a 1pt
+                // horizontal rule across the available line width.
+                // Drop this branch into the caller — the rendering
+                // is more involved than a font/paragraph tweak.
+                replaceWithRule(in: mutable, range: range, color: defaultColor)
+                return
+
+            default:
+                break
+            }
+        }
+
+        mutable.addAttribute(.font, value: font, range: range)
+        mutable.addAttribute(.paragraphStyle, value: paragraphStyle, range: range)
+        mutable.addAttribute(.foregroundColor, value: foreground, range: range)
+    }
+
+    /// Replace a thematic-break paragraph with a custom
+    /// `NSTextAttachment` that paints a horizontal rule. UITextView
+    /// has no native concept of a horizontal-line block, so the
+    /// attachment is the only path that lays the rule out at the
+    /// correct line-fragment width.
+    private static func replaceWithRule(
+        in mutable: NSMutableAttributedString,
+        range: NSRange,
+        color: UIColor
+    ) {
+        let attachment = HorizontalRuleAttachment(color: color.withAlphaComponent(0.35))
+        let attrString = NSAttributedString(attachment: attachment)
+        mutable.replaceCharacters(in: range, with: attrString)
     }
 
     /// Convert `NSAttributedString` back to `AttributedString`
@@ -278,6 +421,48 @@ struct TextKitEditorView: UIViewRepresentable {
             return AttributedString.Index(stringFallback, within: body)
         }
         return AttributedString.Index(stringIdx, within: body)
+    }
+
+    // MARK: - Horizontal rule attachment
+
+    /// `NSTextAttachment` that paints a 1pt horizontal rule across
+    /// the full line-fragment width. Used to render
+    /// `PresentationIntent(.thematicBreak)` paragraphs as actual
+    /// dividers rather than empty paragraphs.
+    private final class HorizontalRuleAttachment: NSTextAttachment {
+        let color: UIColor
+
+        init(color: UIColor) {
+            self.color = color
+            super.init(data: nil, ofType: nil)
+        }
+
+        required init?(coder: NSCoder) {
+            self.color = .label
+            super.init(coder: coder)
+        }
+
+        override func attachmentBounds(
+            for textContainer: NSTextContainer?,
+            proposedLineFragment lineFrag: CGRect,
+            glyphPosition position: CGPoint,
+            characterIndex charIndex: Int
+        ) -> CGRect {
+            CGRect(x: 0, y: -3, width: lineFrag.width, height: 1)
+        }
+
+        override func image(
+            forBounds imageBounds: CGRect,
+            textContainer: NSTextContainer?,
+            characterIndex charIndex: Int
+        ) -> UIImage? {
+            let size = CGSize(width: max(imageBounds.width, 1), height: max(imageBounds.height, 1))
+            let renderer = UIGraphicsImageRenderer(size: size)
+            return renderer.image { ctx in
+                color.setFill()
+                ctx.fill(CGRect(origin: .zero, size: size))
+            }
+        }
     }
 
     // MARK: - Coordinator
