@@ -60,6 +60,10 @@ struct TextBlockView: View {
                 text: Binding(
                     get: { model.body },
                     set: { model.onBodyEdited($0) }
+                ),
+                selection: Binding(
+                    get: { model.selection },
+                    set: { model.onSelectionChanged($0) }
                 )
             )
             .font(model.bodyFont)
@@ -169,6 +173,12 @@ extension TextBlockView {
         let body: AttributedString
         let isBodyEmpty: Bool
 
+        /// Mirrors `TextEditingFeature.State.selection`. The editor
+        /// binds the iOS 26 `selection:` parameter through this
+        /// field so format actions (block / inline) target the
+        /// user's caret / range instead of the whole body.
+        let selection: AttributedTextSelection
+
         /// Non-nil when the most recent persist attempt failed; the
         /// banner renders above the editor. The editor itself remains
         /// usable; next edit triggers a fresh persist that clears
@@ -177,6 +187,7 @@ extension TextBlockView {
         let persistFailureSubtitle: String
 
         let onBodyEdited: (AttributedString) -> Void
+        let onSelectionChanged: (AttributedTextSelection) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
 
@@ -211,8 +222,10 @@ extension TextBlockView.Model {
         isPresented: Bool,
         failureState: TextEditingFeature.State.LoadFailure?,
         body: AttributedString,
+        selection: AttributedTextSelection = AttributedTextSelection(),
         persistFailureTitle: String? = nil,
         onBodyEdited: @escaping (AttributedString) -> Void,
+        onSelectionChanged: @escaping (AttributedTextSelection) -> Void = { _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
         ds: DesignSystem = .standard
@@ -220,10 +233,12 @@ extension TextBlockView.Model {
         self.isPresented = isPresented
         self.failureState = failureState
         self.body = body
+        self.selection = selection
         self.isBodyEmpty = body.characters.isEmpty
         self.persistFailureTitle = persistFailureTitle
         self.persistFailureSubtitle = AppStrings.TextEditing.persistFailedBannerSubtitle
         self.onBodyEdited = onBodyEdited
+        self.onSelectionChanged = onSelectionChanged
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
         // Body uses the serif notebook stack — content typography per

@@ -60,10 +60,14 @@ struct TextNoteWiringView: View {
             isPresented: store.textEditing.activeBlock != nil,
             failureState: store.textEditing.loadFailure,
             body: store.textEditing.editingBody,
+            selection: store.textEditing.selection,
             persistFailureTitle: store.textEditing.lastPersistFailureReason
                 .map { _ in AppStrings.TextEditing.persistFailedBannerTitle },
             onBodyEdited: { body in
                 store.send(.textEditing(.bodyEdited(body)))
+            },
+            onSelectionChanged: { selection in
+                store.send(.textEditing(.selectionChanged(selection)))
             },
             onCreateRequested: {
                 // Tap on the empty-state placeholder asks the

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import SwiftUI
 import os
 
 private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFeature")
@@ -7,25 +8,25 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 /// Owns the state and effects for editing a single text block.
 ///
 /// **Scope.** This feature edits ONE block at a time — the active text
-/// block on the current page. Multi-block composition (hybrid pages
-/// where multiple text/ink/voice blocks coexist) is handled at the
-/// `NotePageFeature` level which scopes a `TextEditingFeature` per
-/// active text block.
+/// block on the current page.
 ///
 /// **Persistence.** Every body change debounces a `NotebookClient.
 /// updateBlockBody` write. Debounce window is 600ms.
 ///
 /// **Encoding.** Body archival routes through `PageBlockSnapshot.
 /// encodeBody(_:)` so the encoding path (Path B with `FromInkAttributes`
-/// scope) lives in one place. The reducer is encoder-agnostic.
+/// scope) lives in one place.
+///
+/// **Selection tracking.** iOS 26's `TextEditor` exposes the user's
+/// caret / range selection via a `Binding<AttributedTextSelection>`.
+/// We track it on `State.selection` so block / inline format actions
+/// can target the active paragraph / selection instead of the whole
+/// body. Without selection awareness, applying "Heading 1" to a
+/// multi-paragraph note would turn the entire document into headings.
 ///
 /// **Slash command palette.** Scoped under `.slashPalette`; the
-/// reducer detects the trigger character in `bodyEdited` (a `/` at
-/// the very end of the body, preceded by whitespace or start-of-
-/// document) and tracks its offset on `slashPalette.triggerOffset`.
-/// Subsequent edits derive the filter slice from the tracked offset
-/// instead of re-scanning the body — both a perf win and a bug fix
-/// for the multi-`/` case (a later `/` won't jump the anchor).
+/// reducer detects the trigger character in `bodyEdited` and tracks
+/// its offset on `slashPalette.triggerOffset`.
 ///
 /// **Equality cost.** `AttributedString.Equatable` is O(n). Typical
 /// block sizes are <10 KB so per-action diff cost is negligible.
@@ -35,11 +36,17 @@ struct TextEditingFeature: Reducer {
     struct State: Equatable {
         var activeBlock: PageBlockSnapshot? = nil
 
-        /// In-flight edit buffer for the active session. Mirrors
-        /// `activeBlock?.body` initially and tracks every keystroke;
-        /// the debounced persist effect serializes it back through
-        /// the client.
         var editingBody: AttributedString = AttributedString()
+
+        /// Current caret position or selected range, mirrored from
+        /// `TextEditor`'s `selection:` binding. Block / inline format
+        /// actions read this to target the user's intent.
+        ///
+        /// `AttributedTextSelection.Indices` is an enum with two
+        /// cases: `.insertionPoint(Index)` for a single caret and
+        /// `.ranges(RangeSet<Index>)` for a non-empty (possibly
+        /// discontinuous) selection.
+        var selection: AttributedTextSelection = AttributedTextSelection()
 
         var isDirty: Bool = false
 
@@ -68,19 +75,26 @@ struct TextEditingFeature: Reducer {
 
         case bodyEdited(AttributedString)
 
+        /// User's caret / range selection changed. Reducer mirrors
+        /// `TextEditor`'s `selection:` binding so format actions
+        /// target the right span.
+        case selectionChanged(AttributedTextSelection)
+
         case persistRequested
         case persistCompleted
         case persistFailed(reason: String)
 
         case flush
 
-        /// Apply a block-level format. v1 targets the **last
-        /// paragraph** (chars after the last newline) so applying a
-        /// heading to an existing multi-paragraph note doesn't
-        /// blast the whole document. Selection-aware paragraph
-        /// targeting lands with the accessory bar's selection
-        /// observer in a later commit.
+        /// Apply a block-level format to the paragraph containing the
+        /// selection's first index. If selection is unavailable, no-op.
         case applyBlockFormat(BlockFormat)
+
+        /// Toggle an inline format (bold / italic / underline /
+        /// strikethrough) over each contiguous range of the current
+        /// selection. Insertion-point-only selections no-op (there
+        /// is no range to toggle on).
+        case toggleInlineFormat(InlineFormat)
 
         case slashPalette(SlashCommandPaletteFeature.Action)
     }
@@ -88,6 +102,14 @@ struct TextEditingFeature: Reducer {
     enum BlockFormat: Equatable, Sendable {
         case heading(level: Int)   // 1, 2, 3
         case body
+    }
+
+    enum InlineFormat: Equatable, Sendable {
+        case bold
+        case italic
+        case underline
+        case strikethrough
+        case code
     }
 
     @Dependency(\.notebookClient) var notebookClient
@@ -119,6 +141,7 @@ struct TextEditingFeature: Reducer {
                 }
                 state.activeBlock = snapshot
                 state.editingBody = snapshot?.body ?? AttributedString()
+                state.selection = AttributedTextSelection()
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
                 state.slashPalette = .init()
@@ -126,16 +149,11 @@ struct TextEditingFeature: Reducer {
 
             case .bodyEdited(let new):
                 guard state.loadFailure == nil else { return .none }
-                // Read only the LAST character of the prior body —
-                // O(1), no full-body allocation.
                 let priorLastChar = state.editingBody.characters.last
                 state.editingBody = new
                 state.isDirty = true
 
                 if let triggerOffset = state.slashPalette.triggerOffset {
-                    // Palette is open — validate the trigger
-                    // character is still at its tracked offset and
-                    // compute the filter slice from there.
                     return handleOpenPaletteBodyEdit(
                         triggerOffset: triggerOffset,
                         new: new
@@ -144,9 +162,6 @@ struct TextEditingFeature: Reducer {
                     priorLastChar: priorLastChar,
                     current: new
                 ) {
-                    // `/` was just typed at a word boundary. Capture
-                    // its offset so subsequent keystrokes slice the
-                    // filter from a stable anchor.
                     let newTriggerOffset = new.characters.count - 1
                     return .merge(
                         schedulePersist(),
@@ -156,6 +171,10 @@ struct TextEditingFeature: Reducer {
                     )
                 }
                 return schedulePersist()
+
+            case .selectionChanged(let new):
+                state.selection = new
+                return .none
 
             case .persistRequested:
                 return persistEffect(state: state)
@@ -186,15 +205,23 @@ struct TextEditingFeature: Reducer {
                 applyBlockFormat(
                     format,
                     to: &state.editingBody,
+                    selection: state.selection,
                     identity: identity
                 )
                 state.isDirty = true
                 return schedulePersist()
 
+            case .toggleInlineFormat(let format):
+                guard state.loadFailure == nil else { return .none }
+                toggleInlineFormat(
+                    format,
+                    in: &state.editingBody,
+                    selection: state.selection
+                )
+                state.isDirty = true
+                return schedulePersist()
+
             case .slashPalette(.commandSelected(let command)):
-                // Strip the `/<filter>` trigger slice (preserving
-                // attributes outside it), then route the command to
-                // its handler. Unwired commands no-op gracefully.
                 if let triggerOffset = state.slashPalette.triggerOffset {
                     stripTriggerSlice(
                         from: &state.editingBody,
@@ -223,18 +250,12 @@ struct TextEditingFeature: Reducer {
 
     // MARK: - Slash trigger handling
 
-    /// Handle a body edit while the palette is open. Validates the
-    /// trigger character is still at its tracked offset; sends
-    /// either `filterChanged` (most common path) or `dismissed`
-    /// (trigger consumed by backspace, or a newline / paragraph
-    /// break crossed the trigger).
     private func handleOpenPaletteBodyEdit(
         triggerOffset: Int,
         new: AttributedString
     ) -> Effect<Action> {
         let characters = new.characters
         let count = characters.count
-        // Body shrank past the trigger — dismiss.
         guard triggerOffset < count else {
             return .merge(
                 schedulePersist(),
@@ -245,8 +266,6 @@ struct TextEditingFeature: Reducer {
             characters.startIndex,
             offsetBy: triggerOffset
         )
-        // Trigger character was replaced (e.g. backspaced) —
-        // dismiss.
         guard characters[triggerCharIdx] == "/" else {
             return .merge(
                 schedulePersist(),
@@ -255,8 +274,6 @@ struct TextEditingFeature: Reducer {
         }
         let filterStart = characters.index(after: triggerCharIdx)
         let filter = String(characters[filterStart...])
-        // A newline between trigger and end means the user has
-        // moved on past the slash flow — dismiss.
         if filter.contains(where: { $0.isNewline }) {
             return .merge(
                 schedulePersist(),
@@ -269,11 +286,6 @@ struct TextEditingFeature: Reducer {
         )
     }
 
-    /// True when the most recent edit inserted a `/` that should
-    /// trigger the palette. Specifically: the new body ends with `/`,
-    /// the prior body did NOT end with `/`, and the character
-    /// preceding the `/` is whitespace, newline, or the document
-    /// start.
     private func shouldOpenPalette(
         priorLastChar: Character?,
         current: AttributedString
@@ -283,7 +295,6 @@ struct TextEditingFeature: Reducer {
             return false
         }
         guard priorLastChar != "/" else { return false }
-        // Inspect the character before the trailing `/`.
         let endIdx = characters.endIndex
         let lastIdx = characters.index(before: endIdx)
         if lastIdx > characters.startIndex {
@@ -291,26 +302,15 @@ struct TextEditingFeature: Reducer {
             let prev = characters[prevIdx]
             return prev.isWhitespace || prev.isNewline
         }
-        // `/` is at position 0 — start of document.
         return true
     }
 
-    /// Strip the `/<filter>` slice from the body, **preserving every
-    /// attribute** on the surviving text outside the removed range.
-    /// Slices the `AttributedString` directly by index — the prior
-    /// implementation round-tripped through `String` and destroyed
-    /// every region anchor / highlight / slash-insertion attribute
-    /// on the document's surviving text.
     private func stripTriggerSlice(
         from body: inout AttributedString,
         triggerOffset: Int
     ) {
         let characters = body.characters
         guard triggerOffset < characters.count else { return }
-        // `AttributedString.CharacterView.Index` IS
-        // `AttributedString.Index` (typealias) — we can pass the
-        // computed CharacterView index straight to `removeSubrange`
-        // without conversion.
         let triggerIdx = characters.index(
             characters.startIndex,
             offsetBy: triggerOffset
@@ -345,8 +345,6 @@ struct TextEditingFeature: Reducer {
 
     // MARK: - Block format application
 
-    /// Maps a `SlashCommand` to the corresponding `applyBlockFormat`
-    /// action, or `nil` for commands that aren't wired in this commit.
     private func blockFormatAction(for command: SlashCommand) -> Action? {
         switch command {
         case .heading1:  return .applyBlockFormat(.heading(level: 1))
@@ -357,20 +355,15 @@ struct TextEditingFeature: Reducer {
         }
     }
 
-    /// Applies the requested `PresentationIntent` to the **last
-    /// paragraph** of the body — the slice after the last newline.
-    /// Single-paragraph bodies get the intent applied to the whole
-    /// thing. The `identity` parameter increments per call (from
-    /// `State.nextPresentationIdentity`) so TextKit 2's layout
-    /// engine doesn't collapse successive headings into one block.
-    ///
-    /// Caret-aware targeting (apply to the paragraph the user is
-    /// actively typing into rather than the last one in the
-    /// document) lands with the accessory bar's selection
-    /// observer.
+    /// Applies the requested `PresentationIntent` to the **paragraph
+    /// containing the selection's first index**. Insertion-point and
+    /// range selections both target the paragraph at the start. If
+    /// no selection is set yet (e.g. block opened but never tapped),
+    /// applies to the last paragraph as a sensible default.
     private func applyBlockFormat(
         _ format: BlockFormat,
         to body: inout AttributedString,
+        selection: AttributedTextSelection,
         identity: Int
     ) {
         let intent: PresentationIntent
@@ -381,19 +374,171 @@ struct TextEditingFeature: Reducer {
             intent = PresentationIntent(.paragraph, identity: identity)
         }
 
-        // Find the last newline. Apply intent to chars AFTER it
-        // (the active paragraph). If no newline, apply to the
-        // whole body. `AttributedString.CharacterView.Index` IS
-        // `AttributedString.Index` — no conversion needed.
-        let characters = body.characters
-        let paragraphRange: Range<AttributedString.Index>
-        if let lastNewlineIdx = characters.lastIndex(of: "\n") {
-            let afterNewlineIdx = characters.index(after: lastNewlineIdx)
-            paragraphRange = afterNewlineIdx..<body.endIndex
-        } else {
-            paragraphRange = body.startIndex..<body.endIndex
-        }
-
+        let paragraphRange = paragraphRangeAtSelectionStart(
+            in: body,
+            selection: selection
+        )
         body[paragraphRange].presentationIntent = intent
+    }
+
+    /// Resolve the AttributedString range of the paragraph containing
+    /// the selection's first index. Paragraph boundaries are the
+    /// surrounding newlines (or document start / end).
+    private func paragraphRangeAtSelectionStart(
+        in body: AttributedString,
+        selection: AttributedTextSelection
+    ) -> Range<AttributedString.Index> {
+        let anchor = firstSelectionIndex(in: body, selection: selection)
+            ?? lastParagraphStart(in: body)
+        return paragraphRange(containing: anchor, in: body)
+    }
+
+    /// Pull the first AttributedString.Index out of the selection,
+    /// whether the user has an insertion point or a non-empty range.
+    /// Returns nil if the selection is empty / unset.
+    private func firstSelectionIndex(
+        in body: AttributedString,
+        selection: AttributedTextSelection
+    ) -> AttributedString.Index? {
+        switch selection.indices(in: body) {
+        case .insertionPoint(let idx):
+            return idx
+        case .ranges(let rangeSet):
+            return rangeSet.ranges.first?.lowerBound
+        }
+    }
+
+    /// Compute the range bounded by the previous newline (exclusive)
+    /// and the next newline (exclusive) around `anchor`. Used to
+    /// target a single paragraph for `applyBlockFormat`.
+    private func paragraphRange(
+        containing anchor: AttributedString.Index,
+        in body: AttributedString
+    ) -> Range<AttributedString.Index> {
+        let characters = body.characters
+        let start: AttributedString.Index
+        if let previousNewline = characters[..<anchor].lastIndex(of: "\n") {
+            start = characters.index(after: previousNewline)
+        } else {
+            start = characters.startIndex
+        }
+        let end: AttributedString.Index
+        if let nextNewline = characters[anchor...].firstIndex(of: "\n") {
+            end = nextNewline
+        } else {
+            end = body.endIndex
+        }
+        return start..<end
+    }
+
+    /// Fallback anchor when the selection is unset — the start of
+    /// the document's last paragraph. Keeps the old "apply to last
+    /// paragraph" behavior usable on brand-new blocks where the
+    /// user hasn't tapped to position the caret yet.
+    private func lastParagraphStart(
+        in body: AttributedString
+    ) -> AttributedString.Index {
+        let characters = body.characters
+        if let lastNewline = characters.lastIndex(of: "\n") {
+            return characters.index(after: lastNewline)
+        }
+        return characters.startIndex
+    }
+
+    // MARK: - Inline format application
+
+    /// Toggles `format` over every contiguous range of `selection`.
+    /// Toggle direction is determined by the format's presence at
+    /// the **first character** of the first range — if it's already
+    /// applied, the format is removed from all selected ranges;
+    /// otherwise it's added.
+    ///
+    /// Insertion-point-only selections no-op: there's no range to
+    /// toggle. A future "format-on-next-character" mode could
+    /// extend this; not in v1.
+    ///
+    /// Bold / italic / strikethrough / code route through
+    /// `InlinePresentationIntent` (set-typed, designed for layered
+    /// inline emphasis). Underline doesn't live in
+    /// `InlinePresentationIntent` — it's a separate
+    /// `underlineStyle` attribute (`NSUnderlineStyle`-shaped) on
+    /// `AttributedString`. We handle it through that path so the
+    /// public `toggleInlineFormat` action covers all four common
+    /// formats uniformly to the caller.
+    private func toggleInlineFormat(
+        _ format: InlineFormat,
+        in body: inout AttributedString,
+        selection: AttributedTextSelection
+    ) {
+        let ranges: [Range<AttributedString.Index>]
+        switch selection.indices(in: body) {
+        case .insertionPoint:
+            return
+        case .ranges(let rangeSet):
+            ranges = Array(rangeSet.ranges)
+        }
+        guard !ranges.isEmpty else { return }
+
+        switch format {
+        case .underline:
+            toggleUnderline(in: &body, ranges: ranges)
+        case .bold, .italic, .strikethrough, .code:
+            toggleInlineIntent(
+                intentFor(format),
+                in: &body,
+                ranges: ranges
+            )
+        }
+    }
+
+    private func toggleInlineIntent(
+        _ intent: InlinePresentationIntent,
+        in body: inout AttributedString,
+        ranges: [Range<AttributedString.Index>]
+    ) {
+        let firstChar = ranges[0].lowerBound
+        let firstCharEnd = body.characters.index(after: firstChar)
+        let currentAtStart = body[firstChar..<firstCharEnd].inlinePresentationIntent ?? []
+        let toggleOn = !currentAtStart.contains(intent)
+
+        for range in ranges {
+            let existing = body[range].inlinePresentationIntent ?? []
+            if toggleOn {
+                body[range].inlinePresentationIntent = existing.union(intent)
+            } else {
+                var next = existing
+                next.remove(intent)
+                body[range].inlinePresentationIntent = next.isEmpty ? nil : next
+            }
+        }
+    }
+
+    private func toggleUnderline(
+        in body: inout AttributedString,
+        ranges: [Range<AttributedString.Index>]
+    ) {
+        let firstChar = ranges[0].lowerBound
+        let firstCharEnd = body.characters.index(after: firstChar)
+        let currentAtStart = body[firstChar..<firstCharEnd].underlineStyle
+        let toggleOn = currentAtStart == nil
+
+        for range in ranges {
+            body[range].underlineStyle = toggleOn ? .single : nil
+        }
+    }
+
+    /// Maps the inline formats that ARE `InlinePresentationIntent`
+    /// cases. Underline routes through `underlineStyle` separately.
+    private func intentFor(_ format: InlineFormat) -> InlinePresentationIntent {
+        switch format {
+        case .bold:           return .stronglyEmphasized
+        case .italic:         return .emphasized
+        case .strikethrough:  return .strikethrough
+        case .code:           return .code
+        case .underline:
+            // Unreachable — callers route underline through
+            // `toggleUnderline` directly.
+            return []
+        }
     }
 }
