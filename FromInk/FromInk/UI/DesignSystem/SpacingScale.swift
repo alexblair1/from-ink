@@ -140,6 +140,15 @@ struct LayoutTokens: Sendable {
     /// Vertical gap between the chip and the pip row.
     let inkReadoutSectionGap: CGFloat
 
+    // MARK: - Text editor
+
+    /// Maximum content width for the text editor on wide viewports.
+    /// Optimal reading line length is 50–75 characters (~480–720pt at
+    /// body size); 640pt is the high end of comfortable for serif
+    /// notebook content. iPad full-screen and Mac wider windows
+    /// constrain to this and center the editor.
+    let textEditorMaxContentWidth: CGFloat
+
     static let standard = LayoutTokens(
         hitTarget: 44,
         toolbarWidth: 48,
@@ -206,7 +215,8 @@ struct LayoutTokens: Sendable {
         inkReadoutPipMinSize: 3,
         inkReadoutPipMaxSize: 6,
         inkReadoutPipGap: 4,
-        inkReadoutSectionGap: 9
+        inkReadoutSectionGap: 9,
+        textEditorMaxContentWidth: 640
     )
 }
 

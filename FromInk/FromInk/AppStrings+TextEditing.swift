@@ -52,6 +52,15 @@ extension AppStrings {
 
         // MARK: - Accessibility
 
+        /// VoiceOver label for the text editor surface. Distinct from
+        /// the body text itself — names the editorial role of the
+        /// surface so VoiceOver users know what they're focused on.
+        static let editorAccessibilityLabel = NSLocalizedString(
+            "textEditing.editor.accessibility.label",
+            value: "Text editor",
+            comment: "VoiceOver label for the rich-text editor surface."
+        )
+
         /// VoiceOver hint announced when the focus first lands on a
         /// text block. Distinct from the body text itself — describes
         /// the block's editorial role.
@@ -59,6 +68,24 @@ extension AppStrings {
             "textEditing.block.accessibility.hint",
             value: "Edits to this block save automatically.",
             comment: "VoiceOver hint for a text block."
+        )
+
+        // MARK: - Persist failure banner
+
+        /// Title shown briefly when a body save fails (disk full,
+        /// permissions, etc.). Lower-priority than the load-failed
+        /// placeholder — the editor stays usable; this banner notes
+        /// that the in-flight save didn't land.
+        static let persistFailedBannerTitle = NSLocalizedString(
+            "textEditing.persistFailed.banner.title",
+            value: "Couldn't save changes",
+            comment: "Banner shown when a text-block save fails. Editor stays usable; future edits retry."
+        )
+
+        static let persistFailedBannerSubtitle = NSLocalizedString(
+            "textEditing.persistFailed.banner.subtitle",
+            value: "Your next edit will retry.",
+            comment: "Reassurance under the persistFailed banner so the user knows the failure is transient."
         )
 
         // MARK: - Inline format toggles (used by future chrome)

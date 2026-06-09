@@ -158,12 +158,20 @@ extension PageBlockSnapshot {
             return (AttributedString(), false)
         }
         // Path B — Codable with FromInkAttributes scope.
-        if let body = try? JSONDecoder().decode(
-            AttributedString.self,
-            from: data,
-            configuration: AttributeScopes.FromInkAttributes.self
-        ) {
+        var pathBError: Error?
+        do {
+            let body = try JSONDecoder().decode(
+                AttributedString.self,
+                from: data,
+                configuration: AttributeScopes.FromInkAttributes.self
+            )
             return (body, false)
+        } catch {
+            // Don't bail yet — older blocks may carry Path A bytes
+            // that aren't valid JSON. Capture and try Path A; only
+            // surface the Path B error if Path A also fails (so a
+            // genuine corruption diagnostic isn't lost).
+            pathBError = error
         }
         // Path A — NSKeyedArchiver bridge.
         do {
@@ -173,12 +181,12 @@ extension PageBlockSnapshot {
                 return (AttributedString(ns), false)
             }
             snapshotLog.error(
-                "Block \(blockID.uuidString, privacy: .public) bodyData decoded as nil under both Path B and Path A"
+                "Block \(blockID.uuidString, privacy: .public) bodyData decoded as nil under both Path B and Path A. Path B error: \(pathBError?.localizedDescription ?? "nil", privacy: .public)"
             )
             return (AttributedString(), true)
         } catch {
             snapshotLog.error(
-                "Block \(blockID.uuidString, privacy: .public) body decode failed: \(error.localizedDescription, privacy: .public)"
+                "Block \(blockID.uuidString, privacy: .public) body decode failed. Path B: \(pathBError?.localizedDescription ?? "nil", privacy: .public). Path A: \(error.localizedDescription, privacy: .public)"
             )
             return (AttributedString(), true)
         }

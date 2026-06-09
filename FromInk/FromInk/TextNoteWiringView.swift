@@ -11,48 +11,33 @@ import SwiftUI
 ///
 /// **Lifecycle.** `NotebookFeature` owns the block load: on appear and
 /// on page swipe it fetches blocks for the current page and seeds a
-/// text block if none exists. The flushing of pending writes on
-/// teardown is handled here via `.onDisappear` (sibling of the
-/// existing `CanvasScreen` save-on-disappear pattern).
+/// text block if none exists. `.onDisappear` flushes any pending body
+/// writes through the reducer (sibling of the existing `CanvasScreen`
+/// save-on-disappear pattern).
+///
+/// **Layout.** The editor fills its frame natively — no outer
+/// `ScrollView`. `TextEditor` already scrolls; nesting it inside a
+/// ScrollView creates gesture-recognizer ambiguity that reads as
+/// jank on iPad. Content width is capped at
+/// `textEditorMaxContentWidth` and centered so long-form reading on
+/// wide viewports stays comfortable.
 struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
+
+    private let ds = DesignSystem.standard
 
     var body: some View {
         ZStack {
             Color.canvas.ignoresSafeArea()
 
-            ScrollView(.vertical, showsIndicators: true) {
-                editorRegion
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 32)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .scrollBounceBehavior(.basedOnSize)
+            editorRegion
+                .frame(maxWidth: ds.layout.textEditorMaxContentWidth, alignment: .leading)
+                .padding(.horizontal, ds.spacing.lg)
+                .padding(.vertical, ds.spacing.xl)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            // Dismiss button — matches the chrome the canvas notebook
-            // uses (NotebookScreen renders the same X above the
-            // TabView). Lives here directly because the text variant
-            // doesn't share NotebookScreen's TabView layout.
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.inkSecondary)
-                            .frame(width: 32, height: 32)
-                            .background(Color.surface.opacity(0.85))
-                            .clipShape(Circle())
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 8)
-                    .padding(.horizontal, 12)
-                }
-                Spacer()
-            }
+            dismissChrome
         }
         .task { store.send(.onAppear) }
         .onDisappear {
@@ -64,21 +49,51 @@ struct TextNoteWiringView: View {
         TextBlockView(model: .init(
             isPresented: store.textEditing.activeBlock != nil,
             failureState: store.textEditing.loadFailure,
-            body: store.textEditing.body,
+            body: store.textEditing.editingBody,
+            persistFailureTitle: store.textEditing.lastPersistFailureReason
+                .map { _ in AppStrings.TextEditing.persistFailedBannerTitle },
             onBodyEdited: { body in
                 store.send(.textEditing(.bodyEdited(body)))
             },
             onCreateRequested: {
-                // The reducer auto-seeds an empty block on appear when
-                // none exists, so the empty-state tap is a no-op for
-                // v1. Reserved for future "tap to add another block"
-                // semantics when hybrid pages land.
+                // Tap on the empty-state placeholder asks the
+                // notebook feature to re-run the page-blocks load,
+                // which seeds an empty text block if none exists.
+                // Defense against a failed auto-seed leaving the
+                // user stranded on the placeholder.
+                store.send(.textBlocksReloadRequested)
             },
             onRetryRequested: {
-                // Retry currently re-runs the page-blocks load by
-                // sending the current index back through the reducer.
-                store.send(.currentIndexChanged(store.currentIndex))
+                // Decode-failed / orphan placeholder retry — same
+                // path as the empty-state tap: re-run the load.
+                store.send(.textBlocksReloadRequested)
             }
         ))
+    }
+
+    /// Dismiss chrome — top-right X. The text variant has no canvas
+    /// toolbar, so it owns the dismiss button directly rather than
+    /// sharing the one `NotebookScreen` renders for the canvas path.
+    private var dismissChrome: some View {
+        VStack {
+            HStack {
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: ds.layout.dismissIconSize, weight: .medium))
+                        .foregroundStyle(Color.inkSecondary)
+                        .frame(width: ds.layout.dismissHitTarget,
+                               height: ds.layout.dismissHitTarget)
+                        .background(Color.surface.opacity(0.85))
+                        .clipShape(Circle())
+                        .frame(width: ds.layout.hitTarget, height: ds.layout.hitTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, ds.spacing.sm)
+                .padding(.horizontal, ds.spacing.md)
+            }
+            Spacer()
+        }
     }
 }

@@ -34,12 +34,20 @@ struct TextEditingFeature: Reducer {
         /// (e.g. page just loaded, no blocks yet).
         var activeBlock: PageBlockSnapshot? = nil
 
-        /// In-memory body for the active edit session. Mirrors
+        /// In-flight edit buffer for the active session. Mirrors
         /// `activeBlock?.body` initially and tracks every keystroke;
-        /// the debounced effect flushes it back through the client.
-        var body: AttributedString = AttributedString()
+        /// the debounced persist effect serializes it back through
+        /// the client.
+        ///
+        /// **Contract:** `editingBody` is the authoritative draft
+        /// while editing. `activeBlock.body` is the last-loaded
+        /// snapshot from disk — useful for "discard changes" but
+        /// never read by the editor itself. Treat the two as
+        /// distinct sources, with `editingBody` winning during
+        /// active edits.
+        var editingBody: AttributedString = AttributedString()
 
-        /// Set when the body has unsaved changes since the last
+        /// Set when `editingBody` has unsaved changes since the last
         /// successful persist. Surfaces a "saving…" affordance and
         /// gates the navigate-away flush path.
         var isDirty: Bool = false
@@ -48,6 +56,20 @@ struct TextEditingFeature: Reducer {
         /// orphan block). Renders the bodyDecodeFailed placeholder
         /// in `TextBlockView` rather than an empty editor.
         var loadFailure: LoadFailure? = nil
+
+        /// Non-nil when the most recent persist attempt failed. The
+        /// wiring view renders a banner so the user has a signal
+        /// that their changes haven't landed; the next `.bodyEdited`
+        /// triggers a fresh persist attempt that clears this on
+        /// success. Resets to nil on `activeBlockChanged`.
+        ///
+        /// String reason only — the action stays clock-free so the
+        /// reducer doesn't have to take `CalendarContext` as a
+        /// dependency. If a timestamp becomes useful for auto-
+        /// dismissing the banner, capture it in the wiring view's
+        /// `onChange` handler rather than threading a clock through
+        /// the reducer.
+        var lastPersistFailureReason: String? = nil
 
         enum LoadFailure: Equatable, Sendable {
             case bodyDecodeFailed
@@ -62,7 +84,7 @@ struct TextEditingFeature: Reducer {
         /// to flush first if `isDirty` is true.
         case activeBlockChanged(PageBlockSnapshot?)
 
-        /// User typed; in-memory body update.
+        /// User typed; in-flight body update.
         case bodyEdited(AttributedString)
 
         /// Debounced commit triggered by `.bodyEdited` after the
@@ -70,11 +92,14 @@ struct TextEditingFeature: Reducer {
         /// and writes through `NotebookClient.updateBlockBody`.
         case persistRequested
 
-        /// Encode + persist succeeded. Clears `isDirty`.
+        /// Encode + persist succeeded. Clears `isDirty` and
+        /// `lastPersistFailure`.
         case persistCompleted
 
-        /// Encode or persist failed. Logged via OSLog; `isDirty`
-        /// stays true so a future commit retries.
+        /// Encode or persist failed. Logged via OSLog and surfaced
+        /// via `lastPersistFailureReason` so the wiring view can
+        /// render a banner; `isDirty` stays true so a future commit
+        /// retries.
         case persistFailed(reason: String)
 
         /// Synchronous flush requested by the wiring view (navigate-
@@ -107,13 +132,14 @@ struct TextEditingFeature: Reducer {
                     state.loadFailure = nil
                 }
                 state.activeBlock = snapshot
-                state.body = snapshot?.body ?? AttributedString()
+                state.editingBody = snapshot?.body ?? AttributedString()
                 state.isDirty = false
+                state.lastPersistFailureReason = nil
                 return .cancel(id: Self.persistCancelID)
 
             case .bodyEdited(let new):
                 guard state.loadFailure == nil else { return .none }
-                state.body = new
+                state.editingBody = new
                 state.isDirty = true
                 return .run { send in
                     try await clock.sleep(for: .milliseconds(Self.debounceMilliseconds))
@@ -126,10 +152,12 @@ struct TextEditingFeature: Reducer {
 
             case .persistCompleted:
                 state.isDirty = false
+                state.lastPersistFailureReason = nil
                 return .none
 
             case .persistFailed(let reason):
                 log.error("Body persist failed: \(reason, privacy: .public)")
+                state.lastPersistFailureReason = reason
                 return .none
 
             case .flush:
@@ -146,7 +174,7 @@ struct TextEditingFeature: Reducer {
 
     private func persistEffect(state: State) -> Effect<Action> {
         guard let blockID = state.activeBlock?.id else { return .none }
-        let body = state.body
+        let body = state.editingBody
         return .run { send in
             do {
                 let data = try PageBlockSnapshot.encodeBody(body)

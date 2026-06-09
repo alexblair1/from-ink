@@ -17,11 +17,25 @@ import Foundation
 ///     by a slash command so the editor can post-process (e.g. render
 ///     a divider, attach metadata to a link block). See EDD §13.
 ///
-/// All three attribute keys declare `inheritedByAddedText = false`.
-/// That's load-bearing for `regionAnchor`: typing past the trailing
-/// boundary of a region MUST NOT extend the anchor. Inserts strictly
-/// inside the span do extend it (that's `AttributedString`'s default
-/// span-extension behaviour at non-boundary positions).
+/// Per-attribute boundary semantics:
+///
+///   • `regionAnchor` has `inheritedByAddedText = false` — load-bearing.
+///     Typing past the trailing boundary of a region MUST NOT extend
+///     the anchor (a header "Q3 Budget" stays "Q3 Budget" when the
+///     user types a space and more text after it).
+///   • `highlight` has `inheritedByAddedText = true`. Highlights are
+///     visual emphasis; typing past a highlighted span should continue
+///     the highlight (matches Apple Notes / Bear / Things). The user
+///     can break the highlight explicitly by clearing it from the
+///     selection.
+///   • `slashInsertion` has `inheritedByAddedText = true`. A slash-
+///     inserted span (e.g. a link block) extends if the user types at
+///     its trailing edge inside the editor — the inserted unit grows
+///     with continued input.
+///
+/// Inserts strictly INSIDE any span extend it regardless of
+/// `inheritedByAddedText` (that's `AttributedString`'s default span-
+/// extension behaviour at non-boundary positions).
 ///
 /// Scope conformance enables `AttributedString` Codable round-trip
 /// through `JSONEncoder` / `JSONDecoder` via `CodableConfiguration`:
@@ -51,6 +65,20 @@ extension AttributeScopes {
     var fromInk: FromInkAttributes.Type { FromInkAttributes.self }
 }
 
+/// Dynamic-lookup conformance so the `fromInk.regionAnchor` keypath
+/// resolves through the standard AttributedString attribute API.
+/// Auto-synthesis already covers the runtime call sites today, but
+/// declaring the subscript explicitly matches Apple's documented
+/// pattern for custom attribute scopes and is forward-compatible
+/// across SDK revisions.
+extension AttributeDynamicLookup {
+    subscript<T: AttributedStringKey>(
+        dynamicMember keyPath: KeyPath<AttributeScopes.FromInkAttributes, T>
+    ) -> T {
+        self[T.self]
+    }
+}
+
 /// Anchor for a text-range `NoteRegion`. Spans of text that carry a
 /// non-nil `RegionAnchorAttribute` value are anchored to the region
 /// with that UUID; the canvas indicator and dispatch panel surface
@@ -65,10 +93,14 @@ enum RegionAnchorAttribute: CodableAttributedStringKey, Sendable {
 /// Visual + semantic highlight over a span. v1 ships color kinds only
 /// (`yellow`, `red`, `blue`, `green`); the link / event / PDF custom
 /// kinds land with the selection-menu work in PR 2.
+///
+/// `inheritedByAddedText = true` — typing past a highlighted span
+/// extends the highlight, matching the natural emphasis behaviour
+/// users expect from Notes / Bear.
 enum HighlightAttribute: CodableAttributedStringKey, Sendable {
     typealias Value = HighlightKind
     static let name = "fromink.highlight"
-    static let inheritedByAddedText = false
+    static let inheritedByAddedText = true
 }
 
 /// Discriminator for a span produced by a slash command. Lets the
@@ -76,10 +108,13 @@ enum HighlightAttribute: CodableAttributedStringKey, Sendable {
 /// fragment in metadata for the link router). The full slash command
 /// vocabulary lands in PR 2 — this minimal placeholder supports the
 /// AttributedString Codable round-trip today.
+///
+/// `inheritedByAddedText = true` — a slash-inserted unit extends as
+/// the user keeps typing at its trailing edge.
 enum SlashInsertionAttribute: CodableAttributedStringKey, Sendable {
     typealias Value = SlashCommandID
     static let name = "fromink.slashInsertion"
-    static let inheritedByAddedText = false
+    static let inheritedByAddedText = true
 }
 
 /// Visual + semantic highlight kind. The full set lands with the

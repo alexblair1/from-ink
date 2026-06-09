@@ -23,10 +23,14 @@ struct NotebookFeature: Reducer {
         var notebookTitle: String
         /// The notebook's variant — `.notebook` / `.quickSheet` route
         /// to the ink CanvasScreen; `.textNote` routes to the text
-        /// editor wiring (see `TextNoteWiringView`). Defaults to
-        /// `.notebook` for legacy callers; refresh sets it from the
-        /// loaded `NotebookSnapshot` on first appear.
-        var notebookType: NotebookType = .notebook
+        /// editor wiring (see `TextNoteWiringView`).
+        ///
+        /// `nil` is the "not yet resolved" state. `NotebookScreen`
+        /// renders a loading placeholder until refresh fires
+        /// `notebookTypeResolved` — without this, opening a textNote
+        /// notebook would flash the canvas screen briefly before
+        /// swapping in the text editor.
+        var notebookType: NotebookType? = nil
         var pages: [NotePageSnapshot] = []
         var currentIndex: Int = 0
         var hasLoadedOnce: Bool = false
@@ -70,6 +74,11 @@ struct NotebookFeature: Reducer {
         /// `TextEditingFeature` as the active block snapshot. Ink
         /// notebooks ignore this entirely.
         case textBlocksLoaded([PageBlockSnapshot])
+        /// User-initiated re-fetch of the active text-note page's
+        /// blocks. Wired to the empty-state tap and decode-failure
+        /// retry in `TextBlockView` so a failed auto-seed or a
+        /// corrupted body can be recovered without closing the note.
+        case textBlocksReloadRequested
         case addPageTapped
         case pageCreated(NotePageSnapshot)
         case currentIndexChanged(Int)
@@ -136,6 +145,12 @@ struct NotebookFeature: Reducer {
                 else { return .none }
                 return loadTextBlocks(pageID: pageID)
 
+            case .textBlocksReloadRequested:
+                guard state.notebookType == .textNote,
+                      let pageID = state.pages[safe: state.currentIndex]?.id
+                else { return .none }
+                return loadTextBlocks(pageID: pageID)
+
             case .textBlocksLoaded(let blocks):
                 // For v1 textNote, each page hosts exactly one text
                 // block. If none exists yet, seed one so the editor
@@ -194,10 +209,11 @@ struct NotebookFeature: Reducer {
                 // the right block.
                 if state.notebookType == .textNote,
                    let pageID = state.pages[safe: idx]?.id {
-                    return .merge(
-                        // Flush any pending writes on the prior block
-                        // before swapping the active block out from
-                        // under the editor.
+                    // `.concatenate` runs the flush effect to
+                    // completion before kicking off the load, so the
+                    // prior block's in-flight write can't race the
+                    // new block's snapshot landing under the editor.
+                    return .concatenate(
                         .send(.textEditing(.flush)),
                         loadTextBlocks(pageID: pageID)
                     )

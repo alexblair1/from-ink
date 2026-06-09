@@ -78,11 +78,24 @@ struct NotebookScreen: View {
 
     var body: some View {
         switch store.notebookType {
+        case .none:
+            // Variant hasn't resolved yet — render a quiet placeholder
+            // rather than flashing the canvas screen first and then
+            // swapping to the text editor a beat later.
+            loadingPlaceholder
         case .textNote:
             TextNoteWiringView(store: store)
         case .notebook, .quickSheet:
             canvasBody
         }
+    }
+
+    @ViewBuilder
+    private var loadingPlaceholder: some View {
+        ZStack {
+            Color.canvas.ignoresSafeArea()
+        }
+        .task { store.send(.onAppear) }
     }
 
     @ViewBuilder
