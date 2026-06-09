@@ -6,43 +6,47 @@ import XCTest
 /// Reducer-level coverage for the slash command palette:
 ///
 ///   • `openRequested` clears filter, resets selection, populates the
-///     matched list from the registry.
-///   • `filterChanged` recomputes `matchedCommands` via
-///     `localizedStandardContains` and clamps `selectedIndex` so a
-///     narrowed list doesn't leave selection pointing past the end.
+///     matched list from the registry dependency, stores the
+///     `triggerOffset` so the editor can compute filter slices
+///     without re-scanning the body.
+///   • `filterChanged` recomputes `matchedCommands` and resets
+///     `selectedIndex` to 0 (Apple Notes pattern — discoverable top-
+///     of-results highlight).
 ///   • `keyboardNavigationKey` moves `selectedIndex` within bounds;
 ///     enter dispatches `commandSelected` for the current highlight;
 ///     escape dismisses.
-///   • `commandSelected` closes the palette (so consecutive commands
-///     don't queue against a stale popover).
+///   • `commandSelected` closes the palette + clears triggerOffset
+///     (so consecutive commands don't queue against stale state).
 ///   • `dismissed` clears all transient state.
 final class SlashCommandPaletteFeatureTests: XCTestCase {
 
     // MARK: - openRequested
 
     @MainActor
-    func test_openRequested_seedsMatchedListAndResetsSelection() async {
+    func test_openRequested_seedsMatchedListAndStoresTriggerOffset() async {
         let store = TestStore(
             initialState: SlashCommandPaletteFeature.State(),
             reducer: { SlashCommandPaletteFeature() }
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.openRequested) {
+        await store.send(.openRequested(triggerOffset: 12)) {
             $0.isOpen = true
+            $0.triggerOffset = 12
             $0.filterText = ""
-            $0.matchedCommands = SlashCommandRegistry.standard().descriptors
+            $0.matchedCommands = SlashCommandRegistry.standard.descriptors
             $0.selectedIndex = 0
         }
     }
 
-    // MARK: - filterChanged narrows + clamps
+    // MARK: - filterChanged narrows + resets selection
 
     @MainActor
     func test_filterChanged_narrowsMatchedList() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
+        initial.triggerOffset = 0
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
 
         let store = TestStore(
             initialState: initial,
@@ -77,17 +81,16 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
 
         XCTAssertEqual(
             store.state.matchedCommands.count,
-            SlashCommandRegistry.standard().descriptors.count
+            SlashCommandRegistry.standard.descriptors.count
         )
     }
 
     @MainActor
-    func test_filterChanged_clampsSelectedIndexWhenListShrinks() async {
+    func test_filterChanged_resetsSelectedIndexToTopOfResults() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
-        // Position cursor at the end of the full list — well past
-        // whatever a narrow filter will return.
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
+        // Cursor was deep in the prior list.
         initial.selectedIndex = initial.matchedCommands.count - 1
 
         let store = TestStore(
@@ -98,12 +101,11 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
 
         await store.send(.filterChanged("heading"))
 
-        XCTAssertLessThan(
+        XCTAssertEqual(
             store.state.selectedIndex,
-            store.state.matchedCommands.count,
-            "selectedIndex must clamp to the narrowed list"
+            0,
+            "Filter change must reset highlight to the top of filtered results"
         )
-        XCTAssertGreaterThanOrEqual(store.state.selectedIndex, 0)
     }
 
     // MARK: - keyboard navigation
@@ -112,7 +114,7 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
     func test_keyboardNavigation_arrowDown_advancesSelection() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
         initial.selectedIndex = 0
 
         let store = TestStore(
@@ -133,7 +135,7 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
     func test_keyboardNavigation_arrowUp_decreasesSelection_clamped() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
         initial.selectedIndex = 1
 
         let store = TestStore(
@@ -154,7 +156,7 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
     func test_keyboardNavigation_arrowDown_stopsAtListEnd() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
         let lastIndex = initial.matchedCommands.count - 1
         initial.selectedIndex = lastIndex
 
@@ -170,12 +172,19 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
 
     @MainActor
     func test_keyboardNavigation_enter_dispatchesCommandSelectedForHighlight() async {
+        // Position selection on heading2 by id rather than index so
+        // the test survives a registry reorder.
+        let registry = SlashCommandRegistry.standard
+        guard let heading2Index = registry.descriptors.firstIndex(where: { $0.id == .heading2 })
+        else {
+            XCTFail("Standard registry must contain heading2 for this test")
+            return
+        }
+
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
-        // Index 1 in the standard registry is heading2 — pin that
-        // assumption with the assertion below.
-        initial.selectedIndex = 1
+        initial.matchedCommands = registry.descriptors
+        initial.selectedIndex = heading2Index
 
         let store = TestStore(
             initialState: initial,
@@ -183,13 +192,12 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        XCTAssertEqual(initial.matchedCommands[1].id, .heading2)
-
         await store.send(.keyboardNavigationKey(.enter))
         await store.receive(.commandSelected(.heading2)) {
             $0.isOpen = false
             $0.selectedIndex = 0
             $0.filterText = ""
+            $0.triggerOffset = nil
         }
     }
 
@@ -197,7 +205,7 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
     func test_keyboardNavigation_escape_dispatchesDismissed() async {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
-        initial.matchedCommands = SlashCommandRegistry.standard().descriptors
+        initial.matchedCommands = SlashCommandRegistry.standard.descriptors
 
         let store = TestStore(
             initialState: initial,
@@ -218,8 +226,9 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
         var initial = SlashCommandPaletteFeature.State()
         initial.isOpen = true
         initial.filterText = "head"
-        initial.matchedCommands = SlashCommandRegistry.standard().filtered(by: "head")
+        initial.matchedCommands = SlashCommandRegistry.standard.filtered(by: "head")
         initial.selectedIndex = 2
+        initial.triggerOffset = 8
 
         let store = TestStore(
             initialState: initial,
@@ -231,18 +240,19 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
             $0.isOpen = false
             $0.filterText = ""
             $0.selectedIndex = 0
+            $0.triggerOffset = nil
         }
     }
 
     // MARK: - Registry filtering contract
 
     func test_registry_emptyFilter_returnsAllDescriptors() {
-        let r = SlashCommandRegistry.standard()
+        let r = SlashCommandRegistry.standard
         XCTAssertEqual(r.filtered(by: "").count, r.descriptors.count)
     }
 
     func test_registry_caseInsensitiveMatch() {
-        let r = SlashCommandRegistry.standard()
+        let r = SlashCommandRegistry.standard
         let lower = r.filtered(by: "heading")
         let upper = r.filtered(by: "HEADING")
         XCTAssertEqual(lower.map(\.id), upper.map(\.id))

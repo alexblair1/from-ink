@@ -28,7 +28,8 @@ struct TextNoteWiringView: View {
     private let ds = DesignSystem.standard
 
     var body: some View {
-        ZStack {
+        let paletteOpen = store.textEditing.slashPalette.isOpen
+        return ZStack {
             Color.canvas.ignoresSafeArea()
 
             editorRegion
@@ -36,8 +37,15 @@ struct TextNoteWiringView: View {
                 .padding(.horizontal, ds.spacing.lg)
                 .padding(.vertical, ds.spacing.xl)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // Hide editor from VoiceOver while the palette is
+                // open so the modal popover is the only focus
+                // target. allowsHitTesting alone doesn't block
+                // VoiceOver — both modifiers are required per
+                // `feedback_modal_accessibility.md`.
+                .accessibilityHidden(paletteOpen)
 
             dismissChrome
+                .accessibilityHidden(paletteOpen)
 
             slashPaletteOverlay
         }

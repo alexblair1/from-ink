@@ -13,10 +13,7 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 /// active text block.
 ///
 /// **Persistence.** Every body change debounces a `NotebookClient.
-/// updateBlockBody` write. Debounce window is 600ms — fast enough that
-/// a navigate-away within the debounce window flushes via the
-/// reducer's `.flush` action; slow enough that rapid typing doesn't
-/// thrash SwiftData / CKAsset on every keystroke.
+/// updateBlockBody` write. Debounce window is 600ms.
 ///
 /// **Encoding.** Body archival routes through `PageBlockSnapshot.
 /// encodeBody(_:)` so the encoding path (Path B with `FromInkAttributes`
@@ -25,12 +22,13 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 /// **Slash command palette.** Scoped under `.slashPalette`; the
 /// reducer detects the trigger character in `bodyEdited` (a `/` at
 /// the very end of the body, preceded by whitespace or start-of-
-/// document) and forwards selected commands to the format applier.
+/// document) and tracks its offset on `slashPalette.triggerOffset`.
+/// Subsequent edits derive the filter slice from the tracked offset
+/// instead of re-scanning the body — both a perf win and a bug fix
+/// for the multi-`/` case (a later `/` won't jump the anchor).
 ///
 /// **Equality cost.** `AttributedString.Equatable` is O(n). Typical
-/// block sizes are <10 KB so per-action diff cost is negligible. The
-/// 50 KB threshold from EDD §5.3 hasn't tripped — when it does, the
-/// fix is a hash-wrapped equality helper, not an architectural change.
+/// block sizes are <10 KB so per-action diff cost is negligible.
 struct TextEditingFeature: Reducer {
 
     @ObservableState
@@ -41,11 +39,6 @@ struct TextEditingFeature: Reducer {
         /// `activeBlock?.body` initially and tracks every keystroke;
         /// the debounced persist effect serializes it back through
         /// the client.
-        ///
-        /// **Contract:** `editingBody` is the authoritative draft
-        /// while editing. `activeBlock.body` is the last-loaded
-        /// snapshot from disk — useful for "discard changes" but
-        /// never read by the editor itself.
         var editingBody: AttributedString = AttributedString()
 
         var isDirty: Bool = false
@@ -54,10 +47,13 @@ struct TextEditingFeature: Reducer {
 
         var lastPersistFailureReason: String? = nil
 
-        /// Slash command palette state, scoped under this feature so
-        /// the trigger detection in `bodyEdited` and the command
-        /// dispatch in `slashPalette(.commandSelected)` both live in
-        /// the same reducer body.
+        /// Monotonically-increasing counter used for
+        /// `PresentationIntent.identity`. Each block-format
+        /// application gets a fresh identity so TextKit 2's layout
+        /// engine treats successive headings as separate paragraphs.
+        var nextPresentationIdentity: Int = 1
+
+        /// Slash command palette state, scoped under this feature.
         var slashPalette: SlashCommandPaletteFeature.State = .init()
 
         enum LoadFailure: Equatable, Sendable {
@@ -78,17 +74,17 @@ struct TextEditingFeature: Reducer {
 
         case flush
 
-        /// Apply a block-level format to the active paragraph.
-        /// Mutates `editingBody`'s `PresentationIntent` for the
-        /// paragraph containing the caret (or the whole body if
-        /// no selection is tracked yet — v1).
+        /// Apply a block-level format. v1 targets the **last
+        /// paragraph** (chars after the last newline) so applying a
+        /// heading to an existing multi-paragraph note doesn't
+        /// blast the whole document. Selection-aware paragraph
+        /// targeting lands with the accessory bar's selection
+        /// observer in a later commit.
         case applyBlockFormat(BlockFormat)
 
         case slashPalette(SlashCommandPaletteFeature.Action)
     }
 
-    /// Block formats wired in this commit. The full vocabulary
-    /// (blockQuote, code, lists) lands as their handlers ship.
     enum BlockFormat: Equatable, Sendable {
         case heading(level: Int)   // 1, 2, 3
         case body
@@ -101,10 +97,12 @@ struct TextEditingFeature: Reducer {
     private static let debounceMilliseconds: Int = 600
 
     var body: some Reducer<State, Action> {
-        Scope(state: \.slashPalette, action: \.slashPalette) {
-            SlashCommandPaletteFeature()
-        }
-
+        // Reduce runs BEFORE the Scope so the parent's
+        // .slashPalette(.commandSelected(_)) handler can read the
+        // current `slashPalette.triggerOffset` while it's still set
+        // — the child's commandSelected handler clears triggerOffset
+        // as part of closing the palette, which would race the
+        // parent's strip-trigger logic if the Scope ran first.
         Reduce { state, action in
             switch action {
             case .activeBlockChanged(let snapshot):
@@ -123,54 +121,38 @@ struct TextEditingFeature: Reducer {
                 state.editingBody = snapshot?.body ?? AttributedString()
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
-                state.slashPalette.isOpen = false
+                state.slashPalette = .init()
                 return .cancel(id: Self.persistCancelID)
 
             case .bodyEdited(let new):
                 guard state.loadFailure == nil else { return .none }
-                let priorEnd = String(state.editingBody.characters)
+                // Read only the LAST character of the prior body —
+                // O(1), no full-body allocation.
+                let priorLastChar = state.editingBody.characters.last
                 state.editingBody = new
                 state.isDirty = true
 
-                // Slash trigger detection. Open the palette when the
-                // newly-typed character is `/` AND it sits at the end
-                // of the body AND is preceded by whitespace or start-
-                // of-document. Keeps the palette out of in-paragraph
-                // `/` insertions (paths, fractions) — matches the
-                // EDD §13 "never intercept" rule for ambiguous cases.
-                let newChars = String(new.characters)
-                if state.slashPalette.isOpen {
-                    // Already open — update the filter from the
-                    // characters typed AFTER the triggering `/`. We
-                    // find the LAST `/` in the new buffer and
-                    // everything after it becomes the filter.
-                    if let lastSlash = newChars.lastIndex(of: "/") {
-                        let filter = String(newChars[newChars.index(after: lastSlash)...])
-                        // If the user has navigated past the slash
-                        // (backspaced through it or pressed enter
-                        // putting whitespace before it), close the
-                        // palette.
-                        if filter.contains(where: { $0.isNewline }) {
-                            return .merge(
-                                schedulePersist(),
-                                .send(.slashPalette(.dismissed))
-                            )
-                        }
-                        return .merge(
-                            schedulePersist(),
-                            .send(.slashPalette(.filterChanged(filter)))
-                        )
-                    } else {
-                        // The triggering `/` is gone — dismiss.
-                        return .merge(
-                            schedulePersist(),
-                            .send(.slashPalette(.dismissed))
-                        )
-                    }
-                } else if shouldOpenPalette(prior: priorEnd, current: newChars) {
+                if let triggerOffset = state.slashPalette.triggerOffset {
+                    // Palette is open — validate the trigger
+                    // character is still at its tracked offset and
+                    // compute the filter slice from there.
+                    return handleOpenPaletteBodyEdit(
+                        triggerOffset: triggerOffset,
+                        new: new
+                    )
+                } else if shouldOpenPalette(
+                    priorLastChar: priorLastChar,
+                    current: new
+                ) {
+                    // `/` was just typed at a word boundary. Capture
+                    // its offset so subsequent keystrokes slice the
+                    // filter from a stable anchor.
+                    let newTriggerOffset = new.characters.count - 1
                     return .merge(
                         schedulePersist(),
-                        .send(.slashPalette(.openRequested))
+                        .send(.slashPalette(.openRequested(
+                            triggerOffset: newTriggerOffset
+                        )))
                     )
                 }
                 return schedulePersist()
@@ -199,19 +181,26 @@ struct TextEditingFeature: Reducer {
 
             case .applyBlockFormat(let format):
                 guard state.loadFailure == nil else { return .none }
-                applyBlockFormat(format, to: &state.editingBody)
+                let identity = state.nextPresentationIdentity
+                state.nextPresentationIdentity += 1
+                applyBlockFormat(
+                    format,
+                    to: &state.editingBody,
+                    identity: identity
+                )
                 state.isDirty = true
                 return schedulePersist()
 
             case .slashPalette(.commandSelected(let command)):
-                // Strip the triggering `/<filter>` slice before
-                // applying the command so the inserted markup
-                // doesn't leave the trigger characters behind.
-                stripSlashTrigger(from: &state.editingBody)
-                // Route the command to its handler. Only the v1-
-                // available block format commands run today; the
-                // rest are no-ops at the reducer level (the parent
-                // wiring layer will gain handlers as they ship).
+                // Strip the `/<filter>` trigger slice (preserving
+                // attributes outside it), then route the command to
+                // its handler. Unwired commands no-op gracefully.
+                if let triggerOffset = state.slashPalette.triggerOffset {
+                    stripTriggerSlice(
+                        from: &state.editingBody,
+                        triggerOffset: triggerOffset
+                    )
+                }
                 let formatAction = blockFormatAction(for: command)
                 if let formatAction {
                     state.isDirty = true
@@ -226,9 +215,110 @@ struct TextEditingFeature: Reducer {
                 return .none
             }
         }
+
+        Scope(state: \.slashPalette, action: \.slashPalette) {
+            SlashCommandPaletteFeature()
+        }
     }
 
-    // MARK: - Helpers
+    // MARK: - Slash trigger handling
+
+    /// Handle a body edit while the palette is open. Validates the
+    /// trigger character is still at its tracked offset; sends
+    /// either `filterChanged` (most common path) or `dismissed`
+    /// (trigger consumed by backspace, or a newline / paragraph
+    /// break crossed the trigger).
+    private func handleOpenPaletteBodyEdit(
+        triggerOffset: Int,
+        new: AttributedString
+    ) -> Effect<Action> {
+        let characters = new.characters
+        let count = characters.count
+        // Body shrank past the trigger — dismiss.
+        guard triggerOffset < count else {
+            return .merge(
+                schedulePersist(),
+                .send(.slashPalette(.dismissed))
+            )
+        }
+        let triggerCharIdx = characters.index(
+            characters.startIndex,
+            offsetBy: triggerOffset
+        )
+        // Trigger character was replaced (e.g. backspaced) —
+        // dismiss.
+        guard characters[triggerCharIdx] == "/" else {
+            return .merge(
+                schedulePersist(),
+                .send(.slashPalette(.dismissed))
+            )
+        }
+        let filterStart = characters.index(after: triggerCharIdx)
+        let filter = String(characters[filterStart...])
+        // A newline between trigger and end means the user has
+        // moved on past the slash flow — dismiss.
+        if filter.contains(where: { $0.isNewline }) {
+            return .merge(
+                schedulePersist(),
+                .send(.slashPalette(.dismissed))
+            )
+        }
+        return .merge(
+            schedulePersist(),
+            .send(.slashPalette(.filterChanged(filter)))
+        )
+    }
+
+    /// True when the most recent edit inserted a `/` that should
+    /// trigger the palette. Specifically: the new body ends with `/`,
+    /// the prior body did NOT end with `/`, and the character
+    /// preceding the `/` is whitespace, newline, or the document
+    /// start.
+    private func shouldOpenPalette(
+        priorLastChar: Character?,
+        current: AttributedString
+    ) -> Bool {
+        let characters = current.characters
+        guard let lastChar = characters.last, lastChar == "/" else {
+            return false
+        }
+        guard priorLastChar != "/" else { return false }
+        // Inspect the character before the trailing `/`.
+        let endIdx = characters.endIndex
+        let lastIdx = characters.index(before: endIdx)
+        if lastIdx > characters.startIndex {
+            let prevIdx = characters.index(before: lastIdx)
+            let prev = characters[prevIdx]
+            return prev.isWhitespace || prev.isNewline
+        }
+        // `/` is at position 0 — start of document.
+        return true
+    }
+
+    /// Strip the `/<filter>` slice from the body, **preserving every
+    /// attribute** on the surviving text outside the removed range.
+    /// Slices the `AttributedString` directly by index — the prior
+    /// implementation round-tripped through `String` and destroyed
+    /// every region anchor / highlight / slash-insertion attribute
+    /// on the document's surviving text.
+    private func stripTriggerSlice(
+        from body: inout AttributedString,
+        triggerOffset: Int
+    ) {
+        let characters = body.characters
+        guard triggerOffset < characters.count else { return }
+        // `AttributedString.CharacterView.Index` IS
+        // `AttributedString.Index` (typealias) — we can pass the
+        // computed CharacterView index straight to `removeSubrange`
+        // without conversion.
+        let triggerIdx = characters.index(
+            characters.startIndex,
+            offsetBy: triggerOffset
+        )
+        body.removeSubrange(triggerIdx..<body.endIndex)
+    }
+
+    // MARK: - Persist
 
     private func schedulePersist() -> Effect<Action> {
         .run { send in
@@ -253,34 +343,7 @@ struct TextEditingFeature: Reducer {
         }
     }
 
-    /// True when the most recent edit inserted a `/` that should
-    /// trigger the palette. Specifically: the new body ends with `/`,
-    /// the prior body did NOT end with `/`, and the character
-    /// preceding the `/` (if any) is whitespace, newline, or the
-    /// document start.
-    private func shouldOpenPalette(prior: String, current: String) -> Bool {
-        guard current.last == "/" else { return false }
-        guard prior.last != "/" else { return false }
-        // The `/` is the last char; check what's before it.
-        let beforeSlash = current.dropLast()
-        if let prev = beforeSlash.last {
-            return prev.isWhitespace || prev.isNewline
-        }
-        // `/` is at position 0 — start of document.
-        return true
-    }
-
-    /// Strips the `/<filter>` slice from the end of the body so the
-    /// applied command doesn't leave the trigger characters behind.
-    /// Matches the simplest "trigger at end of body" detection in
-    /// `shouldOpenPalette`; mid-document triggering is a polish
-    /// follow-up.
-    private func stripSlashTrigger(from body: inout AttributedString) {
-        var chars = String(body.characters)
-        guard let lastSlash = chars.lastIndex(of: "/") else { return }
-        chars = String(chars[..<lastSlash])
-        body = AttributedString(chars)
-    }
+    // MARK: - Block format application
 
     /// Maps a `SlashCommand` to the corresponding `applyBlockFormat`
     /// action, or `nil` for commands that aren't wired in this commit.
@@ -294,25 +357,43 @@ struct TextEditingFeature: Reducer {
         }
     }
 
-    /// Replaces the active block's body with a representation that
-    /// carries the requested `PresentationIntent`. v1 applies the
-    /// intent to the whole body — selection-aware paragraph targeting
-    /// arrives with the selection observer in the accessory-bar
-    /// chrome commit. TextEditor + AttributedString resolve the
-    /// intent into visual heading styling natively (iOS 26+ rich
-    /// text APIs from WWDC25 session 280).
+    /// Applies the requested `PresentationIntent` to the **last
+    /// paragraph** of the body — the slice after the last newline.
+    /// Single-paragraph bodies get the intent applied to the whole
+    /// thing. The `identity` parameter increments per call (from
+    /// `State.nextPresentationIdentity`) so TextKit 2's layout
+    /// engine doesn't collapse successive headings into one block.
+    ///
+    /// Caret-aware targeting (apply to the paragraph the user is
+    /// actively typing into rather than the last one in the
+    /// document) lands with the accessory bar's selection
+    /// observer.
     private func applyBlockFormat(
         _ format: BlockFormat,
-        to body: inout AttributedString
+        to body: inout AttributedString,
+        identity: Int
     ) {
         let intent: PresentationIntent
         switch format {
         case .heading(let level):
-            intent = PresentationIntent(.header(level: level), identity: 1)
+            intent = PresentationIntent(.header(level: level), identity: identity)
         case .body:
-            intent = PresentationIntent(.paragraph, identity: 1)
+            intent = PresentationIntent(.paragraph, identity: identity)
         }
-        let range = body.startIndex..<body.endIndex
-        body[range].presentationIntent = intent
+
+        // Find the last newline. Apply intent to chars AFTER it
+        // (the active paragraph). If no newline, apply to the
+        // whole body. `AttributedString.CharacterView.Index` IS
+        // `AttributedString.Index` — no conversion needed.
+        let characters = body.characters
+        let paragraphRange: Range<AttributedString.Index>
+        if let lastNewlineIdx = characters.lastIndex(of: "\n") {
+            let afterNewlineIdx = characters.index(after: lastNewlineIdx)
+            paragraphRange = afterNewlineIdx..<body.endIndex
+        } else {
+            paragraphRange = body.startIndex..<body.endIndex
+        }
+
+        body[paragraphRange].presentationIntent = intent
     }
 }

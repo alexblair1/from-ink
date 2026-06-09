@@ -102,7 +102,7 @@ struct SlashMenuPopoverView: View {
 
     private func rowView(for row: Row) -> some View {
         Button(action: { row.onTap() }) {
-            HStack(spacing: 12) {
+            HStack(spacing: model.rowContentGap) {
                 Image(systemName: row.icon)
                     .font(.system(size: model.iconSize, weight: .regular))
                     .foregroundStyle(row.isSelected ? model.paperOnInk : model.ink2)
@@ -111,7 +111,7 @@ struct SlashMenuPopoverView: View {
                     .font(model.rowFont)
                     .foregroundStyle(row.isSelected ? model.paperOnInk : model.ink)
                     .lineLimit(1)
-                Spacer(minLength: 8)
+                Spacer(minLength: model.rowTrailingMinGap)
                 if row.isComingSoon {
                     Text(model.comingSoonBadge)
                         .font(model.badgeFont)
@@ -170,6 +170,11 @@ extension SlashMenuPopoverView {
         let isComingSoon: Bool
         let onTap: () -> Void
 
+        /// Custom `Equatable` — `onTap` is a `() -> Void` closure
+        /// that isn't `Equatable`. Identity by every other field is
+        /// correct for SwiftUI diffing: identical Models built from
+        /// the same call site produce identical closures, so this
+        /// comparison reflects what SwiftUI sees as "the same row."
         static func == (lhs: Row, rhs: Row) -> Bool {
             lhs.id == rhs.id
                 && lhs.icon == rhs.icon
@@ -199,6 +204,8 @@ extension SlashMenuPopoverView {
         let rowVerticalPadding: CGFloat
         let iconColumnWidth: CGFloat
         let iconSize: CGFloat
+        let rowContentGap: CGFloat
+        let rowTrailingMinGap: CGFloat
 
         let paper: Color
         let ink: Color
@@ -248,6 +255,8 @@ extension SlashMenuPopoverView.Model {
         self.rowVerticalPadding = ds.spacing.sm
         self.iconColumnWidth = 22
         self.iconSize = 14
+        self.rowContentGap = ds.spacing.md
+        self.rowTrailingMinGap = ds.spacing.sm
 
         self.paper = ds.colors.paper
         self.ink = ds.colors.ink

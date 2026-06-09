@@ -229,6 +229,54 @@ final class TextEditingFeatureTests: XCTestCase {
 
     // MARK: - Load failure suppresses edits
 
+    // MARK: - Trigger strip preserves AttributedString attributes
+
+    @MainActor
+    func test_slashPaletteCommandSelected_preservesAttributesOutsideTriggerSlice() async {
+        // Regression test for the data-loss bug where the prior
+        // implementation round-tripped through String when stripping
+        // the trigger, destroying every region anchor / highlight /
+        // slash-insertion attribute on the surviving text.
+        let regionID = UUID()
+        var body = AttributedString("Notes from Sarah /h1")
+        let range = body.range(of: "Sarah")!
+        body[range].fromInk.regionAnchor = regionID
+        body[range].fromInk.highlight = .yellow
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.filterText = "h1"
+        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard
+            .filtered(by: "heading")
+        initial.slashPalette.selectedIndex = 0
+        // `/` sits at character offset 17 in "Notes from Sarah /h1".
+        initial.slashPalette.triggerOffset = 17
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading1)))
+
+        let surviving = store.state.editingBody
+        let recoveredRange = try? XCTUnwrap(surviving.range(of: "Sarah"))
+        guard let recoveredRange else { return }
+        XCTAssertEqual(
+            surviving[recoveredRange].fromInk.regionAnchor,
+            regionID,
+            "Region anchor on 'Sarah' must survive the trigger strip"
+        )
+        XCTAssertEqual(
+            surviving[recoveredRange].fromInk.highlight,
+            .yellow,
+            "Highlight on 'Sarah' must survive the trigger strip"
+        )
+    }
+
     // MARK: - applyBlockFormat
 
     @MainActor
@@ -256,15 +304,18 @@ final class TextEditingFeatureTests: XCTestCase {
 
     @MainActor
     func test_slashPaletteCommandSelected_heading2_stripsTriggerAndAppliesFormat() async {
-        var initial = TextEditingFeature.State(activeBlock: snapshot(
-            body: AttributedString("My heading /h2")
-        ))
-        initial.editingBody = AttributedString("My heading /h2")
+        let body = AttributedString("My heading /h2")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
         initial.slashPalette.isOpen = true
         initial.slashPalette.filterText = "h2"
-        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard()
+        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard
             .filtered(by: "heading")
-        initial.slashPalette.selectedIndex = 1
+        initial.slashPalette.selectedIndex = 0
+        // The `/` in "My heading /h2" sits at character offset 11
+        // (0-indexed). stripTriggerSlice needs this anchor to slice
+        // the AttributedString while preserving attributes outside.
+        initial.slashPalette.triggerOffset = 11
 
         let store = TestStore(
             initialState: initial,
@@ -276,13 +327,13 @@ final class TextEditingFeatureTests: XCTestCase {
         await store.send(.slashPalette(.commandSelected(.heading2)))
 
         // The "/h2" trigger slice should be removed from the body.
-        let body = String(store.state.editingBody.characters)
+        let plain = String(store.state.editingBody.characters)
         XCTAssertFalse(
-            body.contains("/h2"),
+            plain.contains("/h2"),
             "Slash trigger slice must be stripped before format application"
         )
         XCTAssertFalse(
-            body.contains("/"),
+            plain.contains("/"),
             "All trigger characters from the last `/` onward should be removed"
         )
     }

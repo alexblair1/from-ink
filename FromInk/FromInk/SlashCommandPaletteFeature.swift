@@ -5,10 +5,17 @@ import Foundation
 ///
 /// **Scope.** This feature owns the palette's open/close lifecycle,
 /// the user-typed filter text, the currently-highlighted index for
-/// keyboard navigation, and the resolved descriptor list under the
-/// current filter. It does NOT execute the selected command — the
-/// parent feature (`TextEditingFeature` / `NotebookFeature`) consumes
-/// `delegate.commandSelected(SlashCommand)` and routes accordingly.
+/// keyboard navigation, the trigger character's offset within the
+/// body (so the editor can compute the filter slice without
+/// rescanning), and the resolved descriptor list under the current
+/// filter. It does NOT execute the selected command — the parent
+/// feature (`TextEditingFeature` / `NotebookFeature`) consumes
+/// `commandSelected(SlashCommand)` and routes accordingly.
+///
+/// **Registry lives in a dependency.** The full descriptor table
+/// (`SlashCommandRegistry.standard`) doesn't mutate during a session;
+/// keeping it in State paid O(n) Equatable cost on every state diff.
+/// The reducer reads via `@Dependency(\.slashCommandRegistry)`.
 ///
 /// **Two surfaces, one reducer.** Same vocabulary drives the
 /// caret-anchored popover on Mac + iPad regular AND the iPhone /
@@ -35,13 +42,18 @@ struct SlashCommandPaletteFeature: Reducer {
         var selectedIndex: Int = 0
 
         /// Descriptors that match `filterText`, in declared order.
-        /// Recomputed whenever filterText changes; cached on State so
-        /// the view doesn't re-filter on every render.
+        /// Recomputed by the reducer when the registry-driven open
+        /// or filter actions fire; cached on State so the view
+        /// doesn't re-filter on every render.
         var matchedCommands: [SlashCommandDescriptor] = []
 
-        /// Source registry the matcher reads from. Tests inject a
-        /// smaller set; production uses `.standard()`.
-        var registry: SlashCommandRegistry = .standard()
+        /// Character offset (from start of the editing body) of the
+        /// triggering `/`. The editor uses this to compute the
+        /// current filter as the slice from this offset+1 to the
+        /// body's end without re-scanning the body for `lastIndex(
+        /// of: "/")` on every keystroke. Nil while the palette is
+        /// closed.
+        var triggerOffset: Int? = nil
 
         /// True when no commands match the current filter. View
         /// renders the "no matches" empty state.
@@ -58,12 +70,17 @@ struct SlashCommandPaletteFeature: Reducer {
 
     @CasePathable
     enum Action: Equatable {
-        /// Open the palette. The triggering `/` character is already
-        /// in the body; the editor handles its insertion/removal.
-        case openRequested
+        /// Open the palette. `triggerOffset` is the character offset
+        /// of the just-typed `/` from the start of the editing body;
+        /// the editor uses it to compute filter slices on subsequent
+        /// keystrokes.
+        case openRequested(triggerOffset: Int)
 
         /// User typed more (or backspaced). The reducer recomputes
-        /// `matchedCommands` and clamps `selectedIndex`.
+        /// `matchedCommands` and resets `selectedIndex` to 0 so the
+        /// top of the filtered results is always highlighted (Apple
+        /// Notes pattern; more discoverable than clamping the prior
+        /// selection).
         case filterChanged(String)
 
         /// Arrow up / down / enter / escape from the popover view's
@@ -72,8 +89,8 @@ struct SlashCommandPaletteFeature: Reducer {
 
         /// Direct selection — fired by clicking a row, by tapping
         /// an accessory bar button, or by enter on the highlighted
-        /// row. Parent feature observes via `delegate` and routes
-        /// the command.
+        /// row. Parent feature observes via Scope and routes the
+        /// command.
         case commandSelected(SlashCommand)
 
         /// User-initiated close (escape, tap-outside, body-edited
@@ -88,29 +105,27 @@ struct SlashCommandPaletteFeature: Reducer {
         }
     }
 
+    @Dependency(\.slashCommandRegistry) var registry
+
     var body: some Reducer<State, Action> {
         Reduce { state, action in
             switch action {
-            case .openRequested:
+            case .openRequested(let triggerOffset):
                 state.isOpen = true
+                state.triggerOffset = triggerOffset
                 state.filterText = ""
-                state.matchedCommands = state.registry.filtered(by: "")
+                state.matchedCommands = registry.filtered(by: "")
                 state.selectedIndex = 0
                 return .none
 
             case .filterChanged(let text):
                 state.filterText = text
-                state.matchedCommands = state.registry.filtered(by: text)
-                // Clamp selection so a narrowed list doesn't leave
-                // selectedIndex pointing past the end.
-                if state.matchedCommands.isEmpty {
-                    state.selectedIndex = 0
-                } else {
-                    state.selectedIndex = min(
-                        state.selectedIndex,
-                        state.matchedCommands.count - 1
-                    )
-                }
+                state.matchedCommands = registry.filtered(by: text)
+                // Reset to 0 on every filter change so the top of
+                // the filtered results is always highlighted —
+                // matches Apple Notes (Notion preserves position,
+                // but that's surprising when typing rapidly).
+                state.selectedIndex = 0
                 return .none
 
             case .keyboardNavigationKey(let direction):
@@ -119,6 +134,7 @@ struct SlashCommandPaletteFeature: Reducer {
                     state.selectedIndex = max(0, state.selectedIndex - 1)
                     return .none
                 case .down:
+                    guard !state.matchedCommands.isEmpty else { return .none }
                     state.selectedIndex = min(
                         state.matchedCommands.count - 1,
                         state.selectedIndex + 1
@@ -139,12 +155,14 @@ struct SlashCommandPaletteFeature: Reducer {
                 state.isOpen = false
                 state.filterText = ""
                 state.selectedIndex = 0
+                state.triggerOffset = nil
                 return .none
 
             case .dismissed:
                 state.isOpen = false
                 state.filterText = ""
                 state.selectedIndex = 0
+                state.triggerOffset = nil
                 return .none
             }
         }

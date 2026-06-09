@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 
 /// The shared command vocabulary that drives both the slash menu
@@ -107,10 +108,15 @@ struct SlashCommandRegistry: Equatable, Sendable {
 
 extension SlashCommandRegistry {
     /// Standard descriptor table. Titles resolve through
-    /// `AppStrings.SlashMenu`; updating a label is a one-line edit
-    /// in the AppStrings extension.
-    static func standard() -> SlashCommandRegistry {
-        SlashCommandRegistry(descriptors: [
+    /// `AppStrings.SlashMenu` at first access; the registry caches
+    /// the resolved descriptors as a `static let` so subsequent
+    /// reads don't re-run 17 NSLocalizedString lookups per state
+    /// init. A runtime locale change won't update the cached
+    /// strings — a known v1 limitation; relaunch resolves it. The
+    /// registry lives in a TCA dependency (see `DependencyValues.
+    /// slashCommandRegistry`) rather than on reducer State so its
+    /// Equatable cost doesn't show up in state-diff hot paths.
+    static let standard: SlashCommandRegistry = SlashCommandRegistry(descriptors: [
             // MARK: Block format
             .init(
                 id: .heading1,
@@ -235,5 +241,21 @@ extension SlashCommandRegistry {
                 availability: .comingSoon
             ),
         ])
+}
+
+// MARK: - Dependency
+
+extension SlashCommandRegistry: DependencyKey {
+    static let liveValue: SlashCommandRegistry = .standard
+    static let testValue: SlashCommandRegistry = .standard
+}
+
+extension DependencyValues {
+    /// The slash-command vocabulary the palette + accessory bar
+    /// surfaces draw from. Lives as a dependency so reducer State
+    /// stays small — the registry never mutates during a session.
+    var slashCommandRegistry: SlashCommandRegistry {
+        get { self[SlashCommandRegistry.self] }
+        set { self[SlashCommandRegistry.self] = newValue }
     }
 }
