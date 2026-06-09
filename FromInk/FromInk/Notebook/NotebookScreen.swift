@@ -77,6 +77,16 @@ struct NotebookScreen: View {
     }
 
     var body: some View {
+        switch store.notebookType {
+        case .textNote:
+            TextNoteWiringView(store: store)
+        case .notebook, .quickSheet:
+            canvasBody
+        }
+    }
+
+    @ViewBuilder
+    private var canvasBody: some View {
         ZStack {
             TabView(selection: currentIndexBinding) {
                 ForEach(Array(pages.enumerated()), id: \.element.id) { (i, page) in

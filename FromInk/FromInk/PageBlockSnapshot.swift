@@ -133,19 +133,20 @@ extension PageBlockSnapshot {
         }
     }
 
-    /// Decode an archived `bodyData` blob.
+    /// Decode an archived `bodyData` blob into an `AttributedString`.
     ///
-    /// **Path A only for now** — `NSKeyedArchiver`-bridged
-    /// `NSAttributedString`. The Path B (Codable) fallback the EDD
-    /// describes requires the `FromInkAttributes` custom attribute
-    /// scope to be specified via `CodableConfiguration`; without that,
-    /// `JSONDecoder().decode(AttributedString.self, from: …)` would
-    /// silently drop region anchors, highlights, and slash-insertion
-    /// markers on every round-trip. The scope ships with the text
-    /// editor in the next commit; this decoder flips to Path B then.
+    /// **Path B first, Path A fallback.** Per EDD §7.3 the preferred
+    /// serialization is `AttributedString.Codable` with the
+    /// `FromInkAttributes` scope configuration — that's the native
+    /// Swift path through the iOS 26 rich-text `TextEditor` APIs and
+    /// our custom attribute keys (region anchor / highlight / slash
+    /// insertion) survive the round-trip cleanly. If a payload doesn't
+    /// decode as Codable (e.g. an older block archived through the
+    /// `NSKeyedArchiver` path before this flipped), we try the
+    /// archiver bridge before giving up.
     ///
-    /// On decode failure the helper logs (so a corruption never goes
-    /// silent in TestFlight) and reports `failed: true` so the
+    /// On total decode failure the helper logs (so a corruption never
+    /// goes silent in TestFlight) and reports `failed: true` so the
     /// snapshot can carry the state up to the view layer. Returns an
     /// empty `AttributedString` so the editor opens cleanly to the
     /// failure placeholder rather than crashing.
@@ -156,6 +157,15 @@ extension PageBlockSnapshot {
         guard let data, !data.isEmpty else {
             return (AttributedString(), false)
         }
+        // Path B — Codable with FromInkAttributes scope.
+        if let body = try? JSONDecoder().decode(
+            AttributedString.self,
+            from: data,
+            configuration: AttributeScopes.FromInkAttributes.self
+        ) {
+            return (body, false)
+        }
+        // Path A — NSKeyedArchiver bridge.
         do {
             if let ns = try NSKeyedUnarchiver.unarchivedObject(
                 ofClass: NSAttributedString.self, from: data
@@ -163,7 +173,7 @@ extension PageBlockSnapshot {
                 return (AttributedString(ns), false)
             }
             snapshotLog.error(
-                "Block \(blockID.uuidString, privacy: .public) bodyData unarchived to nil"
+                "Block \(blockID.uuidString, privacy: .public) bodyData decoded as nil under both Path B and Path A"
             )
             return (AttributedString(), true)
         } catch {
@@ -172,5 +182,23 @@ extension PageBlockSnapshot {
             )
             return (AttributedString(), true)
         }
+    }
+
+    /// Encode an `AttributedString` into the form that `decodeBody`
+    /// expects. Uses Path B (Codable + `FromInkAttributes` scope). The
+    /// `NotebookClient.updateBlockBody` callers (the text editor's
+    /// debounced commit path) reach for this helper rather than
+    /// duplicating the encoder configuration at the call site.
+    ///
+    /// Errors: encoding can fail if a custom attribute value isn't
+    /// `Codable`-conformant. All v1 attribute values (`UUID`,
+    /// `HighlightKind`, `SlashCommandID`) are `Codable`, so a thrown
+    /// error here indicates a future attribute key was added to the
+    /// scope without a `CodableAttributedStringKey` conformance.
+    static func encodeBody(_ body: AttributedString) throws -> Data {
+        try JSONEncoder().encode(
+            body,
+            configuration: AttributeScopes.FromInkAttributes.self
+        )
     }
 }

@@ -21,6 +21,12 @@ struct NotebookFeature: Reducer {
     struct State: Equatable {
         let notebookID: UUID
         var notebookTitle: String
+        /// The notebook's variant — `.notebook` / `.quickSheet` route
+        /// to the ink CanvasScreen; `.textNote` routes to the text
+        /// editor wiring (see `TextNoteWiringView`). Defaults to
+        /// `.notebook` for legacy callers; refresh sets it from the
+        /// loaded `NotebookSnapshot` on first appear.
+        var notebookType: NotebookType = .notebook
         var pages: [NotePageSnapshot] = []
         var currentIndex: Int = 0
         var hasLoadedOnce: Bool = false
@@ -29,6 +35,11 @@ struct NotebookFeature: Reducer {
         /// selection persists across page swipes and `ToolbarWiringView`
         /// renders once as a sibling of the `TabView`.
         var toolbar: ToolbarFeature.State = .init()
+
+        /// Active text-block editor scoped under this notebook. Only
+        /// meaningful when `notebookType == .textNote`; the canvas
+        /// path ignores it.
+        var textEditing: TextEditingFeature.State = .init()
 
         /// Template of the page the user is currently viewing. Derived
         /// from the page snapshot so it always reflects what's actually
@@ -51,6 +62,14 @@ struct NotebookFeature: Reducer {
         case onAppear
         case storeDidChange
         case pagesLoaded([NotePageSnapshot])
+        /// Notebook variant resolved during refresh. Routes
+        /// `NotebookScreen` to either the canvas (ink) or text-editor
+        /// (textNote) wiring on the next render.
+        case notebookTypeResolved(NotebookType)
+        /// Blocks loaded for the current text-note page. Forwarded to
+        /// `TextEditingFeature` as the active block snapshot. Ink
+        /// notebooks ignore this entirely.
+        case textBlocksLoaded([PageBlockSnapshot])
         case addPageTapped
         case pageCreated(NotePageSnapshot)
         case currentIndexChanged(Int)
@@ -65,6 +84,7 @@ struct NotebookFeature: Reducer {
         /// change observer.
         case pageTemplateUpdated(NotePageSnapshot)
         case toolbar(ToolbarFeature.Action)
+        case textEditing(TextEditingFeature.Action)
     }
 
     @Dependency(\.notebookClient) var notebookClient
@@ -72,6 +92,9 @@ struct NotebookFeature: Reducer {
     var body: some Reducer<State, Action> {
         Scope(state: \.toolbar, action: \.toolbar) {
             ToolbarFeature()
+        }
+        Scope(state: \.textEditing, action: \.textEditing) {
+            TextEditingFeature()
         }
 
         Reduce { state, action in
@@ -97,7 +120,43 @@ struct NotebookFeature: Reducer {
                 if wasFirstLoad && pages.isEmpty {
                     return seedFirstPage(notebookID: state.notebookID)
                 }
+                // textNote variant: reload the active page's blocks
+                // whenever the page list changes.
+                if state.notebookType == .textNote,
+                   let pageID = state.pages[safe: state.currentIndex]?.id {
+                    return loadTextBlocks(pageID: pageID)
+                }
                 return .none
+
+            case .notebookTypeResolved(let type):
+                state.notebookType = type
+                // Ink variants don't drive textEditing — early-out.
+                guard type == .textNote,
+                      let pageID = state.pages[safe: state.currentIndex]?.id
+                else { return .none }
+                return loadTextBlocks(pageID: pageID)
+
+            case .textBlocksLoaded(let blocks):
+                // For v1 textNote, each page hosts exactly one text
+                // block. If none exists yet, seed one so the editor
+                // opens cleanly. Otherwise route the first text block
+                // to the editor feature.
+                let firstTextBlock = blocks
+                    .sorted { $0.sortIndex < $1.sortIndex }
+                    .first(where: { $0.kind == .text })
+                if let snap = firstTextBlock {
+                    return .send(.textEditing(.activeBlockChanged(snap)))
+                }
+                guard let pageID = state.pages[safe: state.currentIndex]?.id
+                else { return .none }
+                return .run { send in
+                    do {
+                        let snap = try await notebookClient.insertBlock(pageID, .text, nil)
+                        await send(.textEditing(.activeBlockChanged(snap)))
+                    } catch {
+                        log.error("Seed text block failed: \(error.localizedDescription)")
+                    }
+                }
 
             case .addPageTapped:
                 // New pages inherit the **current page's** template so
@@ -130,6 +189,19 @@ struct NotebookFeature: Reducer {
 
             case .currentIndexChanged(let idx):
                 state.currentIndex = idx
+                // textNote variants reload the active page's blocks
+                // when the user swipes pages so the editor binds to
+                // the right block.
+                if state.notebookType == .textNote,
+                   let pageID = state.pages[safe: idx]?.id {
+                    return .merge(
+                        // Flush any pending writes on the prior block
+                        // before swapping the active block out from
+                        // under the editor.
+                        .send(.textEditing(.flush)),
+                        loadTextBlocks(pageID: pageID)
+                    )
+                }
                 return .none
 
             case .templateSelected(let template):
@@ -161,6 +233,9 @@ struct NotebookFeature: Reducer {
 
             case .toolbar:
                 return .none
+
+            case .textEditing:
+                return .none
             }
         }
     }
@@ -170,6 +245,13 @@ struct NotebookFeature: Reducer {
     private func refresh(notebookID: UUID) -> Effect<Action> {
         .run { send in
             do {
+                // Resolve type FIRST so the screen branches correctly
+                // before pagesLoaded fans out further effects (the
+                // textNote path triggers loadTextBlocks from the same
+                // pages-loaded action).
+                if let detail = try await notebookClient.fetchNotebook(notebookID) {
+                    await send(.notebookTypeResolved(detail.notebook.notebookType))
+                }
                 let pages = try await notebookClient.fetchPagesForNotebook(notebookID)
                 await send(.pagesLoaded(pages))
             } catch {
@@ -177,6 +259,18 @@ struct NotebookFeature: Reducer {
             }
         }
         .cancellable(id: "notebookRefresh-\(notebookID.uuidString)", cancelInFlight: true)
+    }
+
+    private func loadTextBlocks(pageID: UUID) -> Effect<Action> {
+        .run { send in
+            do {
+                let blocks = try await notebookClient.fetchBlocksForPage(pageID)
+                await send(.textBlocksLoaded(blocks))
+            } catch {
+                log.error("loadTextBlocks failed for page \(pageID): \(error.localizedDescription)")
+            }
+        }
+        .cancellable(id: "textBlocksLoad-\(pageID.uuidString)", cancelInFlight: true)
     }
 
     private func observeStoreChanges() -> Effect<Action> {
