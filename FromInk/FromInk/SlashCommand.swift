@@ -151,14 +151,14 @@ extension SlashCommandRegistry {
                 icon: "quote.opening",
                 title: AppStrings.SlashMenu.blockQuote,
                 shortcutHint: nil,
-                availability: .comingSoon
+                availability: .available
             ),
             .init(
                 id: .code,
                 icon: "curlybraces",
                 title: AppStrings.SlashMenu.code,
                 shortcutHint: nil,
-                availability: .comingSoon
+                availability: .available
             ),
             // MARK: Lists
             .init(
@@ -166,14 +166,14 @@ extension SlashCommandRegistry {
                 icon: "list.bullet",
                 title: AppStrings.SlashMenu.bulletedList,
                 shortcutHint: "⌘⇧8",
-                availability: .comingSoon
+                availability: .available
             ),
             .init(
                 id: .numberedList,
                 icon: "list.number",
                 title: AppStrings.SlashMenu.numberedList,
                 shortcutHint: "⌘⇧7",
-                availability: .comingSoon
+                availability: .available
             ),
             .init(
                 id: .checklist,
@@ -188,7 +188,7 @@ extension SlashCommandRegistry {
                 icon: "minus",
                 title: AppStrings.SlashMenu.divider,
                 shortcutHint: nil,
-                availability: .comingSoon
+                availability: .available
             ),
             .init(
                 id: .region,

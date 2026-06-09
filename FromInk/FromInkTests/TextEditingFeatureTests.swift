@@ -387,6 +387,138 @@ final class TextEditingFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func test_applyBlockFormat_blockQuote_setsBlockQuoteIntent() async {
+        await assertParagraphIntent(
+            applying: .blockQuote,
+            paragraphText: "Quote me on this.",
+            expectedKindSubstring: "blockQuote"
+        )
+    }
+
+    @MainActor
+    func test_applyBlockFormat_codeBlock_setsCodeBlockIntent() async {
+        await assertParagraphIntent(
+            applying: .codeBlock,
+            paragraphText: "let x = 1",
+            expectedKindSubstring: "codeBlock"
+        )
+    }
+
+    @MainActor
+    func test_applyBlockFormat_bulletedList_setsListItemWithUnorderedParent() async {
+        await assertParagraphIntent(
+            applying: .bulletedList,
+            paragraphText: "First item",
+            expectedKindSubstring: "listItem"
+        )
+    }
+
+    @MainActor
+    func test_applyBlockFormat_bulletedList_parentIsUnorderedList() async {
+        // Drill into PresentationIntent.components and assert the
+        // parent kind is unorderedList (not orderedList). This is
+        // what distinguishes bulleted from numbered visually.
+        let paragraphText = "First item"
+        let body = AttributedString(paragraphText)
+        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        initial.selection = selection
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.bulletedList))
+
+        let result = store.state.editingBody
+        let resultRange = result.range(of: paragraphText)!
+        let intent = result[resultRange].presentationIntent
+        XCTAssertNotNil(intent)
+        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
+        XCTAssertTrue(kinds.contains("unorderedList"), "Expected unorderedList in components, got: \(kinds)")
+    }
+
+    @MainActor
+    func test_applyBlockFormat_numberedList_parentIsOrderedList() async {
+        let paragraphText = "First item"
+        let body = AttributedString(paragraphText)
+        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        initial.selection = selection
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.numberedList))
+
+        let result = store.state.editingBody
+        let resultRange = result.range(of: paragraphText)!
+        let intent = result[resultRange].presentationIntent
+        XCTAssertNotNil(intent)
+        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
+        XCTAssertTrue(kinds.contains("orderedList"), "Expected orderedList in components, got: \(kinds)")
+    }
+
+    @MainActor
+    func test_applyBlockFormat_divider_setsThematicBreakIntent() async {
+        await assertParagraphIntent(
+            applying: .divider,
+            paragraphText: "anything",
+            expectedKindSubstring: "thematicBreak"
+        )
+    }
+
+    /// Helper for the "apply format X, assert paragraph intent kind"
+    /// pattern. Keeps the matrix tests above to one assertion line.
+    @MainActor
+    private func assertParagraphIntent(
+        applying format: TextEditingFeature.BlockFormat,
+        paragraphText: String,
+        expectedKindSubstring: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let body = AttributedString(paragraphText)
+        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        initial.selection = selection
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(format))
+
+        let result = store.state.editingBody
+        let resultRange = result.range(of: paragraphText)!
+        let intent = result[resultRange].presentationIntent
+        XCTAssertNotNil(intent, file: file, line: line)
+        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
+        XCTAssertTrue(
+            kinds.contains(expectedKindSubstring),
+            "Expected '\(expectedKindSubstring)' in components, got: \(kinds)",
+            file: file,
+            line: line
+        )
+    }
+
+    @MainActor
     func test_applyBlockFormat_withUnsetSelection_targetsLastParagraph() async {
         // Pins the documented "AttributedTextSelection() projects as
         // .insertionPoint(endIndex)" contract. On a brand-new block

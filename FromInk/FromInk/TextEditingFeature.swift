@@ -123,6 +123,11 @@ struct TextEditingFeature: Reducer {
     enum BlockFormat: Equatable, Sendable {
         case heading(level: Int)   // 1, 2, 3
         case body
+        case blockQuote
+        case codeBlock
+        case bulletedList
+        case numberedList
+        case divider
     }
 
     enum InlineFormat: Equatable, Sendable {
@@ -254,11 +259,24 @@ struct TextEditingFeature: Reducer {
                 guard state.loadFailure == nil else { return .none }
                 let identity = state.nextPresentationIdentity
                 state.nextPresentationIdentity += 1
+                // Lists need a SECOND identity for the parent
+                // (unorderedList / orderedList container). Burn one
+                // off the counter so it's unique and won't collide
+                // with future paragraph intents.
+                let parentIdentity: Int?
+                switch format {
+                case .bulletedList, .numberedList:
+                    parentIdentity = state.nextPresentationIdentity
+                    state.nextPresentationIdentity += 1
+                default:
+                    parentIdentity = nil
+                }
                 applyBlockFormat(
                     format,
                     to: &state.editingBody,
                     selection: state.selection,
-                    identity: identity
+                    identity: identity,
+                    parentIdentity: parentIdentity
                 )
                 state.isDirty = true
                 return schedulePersist()
@@ -399,11 +417,23 @@ struct TextEditingFeature: Reducer {
 
     private func blockFormatAction(for command: SlashCommand) -> Action? {
         switch command {
-        case .heading1:  return .applyBlockFormat(.heading(level: 1))
-        case .heading2:  return .applyBlockFormat(.heading(level: 2))
-        case .heading3:  return .applyBlockFormat(.heading(level: 3))
-        case .body:      return .applyBlockFormat(.body)
-        default:         return nil
+        case .heading1:     return .applyBlockFormat(.heading(level: 1))
+        case .heading2:     return .applyBlockFormat(.heading(level: 2))
+        case .heading3:     return .applyBlockFormat(.heading(level: 3))
+        case .body:         return .applyBlockFormat(.body)
+        case .blockQuote:   return .applyBlockFormat(.blockQuote)
+        case .code:         return .applyBlockFormat(.codeBlock)
+        case .bulletedList: return .applyBlockFormat(.bulletedList)
+        case .numberedList: return .applyBlockFormat(.numberedList)
+        case .divider:      return .applyBlockFormat(.divider)
+        // The remaining commands (checklist, region, link, event,
+        // pdfAttach, voiceMemo, image, dispatch) defer to follow-up
+        // commits — each needs a dependency (custom checklist
+        // attribute, NoteRegion text anchor, link sheet, EventKit
+        // picker, file picker, SpeechService, PhotosPicker,
+        // DispatchFeature integration) that isn't part of this
+        // vocabulary-wiring commit.
+        default: return nil
         }
     }
 
@@ -416,11 +446,16 @@ struct TextEditingFeature: Reducer {
     /// `.insertionPoint(body.endIndex)`, so the anchor naturally
     /// resolves to the last paragraph — no special-case fallback
     /// required. See `State.selection` doc comment for the contract.
+    ///
+    /// `parentIdentity` is only consulted for list formats; the
+    /// caller supplies a fresh identity so the unordered / ordered
+    /// list container is distinguishable from the listItem itself.
     private func applyBlockFormat(
         _ format: BlockFormat,
         to body: inout AttributedString,
         selection: AttributedTextSelection,
-        identity: Int
+        identity: Int,
+        parentIdentity: Int?
     ) {
         let intent: PresentationIntent
         switch format {
@@ -428,6 +463,39 @@ struct TextEditingFeature: Reducer {
             intent = PresentationIntent(.header(level: level), identity: identity)
         case .body:
             intent = PresentationIntent(.paragraph, identity: identity)
+        case .blockQuote:
+            intent = PresentationIntent(.blockQuote, identity: identity)
+        case .codeBlock:
+            intent = PresentationIntent(.codeBlock(languageHint: nil), identity: identity)
+        case .bulletedList:
+            // First (and for now only) item in a fresh list. The
+            // parent container's identity is bumped off the same
+            // counter — see the reducer's .applyBlockFormat case.
+            intent = PresentationIntent(
+                .listItem(ordinal: 1),
+                identity: identity,
+                parent: PresentationIntent(
+                    .unorderedList,
+                    identity: parentIdentity ?? identity
+                )
+            )
+        case .numberedList:
+            intent = PresentationIntent(
+                .listItem(ordinal: 1),
+                identity: identity,
+                parent: PresentationIntent(
+                    .orderedList,
+                    identity: parentIdentity ?? identity
+                )
+            )
+        case .divider:
+            // A divider is a `.thematicBreak` paragraph — TextKit 2
+            // renders it as a horizontal rule. The hosting paragraph
+            // can be empty; if it has content, the user invoked
+            // `/divider` on a non-empty line and the whole line
+            // becomes the rule. v1 caveat — matches the existing
+            // "headings replace the host paragraph" semantics.
+            intent = PresentationIntent(.thematicBreak, identity: identity)
         }
 
         let anchor = firstSelectionIndex(in: body, selection: selection)
