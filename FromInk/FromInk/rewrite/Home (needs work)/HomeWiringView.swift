@@ -201,20 +201,27 @@ struct HomeWiringView: View {
     // MARK: - New Notebook Overlay
 
     @State private var newNotebookTitle = ""
+    @State private var newNotebookType: NotebookType = .notebook
 
     private var newNotebookOverlay: some View {
         NewNotebookOverlay(
             title: $newNotebookTitle,
+            type: $newNotebookType,
             onCreate: {
                 // LibraryFeature creates via NotebookClient; its delegate
                 // (.notebookCreated) is handled by HomeFeature, which
                 // dismisses the sheet and sets presentingNotebookID.
-                store.send(.library(.createNotebookRequested(title: newNotebookTitle)))
+                store.send(.library(.createNotebookRequested(
+                    title: newNotebookTitle,
+                    type: newNotebookType
+                )))
                 newNotebookTitle = ""
+                newNotebookType = .notebook
             },
             onCancel: {
                 store.send(.newNotebookDismissed)
                 newNotebookTitle = ""
+                newNotebookType = .notebook
             }
         )
     }

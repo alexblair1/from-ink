@@ -87,6 +87,21 @@ static let highlights = NSLocalizedString(
             value: "Title",
             comment: "Title field label"
         )
+        static let typeLabel = NSLocalizedString(
+            "home.typeLabel",
+            value: "Type",
+            comment: "Notebook type field label in New Notebook overlay"
+        )
+        static let notebookTypeNotebook = NSLocalizedString(
+            "home.notebookType.notebook",
+            value: "Notebook",
+            comment: "Ink + handwriting notebook type label"
+        )
+        static let notebookTypeTextNote = NSLocalizedString(
+            "home.notebookType.textNote",
+            value: "Text Note",
+            comment: "Typed text notebook type label"
+        )
         static let events = NSLocalizedString(
             "home.events",
             value: "events",

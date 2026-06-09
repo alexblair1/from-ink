@@ -61,7 +61,7 @@ struct LibraryFeature: Reducer {
         case loadFailed(reason: String)
 
         // Notebook lifecycle (caller-initiated)
-        case createNotebookRequested(title: String)
+        case createNotebookRequested(title: String, type: NotebookType)
         case renameNotebookRequested(id: UUID, title: String)
         case deleteNotebookRequested(id: UUID)
         /// Bumps the notebook's `modifiedAt` so opening (without
@@ -139,11 +139,11 @@ struct LibraryFeature: Reducer {
                 log.error("Library load failed: \(reason)")
                 return .none
 
-            case .createNotebookRequested(let rawTitle):
+            case .createNotebookRequested(let rawTitle, let type):
                 let title = rawTitle.isEmpty ? AppStrings.Common.untitled : rawTitle
                 return .run { send in
                     do {
-                        let snap = try await notebookClient.createNotebook(title, nil, .notebook)
+                        let snap = try await notebookClient.createNotebook(title, nil, type)
                         await send(.delegate(.notebookCreated(snap)))
                     } catch {
                         log.error("createNotebook failed: \(error.localizedDescription)")
