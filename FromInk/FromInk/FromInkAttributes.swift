@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// Custom `AttributedString` attribute scope for From Ink's text
 /// editor. The scope binds three semantic attributes that the rich-
@@ -53,9 +54,23 @@ import Foundation
 /// lands.
 extension AttributeScopes {
     struct FromInkAttributes: AttributeScope {
+        // FromInk-specific custom attributes.
         let regionAnchor: RegionAnchorAttribute
         let highlight: HighlightAttribute
         let slashInsertion: SlashInsertionAttribute
+
+        // Standard Apple attribute scopes the text editor produces.
+        // Without these declared as composed sub-scopes, the
+        // `JSONEncoder().encode(body, configuration:
+        // FromInkAttributes.self)` round-trip silently DROPS every
+        // attribute outside our three custom keys — bold / italic /
+        // strikethrough / code (`inlinePresentationIntent`), headings
+        // (`presentationIntent`), underline (`underlineStyle`), font /
+        // color / etc. — so the user's formatting disappears on the
+        // next page load. Composition keeps everything the editor
+        // produces in the persisted set.
+        let foundation: FoundationAttributes
+        let swiftUI: SwiftUIAttributes
     }
 
     /// Strongly-typed accessor for use in keypath syntax:

@@ -30,6 +30,15 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 ///
 /// **Equality cost.** `AttributedString.Equatable` is O(n). Typical
 /// block sizes are <10 KB so per-action diff cost is negligible.
+///
+/// **Selection diff cost.** `selectionChanged` fires on every caret
+/// movement (per-keystroke + per-tap). The handler mutates only
+/// `state.selection` and returns `.none` — no persist scheduled, no
+/// derived state recomputed. `AttributedTextSelection` is a small
+/// value type (range / insertion point only — no body bytes), so
+/// the action loop cost per change is bounded regardless of block
+/// size. View invalidation is scoped to the TextEditor binding that
+/// reads `state.selection`.
 struct TextEditingFeature: Reducer {
 
     @ObservableState
@@ -46,6 +55,18 @@ struct TextEditingFeature: Reducer {
         /// cases: `.insertionPoint(Index)` for a single caret and
         /// `.ranges(RangeSet<Index>)` for a non-empty (possibly
         /// discontinuous) selection.
+        ///
+        /// **Default value semantics.** `AttributedTextSelection()`
+        /// (the zero-argument init) projects as
+        /// `.insertionPoint(body.endIndex)` when queried via
+        /// `indices(in:)` — verified on iOS 26. Practical consequence:
+        /// applying a block format on a brand-new block where the user
+        /// hasn't tapped to position the caret targets the LAST
+        /// paragraph, which matches the pre-selection-aware behavior
+        /// and is the expected outcome when the user opens a fresh
+        /// block and runs a slash command. No special-case fallback
+        /// for "unset selection" is needed — `firstSelectionIndex`
+        /// returns the endIndex through the normal path.
         var selection: AttributedTextSelection = AttributedTextSelection()
 
         var isDirty: Bool = false
@@ -357,9 +378,13 @@ struct TextEditingFeature: Reducer {
 
     /// Applies the requested `PresentationIntent` to the **paragraph
     /// containing the selection's first index**. Insertion-point and
-    /// range selections both target the paragraph at the start. If
-    /// no selection is set yet (e.g. block opened but never tapped),
-    /// applies to the last paragraph as a sensible default.
+    /// range selections both target the paragraph at the start.
+    ///
+    /// When the selection is unset (the default
+    /// `AttributedTextSelection()`), `indices(in:)` projects as
+    /// `.insertionPoint(body.endIndex)`, so the anchor naturally
+    /// resolves to the last paragraph — no special-case fallback
+    /// required. See `State.selection` doc comment for the contract.
     private func applyBlockFormat(
         _ format: BlockFormat,
         to body: inout AttributedString,
@@ -374,28 +399,17 @@ struct TextEditingFeature: Reducer {
             intent = PresentationIntent(.paragraph, identity: identity)
         }
 
-        let paragraphRange = paragraphRangeAtSelectionStart(
-            in: body,
-            selection: selection
-        )
-        body[paragraphRange].presentationIntent = intent
-    }
-
-    /// Resolve the AttributedString range of the paragraph containing
-    /// the selection's first index. Paragraph boundaries are the
-    /// surrounding newlines (or document start / end).
-    private func paragraphRangeAtSelectionStart(
-        in body: AttributedString,
-        selection: AttributedTextSelection
-    ) -> Range<AttributedString.Index> {
         let anchor = firstSelectionIndex(in: body, selection: selection)
-            ?? lastParagraphStart(in: body)
-        return paragraphRange(containing: anchor, in: body)
+            ?? body.endIndex
+        body[paragraphRange(containing: anchor, in: body)].presentationIntent = intent
     }
 
     /// Pull the first AttributedString.Index out of the selection,
     /// whether the user has an insertion point or a non-empty range.
-    /// Returns nil if the selection is empty / unset.
+    /// Returns nil only in the pathological case where
+    /// `indices(in:)` reports `.ranges(_)` with an empty range set —
+    /// the default selection projects as `.insertionPoint(endIndex)`
+    /// so the nil-coalesce in `applyBlockFormat` is purely defensive.
     private func firstSelectionIndex(
         in body: AttributedString,
         selection: AttributedTextSelection
@@ -429,20 +443,6 @@ struct TextEditingFeature: Reducer {
             end = body.endIndex
         }
         return start..<end
-    }
-
-    /// Fallback anchor when the selection is unset — the start of
-    /// the document's last paragraph. Keeps the old "apply to last
-    /// paragraph" behavior usable on brand-new blocks where the
-    /// user hasn't tapped to position the caret yet.
-    private func lastParagraphStart(
-        in body: AttributedString
-    ) -> AttributedString.Index {
-        let characters = body.characters
-        if let lastNewline = characters.lastIndex(of: "\n") {
-            return characters.index(after: lastNewline)
-        }
-        return characters.startIndex
     }
 
     // MARK: - Inline format application
@@ -508,7 +508,11 @@ struct TextEditingFeature: Reducer {
             } else {
                 var next = existing
                 next.remove(intent)
-                body[range].inlinePresentationIntent = next.isEmpty ? nil : next
+                if next.isEmpty {
+                    body[range].inlinePresentationIntent = nil
+                } else {
+                    body[range].inlinePresentationIntent = next
+                }
             }
         }
     }

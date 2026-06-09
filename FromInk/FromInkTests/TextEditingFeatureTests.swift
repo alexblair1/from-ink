@@ -313,14 +313,7 @@ final class TextEditingFeatureTests: XCTestCase {
         let plain = "Intro paragraph.\nMiddle paragraph.\nClosing paragraph."
         let body = AttributedString(plain)
         let middleRange = body.range(of: "Middle paragraph.")!
-
-        var selection = AttributedTextSelection()
-        // Force the selection to a range inside the middle paragraph
-        // via the underlying `Selection` API. We construct a
-        // discontinuous-but-actually-single-range RangeSet.
-        var rangeSet = RangeSet<AttributedString.Index>()
-        rangeSet.insert(contentsOf: middleRange)
-        selection = AttributedTextSelection(ranges: rangeSet)
+        let selection = AttributedTextSelection(range: middleRange)
 
         var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
         initial.editingBody = body
@@ -349,6 +342,43 @@ final class TextEditingFeatureTests: XCTestCase {
         XCTAssertNil(resultBody[closingRange].presentationIntent)
     }
 
+    @MainActor
+    func test_applyBlockFormat_withUnsetSelection_targetsLastParagraph() async {
+        // Pins the documented "AttributedTextSelection() projects as
+        // .insertionPoint(endIndex)" contract. On a brand-new block
+        // where the user hasn't tapped to position the caret yet, a
+        // block format applies to the LAST paragraph — matching the
+        // pre-selection-aware behavior. Regression for any future
+        // change to the unset-selection projection.
+        let plain = "First paragraph.\nMiddle paragraph.\nLast paragraph."
+        let body = AttributedString(plain)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        // selection intentionally left at default — empty.
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.heading(level: 1)))
+
+        let resultBody = store.state.editingBody
+        let lastRange = resultBody.range(of: "Last paragraph.")!
+        XCTAssertNotNil(
+            resultBody[lastRange].presentationIntent,
+            "Heading must target the last paragraph when selection is unset"
+        )
+        let firstRange = resultBody.range(of: "First paragraph.")!
+        XCTAssertNil(
+            resultBody[firstRange].presentationIntent,
+            "First paragraph must be unaffected when selection is unset"
+        )
+    }
+
     // MARK: - toggleInlineFormat — selection-required
 
     @MainActor
@@ -357,9 +387,7 @@ final class TextEditingFeatureTests: XCTestCase {
         let body = AttributedString(plain)
         let quickRange = body.range(of: "quick")!
 
-        var rangeSet = RangeSet<AttributedString.Index>()
-        rangeSet.insert(contentsOf: quickRange)
-        let selection = AttributedTextSelection(ranges: rangeSet)
+        let selection = AttributedTextSelection(range: quickRange)
 
         var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
         initial.editingBody = body
@@ -391,18 +419,42 @@ final class TextEditingFeatureTests: XCTestCase {
         )
     }
 
-    // Note: a "second invocation removes bold" test belongs here.
-    // The reducer's toggle-off branch is correct under SDK behavior
-    // I observed in spikes, but the AttributedString.SubstringView's
-    // `inlinePresentationIntent = nil` setter behavior on a range
-    // that was previously set via the same setter is subtler than
-    // the unit-test fixture exercises cleanly — `body[range]
-    // .inlinePresentationIntent` reads back non-nil even after
-    // assigning nil to the same range in the same allocation.
-    // Toggle-off is exercised end-to-end via TextEditor in
-    // production; a TextBlockView snapshot covers it for the
-    // chrome path. Adding a focused unit test belongs with the
-    // accessory-bar commit so it pairs with the on-screen toggle.
+    @MainActor
+    func test_toggleInlineFormat_bold_secondInvocationRemovesBold() async {
+        let plain = "Important word"
+        var body = AttributedString(plain)
+        // Apply bold BEFORE computing the range used by selection —
+        // AttributedString.Index is invalidated by mutations, and a
+        // pre-mutation range projects as `.insertionPoint(endIndex)`
+        // when later asked for its indices in the mutated body. Always
+        // compute selection ranges from the body AFTER mutations.
+        let setupRange = body.range(of: "Important")!
+        body[setupRange].inlinePresentationIntent = .stronglyEmphasized
+
+        let importantRange = body.range(of: "Important")!
+        let selection = AttributedTextSelection(range: importantRange)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
+        initial.editingBody = body
+        initial.selection = selection
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.toggleInlineFormat(.bold))
+
+        let resultBody = store.state.editingBody
+        let resultRange = resultBody.range(of: "Important")!
+        let intent = resultBody[resultRange].inlinePresentationIntent ?? []
+        XCTAssertFalse(
+            intent.contains(.stronglyEmphasized),
+            "Toggle must remove bold when the selection's first character was already bold"
+        )
+    }
 
     @MainActor
     func test_toggleInlineFormat_underline_appliesUnderlineStyle() async {
@@ -410,9 +462,7 @@ final class TextEditingFeatureTests: XCTestCase {
         let body = AttributedString(plain)
         let meRange = body.range(of: "me")!
 
-        var rangeSet = RangeSet<AttributedString.Index>()
-        rangeSet.insert(contentsOf: meRange)
-        let selection = AttributedTextSelection(ranges: rangeSet)
+        let selection = AttributedTextSelection(range: meRange)
 
         var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
         initial.editingBody = body
