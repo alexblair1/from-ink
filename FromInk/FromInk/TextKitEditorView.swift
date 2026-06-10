@@ -56,10 +56,6 @@ struct TextKitEditorView: UIViewRepresentable {
     @Binding var document: RichTextDocument
     @Binding var selection: BlockTreeSelection
     let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
-    /// TEMPORARY — debug callback that fires at each stage of the
-    /// slash detection so the wiring view's debug strip can show
-    /// which check is failing.
-    var onSlashDebug: ((String) -> Void)? = nil
     /// Routed from the custom UITextView subclass's `keyCommands` to
     /// the wiring view, which maps each `EditorCommand` onto a TCA
     /// action. The editor view stays feature-agnostic — it doesn't
@@ -991,8 +987,6 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            parent.onSlashDebug?("should text='\(text)' loc=\(range.location)")
-
             if text == "/" {
                 let ns = textView.text as NSString
                 let isAtParagraphStart = range.location == 0
@@ -1000,24 +994,18 @@ struct TextKitEditorView: UIViewRepresentable {
                 let isAfterWhitespace = range.location > 0
                     && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
                 if isAtParagraphStart || isAfterWhitespace {
-                    // Set a pending flag; textViewDidChange will pick
-                    // this up AFTER the parse-back has fresh data.
-                    // This avoids the iOS-26 ordering quirk where the
-                    // async block ran before textViewDidChange.
+                    // Set a pending flag; textViewDidChange consumes
+                    // it AFTER parse-back has fresh data. See
+                    // `pendingSlashLocation` doc and commit c4a7597
+                    // for the iOS-26 ordering quirk this works around.
                     pendingSlashLocation = range.location
-                    parent.onSlashDebug?("PENDING slash at loc=\(range.location)")
-                } else {
-                    parent.onSlashDebug?("boundary FAIL")
                 }
             }
             return true
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            guard !isApplyingBindingUpdate else {
-                parent.onSlashDebug?("didChange SKIPPED (binding update)")
-                return
-            }
+            guard !isApplyingBindingUpdate else { return }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             let reflatten = TextKitEditorView.flatten(
                 document: parsed,
@@ -1027,27 +1015,21 @@ struct TextKitEditorView: UIViewRepresentable {
             self.flattenMap = reflatten.flattenMap
             self.flattenIDMap = reflatten.flattenIDMap
             self.lastSyncedDocument = parsed
-            parent.onSlashDebug?("didChange mapCount=\(reflatten.flattenMap.count) blocks=\(parsed.blocks.count)")
             if parsed != parent.document {
                 parent.document = parsed
             }
 
-            // Now consume any pending slash trigger from
-            // shouldChangeTextIn. The flatten map + parent.document
-            // are both freshly updated; the path we bridge will
-            // match the block id in the new document.
+            // Consume any pending slash trigger from shouldChangeTextIn.
+            // Flatten map + parent.document are both fresh now; the
+            // path we bridge matches the block id in the new document.
             if let slashLocation = pendingSlashLocation {
                 pendingSlashLocation = nil
                 let bridged = TextKitEditorView.selection(
                     forNSRange: NSRange(location: slashLocation, length: 0),
                     flattenMap: reflatten.flattenMap
                 )
-                parent.onSlashDebug?("slash bridge pathCount=\(bridged.path.count) startUTF16=\(bridged.startUTF16)")
                 if !bridged.path.isEmpty {
-                    parent.onSlashDebug?("calling onSlashTyped")
                     parent.onSlashTyped(bridged.path, bridged.startUTF16)
-                } else {
-                    parent.onSlashDebug?("slash ABORT path empty")
                 }
             }
         }

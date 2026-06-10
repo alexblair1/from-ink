@@ -25,17 +25,10 @@ struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
 
-    @State private var slashTypedCount: Int = 0
-    @State private var documentEditedCount: Int = 0
-    @State private var selectionChangedCount: Int = 0
-    @State private var slashDebugLog: [String] = []
-
     private let ds = DesignSystem.standard
 
     var body: some View {
         let paletteOpen = store.textEditing.slashPalette.isOpen
-        let matchedCount = store.textEditing.slashPalette.matchedCommands.count
-        let triggerOffset = store.textEditing.slashPalette.triggerOffset ?? -1
         return ZStack {
             Color.canvas.ignoresSafeArea()
 
@@ -55,35 +48,6 @@ struct TextNoteWiringView: View {
                 .accessibilityHidden(paletteOpen)
 
             slashPaletteOverlay
-
-            // TEMPORARY DEBUG — pinned to top-leading so we can see
-            // palette state regardless of where the popover renders.
-            // Remove once the slash menu is verified working.
-            VStack(alignment: .leading, spacing: 2) {
-                Text("DEBUG  isOpen=\(paletteOpen.description)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(paletteOpen ? Color.green : Color.red)
-                Text("matched=\(matchedCount)  trigger=\(triggerOffset)")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.white)
-                Text("documentEdited=\(documentEditedCount)  selectionChanged=\(selectionChangedCount)")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.white)
-                Text("slashTyped fires=\(slashTypedCount)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(slashTypedCount > 0 ? Color.green : Color.yellow)
-                ForEach(Array(slashDebugLog.enumerated()), id: \.offset) { _, event in
-                    Text(event)
-                        .font(.system(size: 9, weight: .regular, design: .monospaced))
-                        .foregroundStyle(Color.cyan)
-                }
-            }
-            .padding(6)
-            .background(Color.black.opacity(0.7))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.top, 40)
-            .padding(.leading, 8)
-            .allowsHitTesting(false)
         }
         .task { store.send(.onAppear) }
         .onDisappear {
@@ -100,22 +64,13 @@ struct TextNoteWiringView: View {
             persistFailureTitle: store.textEditing.lastPersistFailureReason
                 .map { _ in AppStrings.TextEditing.persistFailedBannerTitle },
             onDocumentEdited: { document in
-                documentEditedCount += 1
                 store.send(.textEditing(.documentEdited(document)))
             },
             onSelectionChanged: { selection in
-                selectionChangedCount += 1
                 store.send(.textEditing(.selectionChanged(selection)))
             },
             onSlashTyped: { path, offset in
-                slashTypedCount += 1
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
-            },
-            onSlashDebug: { event in
-                slashDebugLog.append(event)
-                if slashDebugLog.count > 10 {
-                    slashDebugLog.removeFirst(slashDebugLog.count - 10)
-                }
             },
             onEditorCommand: { command in
                 Self.handle(command: command, store: store)
