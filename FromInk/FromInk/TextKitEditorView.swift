@@ -987,25 +987,41 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            if text == "/" {
-                let ns = textView.text as NSString
-                let isAtParagraphStart = range.location == 0
-                    || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
-                let isAfterWhitespace = range.location > 0
-                    && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
-                if isAtParagraphStart || isAfterWhitespace {
-                    // Set a pending flag; textViewDidChange consumes
-                    // it AFTER parse-back has fresh data. See
-                    // `pendingSlashLocation` doc and commit c4a7597
-                    // for the iOS-26 ordering quirk this works around.
-                    pendingSlashLocation = range.location
-                }
+            // Any non-slash edit invalidates a previously-armed
+            // pending slash. Without this, a pending could leak
+            // across an unrelated typing burst and fire `slashTyped`
+            // for the wrong NSRange in a later didChange.
+            guard text == "/" else {
+                pendingSlashLocation = nil
+                return true
             }
+            let ns = textView.text as NSString
+            let isAtParagraphStart = range.location == 0
+                || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
+            let isAfterWhitespace = range.location > 0
+                && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
+            guard isAtParagraphStart || isAfterWhitespace else {
+                pendingSlashLocation = nil
+                return true
+            }
+            // Arm a pending slash; textViewDidChange consumes it
+            // AFTER parse-back has fresh data. See
+            // `pendingSlashLocation` doc and commit c4a7597 for the
+            // iOS-26 ordering quirk this works around.
+            pendingSlashLocation = range.location
             return true
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            guard !isApplyingBindingUpdate else { return }
+            guard !isApplyingBindingUpdate else {
+                // Programmatic re-apply is in flight. Don't consume a
+                // pending slash here — wait for the next genuine
+                // user-driven didChange. But DON'T clear pending
+                // either: the next didChange will validate before
+                // firing (see consume block below), so a stale flag
+                // can't fire spuriously.
+                return
+            }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             let reflatten = TextKitEditorView.flatten(
                 document: parsed,
@@ -1020,18 +1036,24 @@ struct TextKitEditorView: UIViewRepresentable {
             }
 
             // Consume any pending slash trigger from shouldChangeTextIn.
-            // Flatten map + parent.document are both fresh now; the
-            // path we bridge matches the block id in the new document.
-            if let slashLocation = pendingSlashLocation {
-                pendingSlashLocation = nil
-                let bridged = TextKitEditorView.selection(
-                    forNSRange: NSRange(location: slashLocation, length: 0),
-                    flattenMap: reflatten.flattenMap
-                )
-                if !bridged.path.isEmpty {
-                    parent.onSlashTyped(bridged.path, bridged.startUTF16)
-                }
-            }
+            // Validate first: the character at slashLocation must be
+            // a `/` in the current text — defends against any state
+            // shift between shouldChange and the consume (e.g. paste,
+            // autocorrect, programmatic edit).
+            guard let slashLocation = pendingSlashLocation else { return }
+            pendingSlashLocation = nil
+            guard let attributedText = textView.attributedText,
+                  slashLocation < attributedText.length else { return }
+            let charRange = NSRange(location: slashLocation, length: 1)
+            let char = (attributedText.string as NSString).substring(with: charRange)
+            guard char == "/" else { return }
+
+            let bridged = TextKitEditorView.selection(
+                forNSRange: NSRange(location: slashLocation, length: 0),
+                flattenMap: reflatten.flattenMap
+            )
+            guard !bridged.path.isEmpty else { return }
+            parent.onSlashTyped(bridged.path, bridged.startUTF16)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
