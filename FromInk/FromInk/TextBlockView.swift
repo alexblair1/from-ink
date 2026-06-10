@@ -76,6 +76,9 @@ struct TextBlockView: View {
                 onCaretAnchorMoved: { rect in
                     model.slashPopover.onAnchorMoved(rect)
                 },
+                onSlashFilterChanged: { filter in
+                    model.slashPopover.onFilterChanged(filter)
+                },
                 isSlashPaletteOpen: model.slashPopover.isOpen,
                 bodyFont: Self.serifBodyFont(),
                 bodyColor: UIColor(model.bodyColor)
@@ -206,6 +209,11 @@ extension TextBlockView {
         /// `@State` so the popover follows the slash glyph through
         /// scroll without us observing scroll from SwiftUI.
         let onAnchorMoved: (CGRect) -> Void
+        /// Live filter text computed storage-side per keystroke while
+        /// the palette is open (the document mirror is debounced —
+        /// EDD §22.4.1). `nil` means the trigger `/` was deleted; the
+        /// wiring dismisses.
+        let onFilterChanged: (String?) -> Void
         let onDismissed: () -> Void
 
         static let closed = SlashPopover(
@@ -214,6 +222,7 @@ extension TextBlockView {
             rows: [],
             filterText: "",
             onAnchorMoved: { _ in },
+            onFilterChanged: { _ in },
             onDismissed: {}
         )
     }

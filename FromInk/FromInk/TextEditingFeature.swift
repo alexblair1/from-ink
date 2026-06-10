@@ -899,7 +899,11 @@ extension TextEditingFeature {
         }
     }
 
-    private static func mark(for format: InlineFormat) -> Mark {
+    /// Internal (not fileprivate): the editor's imperative inline-
+    /// toggle surgery (`TextKitEditorView.Coordinator`) maps the same
+    /// command vocabulary onto the same Mark — one source of truth for
+    /// format → mark.
+    static func mark(for format: InlineFormat) -> Mark {
         switch format {
         case .bold:          return .bold
         case .italic:        return .italic
@@ -917,7 +921,12 @@ extension TextEditingFeature {
     /// Toggle direction is determined by whether EVERY covered run
     /// already carries the mark — if so we remove; otherwise we add.
     /// Matches the prior AttributedString-based behavior.
-    fileprivate static func applyMarkToInlineRuns(
+    ///
+    /// Internal (not fileprivate): the editor's imperative inline-
+    /// toggle surgery reuses this exact logic over runs parsed from
+    /// the text storage, so the storage path and the reducer path
+    /// cannot drift apart.
+    static func applyMarkToInlineRuns(
         runs: [Inline],
         mark: Mark,
         startUTF16: Int,

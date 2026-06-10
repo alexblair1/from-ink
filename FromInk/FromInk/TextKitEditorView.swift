@@ -73,6 +73,14 @@ struct TextKitEditorView: UIViewRepresentable {
     /// anchor tracks the slash glyph through scroll. Only fires
     /// while `isSlashPaletteOpen` is true.
     let onCaretAnchorMoved: (CGRect) -> Void
+    /// Live filter text while the palette is open, computed
+    /// STORAGE-side per keystroke (the document mirror is debounced
+    /// under the imperative boundary — EDD §22.4.1 — so it can't
+    /// drive realtime filtering). `nil` means the trigger `/` is gone
+    /// — the wiring dismisses the palette. The reducer's document-
+    /// based refresh still runs on each documentEdited and converges
+    /// to the same value.
+    let onSlashFilterChanged: (String?) -> Void
     /// True while the slash palette is presented. Tells the
     /// `Coordinator` to clear its pinned slash location when the
     /// palette closes (so scroll events stop emitting stale anchor
@@ -114,6 +122,30 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.delegate = context.coordinator
         textView.onEditorCommand = { [weak coordinator = context.coordinator] command in
             guard let coord = coordinator else { return }
+
+            // Inline-format toggles are HOT-path commands — applied
+            // as undo-registered storage surgery in the Coordinator
+            // (imperative boundary, EDD §22.4.1) instead of routing
+            // through the reducer + wholesale attributedText
+            // replacement (which destroyed native undo).
+            switch command {
+            case .toggleBold:          coord.applyInlineToggle(.bold);          return
+            case .toggleItalic:        coord.applyInlineToggle(.italic);        return
+            case .toggleUnderline:     coord.applyInlineToggle(.underline);     return
+            case .toggleStrikethrough: coord.applyInlineToggle(.strikethrough); return
+            case .toggleCode:          coord.applyInlineToggle(.code);          return
+            default:
+                break
+            }
+
+            // Everything else hands control to the reducer, whose
+            // document mirror may be debounce-stale — sync it first
+            // so a reducer-driven mutation can never wholesale-
+            // replace away the last few hundred ms of typing.
+            if let textView = coord.textView {
+                coord.syncDocumentFromStorage(textView)
+            }
+
             // ⌘⇧/ opens the palette without going through
             // `textViewDidChange` (no text was inserted), so the
             // typed-slash pin path doesn't fire. Pin here from the
@@ -142,6 +174,8 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.attributedText = initial.attributed
         context.coordinator.flattenMap = initial.flattenMap
         context.coordinator.flattenIDMap = initial.flattenIDMap
+        context.coordinator.pathIndex = Self.leafPathIndex(document)
+        context.coordinator.lastNewlineCount = Self.newlineCount(in: initial.attributed.string as NSString)
         // Default typing attributes for an empty document.
         textView.typingAttributes = Self.typingAttributes(
             for: .paragraph,
@@ -160,7 +194,14 @@ struct TextKitEditorView: UIViewRepresentable {
 
         // Body re-sync when the SwiftUI side diverges from what the
         // editor already shows. Documents are Equatable; only the
-        // shape comparison triggers a re-flatten.
+        // shape comparison triggers a re-flatten. Under the
+        // imperative boundary (EDD §22.4.1) this is the COLD-path
+        // reconciliation — reducer-driven mutations (slash commands,
+        // block formats, exit-list) land here; typing and inline
+        // toggles never do (the coordinator sets lastSyncedDocument
+        // before pushing the binding). Wholesale replacement clears
+        // the native undo stack — documented v1 cost of the cold
+        // path only.
         if document != context.coordinator.lastSyncedDocument {
             let flattened = Self.flatten(
                 document: document,
@@ -168,6 +209,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 bodyColor: bodyColor
             )
             context.coordinator.isApplyingBindingUpdate = true
+            context.coordinator.cancelPendingSync()
             let priorSelection = textView.selectedRange
             textView.attributedText = flattened.attributed
             // Restore caret to a valid position (clamp).
@@ -175,6 +217,8 @@ struct TextKitEditorView: UIViewRepresentable {
             textView.selectedRange = NSRange(location: clampedLocation, length: 0)
             context.coordinator.flattenMap = flattened.flattenMap
             context.coordinator.flattenIDMap = flattened.flattenIDMap
+            context.coordinator.pathIndex = Self.leafPathIndex(document)
+            context.coordinator.lastNewlineCount = Self.newlineCount(in: flattened.attributed.string as NSString)
             context.coordinator.lastSyncedDocument = document
 
             // Fix B3: refresh typingAttributes so the user's NEXT
@@ -197,12 +241,26 @@ struct TextKitEditorView: UIViewRepresentable {
             context.coordinator.isApplyingBindingUpdate = false
         }
 
-        // Selection re-sync.
-        if let nsRange = Self.nsRange(
-            for: selection,
-            flattenIDMap: context.coordinator.flattenIDMap,
-            totalLength: textView.attributedText.length
-        ), nsRange != textView.selectedRange {
+        // Selection re-sync — SEMANTICALLY gated. The flatten maps
+        // are rebuilt only at sync points, so their absolute offsets
+        // can be stale mid-typing; comparing raw NSRanges against a
+        // stale map would "correct" the caret to a wrong position on
+        // every keystroke. Bridge the textView's current selection
+        // (O(paragraph), always fresh) and only override when the
+        // reducer's selection genuinely differs — which happens
+        // exactly on reducer-driven mutations, where the maps were
+        // just rebuilt by the replace branch above.
+        let bridgedCurrent = Self.bridgeSelection(
+            storage: textView.attributedText,
+            selectedRange: textView.selectedRange,
+            pathIndex: context.coordinator.pathIndex
+        )
+        if selection != bridgedCurrent,
+           let nsRange = Self.nsRange(
+               for: selection,
+               flattenIDMap: context.coordinator.flattenIDMap,
+               totalLength: textView.attributedText.length
+           ), nsRange != textView.selectedRange {
             context.coordinator.isApplyingBindingUpdate = true
             textView.selectedRange = nsRange
             context.coordinator.isApplyingBindingUpdate = false
@@ -216,6 +274,16 @@ struct TextKitEditorView: UIViewRepresentable {
         // through the binding.
         if !isSlashPaletteOpen {
             context.coordinator.pinnedSlashLocation = nil
+        }
+    }
+
+    static func dismantleUIView(_ uiView: UITextView, coordinator: Coordinator) {
+        // Teardown flush: if a debounced sync is pending, the reducer
+        // is about to receive `.flush` (wiring's onDisappear) with a
+        // document missing the tail of the user's typing. Push the
+        // final parse through the binding before the view goes away.
+        if coordinator.hasPendingSync {
+            coordinator.syncDocumentFromStorage(uiView)
         }
     }
 
@@ -594,40 +662,37 @@ struct TextKitEditorView: UIViewRepresentable {
         }
     }
 
-    private static func appendLeaf(
+    /// Build a single paragraph's attributed content — inline runs
+    /// rendered with their mark attributes, paragraph-level attrs
+    /// (chrome / blockID / groupID / style) applied across, WITHOUT
+    /// the trailing newline. Shared by `appendLeaf` (full-document
+    /// flatten) and the Coordinator's paragraph-local surgery
+    /// (inline-format toggles), so the two paths can't drift apart
+    /// in attribute composition.
+    static func paragraphContent(
         runs: [Inline],
-        blockID: UUID,
-        path: [UUID],
         chrome: BlockChrome,
+        blockID: UUID,
         groupID: UUID?,
-        into mutable: NSMutableAttributedString,
-        map: inout FlattenMap,
-        bodyFont: UIFont,
-        bodyColor: UIColor,
         languageHint: String? = nil,
-        listItemID: UUID? = nil
-    ) {
-        let startLocation = mutable.length
+        listItemID: UUID? = nil,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) -> NSMutableAttributedString {
+        let mutable = NSMutableAttributedString()
         let font = font(for: chrome, bodyFont: bodyFont)
         let paragraphStyle = paragraphStyle(for: chrome)
         let foreground = foregroundColor(for: chrome, bodyColor: bodyColor)
 
         // Build the paragraph text by concatenating inline runs.
         for run in runs {
-            let runText = run.text
             let runAttributes: [NSAttributedString.Key: Any] = inlineAttributes(
                 marks: run.marks,
                 baseFont: font,
                 baseColor: foreground
             )
-            let runString = NSAttributedString(string: runText, attributes: runAttributes)
-            mutable.append(runString)
+            mutable.append(NSAttributedString(string: run.text, attributes: runAttributes))
         }
-        // If the leaf had no runs (empty paragraph), append an empty
-        // span to anchor the paragraph attributes.
-        let paragraphText = mutable.string as NSString
-        let paragraphLength = paragraphText.length - startLocation
-        let paragraphRange = NSRange(location: startLocation, length: paragraphLength)
 
         // Apply paragraph-level attributes (font fallback,
         // paragraphStyle, blockChrome + blockID + groupID).
@@ -647,7 +712,8 @@ struct TextKitEditorView: UIViewRepresentable {
         }
         // Apply paragraph attrs only to characters that DON'T already
         // carry a font (so inline-mark-induced fonts persist).
-        mutable.enumerateAttributes(in: paragraphRange, options: []) { attrs, range, _ in
+        let fullRange = NSRange(location: 0, length: mutable.length)
+        mutable.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
             if attrs[.font] == nil {
                 mutable.addAttribute(.font, value: font, range: range)
             }
@@ -658,6 +724,39 @@ struct TextKitEditorView: UIViewRepresentable {
                 mutable.addAttribute(key, value: value, range: range)
             }
         }
+        return mutable
+    }
+
+    private static func appendLeaf(
+        runs: [Inline],
+        blockID: UUID,
+        path: [UUID],
+        chrome: BlockChrome,
+        groupID: UUID?,
+        into mutable: NSMutableAttributedString,
+        map: inout FlattenMap,
+        bodyFont: UIFont,
+        bodyColor: UIColor,
+        languageHint: String? = nil,
+        listItemID: UUID? = nil
+    ) {
+        let startLocation = mutable.length
+        let font = font(for: chrome, bodyFont: bodyFont)
+        let paragraphStyle = paragraphStyle(for: chrome)
+        let foreground = foregroundColor(for: chrome, bodyColor: bodyColor)
+
+        let content = paragraphContent(
+            runs: runs,
+            chrome: chrome,
+            blockID: blockID,
+            groupID: groupID,
+            languageHint: languageHint,
+            listItemID: listItemID,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        mutable.append(content)
+        let paragraphRange = NSRange(location: startLocation, length: content.length)
 
         // Always tag the paragraph attributes even on an empty
         // paragraph (zero-length range can't carry attributes, but
@@ -1117,6 +1216,275 @@ struct TextKitEditorView: UIViewRepresentable {
         )
     }
 
+    // MARK: - Storage-side bridging (pure, testable)
+
+    /// Leaf-id → full block path for every leaf in `document`. Rebuilt
+    /// once per document sync (NOT per keystroke); the selection
+    /// bridge reads it so caret moves cost O(paragraph), never a
+    /// full-document walk. Path convention matches
+    /// `RichTextDocument.block(at:)` — container ids included,
+    /// ListItem ids skipped.
+    static func leafPathIndex(_ document: RichTextDocument) -> [UUID: [UUID]] {
+        var index: [UUID: [UUID]] = [:]
+        func walk(_ block: Block, prefix: [UUID]) {
+            let path = prefix + [block.id]
+            if block.isLeaf {
+                index[block.id] = path
+            }
+            for child in block.descendants {
+                walk(child, prefix: path)
+            }
+        }
+        for block in document.blocks {
+            walk(block, prefix: [])
+        }
+        return index
+    }
+
+    /// The paragraph's text range (EXCLUDING the trailing `\n`)
+    /// containing `location`, plus the probe location that carries the
+    /// paragraph's attributes — the first character, or the trailing
+    /// `\n` for an empty paragraph (flatten and `typingAttributes`
+    /// both tag the newline). `probe == nil` when the storage is
+    /// empty.
+    static func paragraphSlice(
+        at location: Int,
+        in storage: NSAttributedString
+    ) -> (textRange: NSRange, probe: Int?) {
+        let ns = storage.string as NSString
+        guard ns.length > 0 else { return (NSRange(location: 0, length: 0), nil) }
+        let clamped = max(0, min(location, ns.length))
+        let para = ns.paragraphRange(for: NSRange(location: clamped, length: 0))
+        // paragraphRange includes the trailing newline — exclude it.
+        var textLength = para.length
+        if textLength > 0, ns.character(at: para.location + textLength - 1) == 0x0A {
+            textLength -= 1
+        }
+        let textRange = NSRange(location: para.location, length: textLength)
+        let probe: Int?
+        if textRange.length > 0 {
+            probe = textRange.location
+        } else if textRange.location < ns.length {
+            probe = textRange.location          // the trailing \n itself
+        } else if textRange.location > 0 {
+            probe = textRange.location - 1      // final \n of the document
+        } else {
+            probe = nil
+        }
+        return (textRange, probe)
+    }
+
+    /// Bridge a UITextView selection into `BlockTreeSelection` by
+    /// reading the `.blockID` attribute at the caret's paragraph and
+    /// resolving the full path through `pathIndex`. O(paragraph) —
+    /// replaces the flatten-map scan that previously required a full
+    /// re-flatten per keystroke to stay fresh.
+    ///
+    /// Contract parity with the map-based bridge:
+    ///   - Multi-paragraph ranges clamp `endUTF16` to the host
+    ///     paragraph (single-leaf selection invariant, fix S2).
+    ///   - A caret on the phantom empty line AFTER the document's
+    ///     final `\n` returns the unset selection (empty path) —
+    ///     block-format actions resolve unset to the last leaf.
+    static func bridgeSelection(
+        storage: NSAttributedString,
+        selectedRange: NSRange,
+        pathIndex: [UUID: [UUID]]
+    ) -> BlockTreeSelection {
+        let ns = storage.string as NSString
+        guard ns.length > 0 else { return BlockTreeSelection() }
+        // Caret past the final newline → unset (matches the old
+        // bridge, whose map entries never cover that position).
+        if selectedRange.location >= ns.length,
+           ns.character(at: ns.length - 1) == 0x0A {
+            return BlockTreeSelection()
+        }
+        let (textRange, probe) = paragraphSlice(at: selectedRange.location, in: storage)
+        guard let probe, probe < storage.length,
+              let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID else {
+            return BlockTreeSelection()
+        }
+        // Fall back to a top-level path when the index hasn't seen
+        // this leaf yet (brand-new paragraph typed since the last
+        // sync; the next sync creates the block with this id).
+        let path = pathIndex[blockID] ?? [blockID]
+        let start = max(0, selectedRange.location - textRange.location)
+        let absoluteEnd = min(selectedRange.location + selectedRange.length, textRange.location + textRange.length)
+        let end = max(start, absoluteEnd - textRange.location)
+        return BlockTreeSelection(
+            path: path,
+            startUTF16: min(start, textRange.length),
+            endUTF16: min(end, textRange.length)
+        )
+    }
+
+    /// Rebuild the flatten maps by walking the STORAGE's paragraphs
+    /// and resolving paths through `pathIndex` — no throwaway
+    /// re-flatten of the whole document. Ranges exclude each
+    /// paragraph's trailing `\n`, matching `flatten`'s map contract.
+    static func maps(
+        fromStorage storage: NSAttributedString,
+        pathIndex: [UUID: [UUID]]
+    ) -> (flattenMap: FlattenMap, flattenIDMap: FlattenIDMap) {
+        let ns = storage.string as NSString
+        var map: FlattenMap = []
+        var idMap: FlattenIDMap = [:]
+        var cursor = 0
+        while cursor < ns.length {
+            let (textRange, probe) = paragraphSlice(at: cursor, in: storage)
+            if let probe, probe < storage.length,
+               let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID {
+                let path = pathIndex[blockID] ?? [blockID]
+                let entry = FlattenEntry(nsRange: textRange, blockPath: path)
+                map.append(entry)
+                idMap[blockID] = entry
+            }
+            cursor = textRange.location + textRange.length + 1  // skip the \n
+        }
+        return (map, idMap)
+    }
+
+    /// Count of `\n` characters — the structural-change discriminator.
+    /// A keystroke that doesn't change the paragraph count needs no
+    /// parse-back; one that does (Enter, paste with newlines,
+    /// cross-paragraph delete) syncs the document immediately.
+    static func newlineCount(in string: NSString) -> Int {
+        var count = 0
+        var cursor = 0
+        while cursor < string.length {
+            let next = string.range(of: "\n", options: [], range: NSRange(location: cursor, length: string.length - cursor))
+            if next.location == NSNotFound { break }
+            count += 1
+            cursor = next.location + 1
+        }
+        return count
+    }
+
+    /// Storage-side slash filter: the text between the pinned trigger
+    /// `/` and the end of its paragraph. Returns nil when the trigger
+    /// is no longer a `/` at that location (user deleted past it) —
+    /// the caller dismisses the palette. Replaces the reducer-side
+    /// per-keystroke document walk for live filtering; the reducer's
+    /// document-based refresh still runs on each (debounced)
+    /// `documentEdited` and converges to the same value.
+    static func slashFilter(
+        storage: NSAttributedString,
+        triggerLocation: Int
+    ) -> String? {
+        let ns = storage.string as NSString
+        guard triggerLocation >= 0, triggerLocation < ns.length,
+              ns.character(at: triggerLocation) == 0x2F else { return nil }
+        let (textRange, _) = paragraphSlice(at: triggerLocation, in: storage)
+        let filterStart = triggerLocation + 1
+        let filterEnd = textRange.location + textRange.length
+        guard filterStart <= filterEnd else { return "" }
+        return ns.substring(with: NSRange(location: filterStart, length: filterEnd - filterStart))
+    }
+
+    /// Storage-side variant of `shouldExitList`: Enter at a caret on
+    /// an EMPTY list-item paragraph exits the list. Reads emptiness
+    /// and chrome from the storage rather than the (possibly
+    /// debounce-stale) document, so a just-typed-then-deleted item
+    /// still exits correctly.
+    static func shouldExitList(
+        replacementText text: String,
+        replacementRange range: NSRange,
+        storage: NSAttributedString
+    ) -> Bool {
+        guard text == "\n", range.length == 0 else { return false }
+        let (textRange, probe) = paragraphSlice(at: range.location, in: storage)
+        guard textRange.length == 0,
+              let probe, probe < storage.length,
+              let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
+              let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
+        return chrome == .bulletListItem || chrome == .orderedListItem
+    }
+
+    /// Typing on the phantom tail line (the caret position AFTER the
+    /// document's final `\n`) creates a new paragraph whose
+    /// `.blockID` duplicates its predecessor's via `typingAttributes`
+    /// — WITHOUT changing the newline count, so the structural
+    /// detector doesn't fire. O(1) probe of the tail paragraph
+    /// against its predecessor; when true, the caller runs the same
+    /// identity fixups a structural edit would.
+    static func tailParagraphNeedsIdentityFixup(in storage: NSAttributedString) -> Bool {
+        let ns = storage.string as NSString
+        guard ns.length > 0, ns.character(at: ns.length - 1) != 0x0A else { return false }
+        let (tail, probe) = paragraphSlice(at: ns.length - 1, in: storage)
+        guard tail.location > 0,
+              let probe, probe < storage.length,
+              let tailID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID,
+              let prevID = storage.attribute(.blockID, at: tail.location - 1, effectiveRange: nil) as? UUID
+        else { return false }
+        return tailID == prevID
+    }
+
+    // MARK: - Paragraph identity hygiene (structural edits)
+
+    /// One planned attribute fix for a paragraph whose `.blockID`
+    /// duplicates an earlier paragraph's — the inheritance artifact of
+    /// `typingAttributes` carrying the prior paragraph's identity
+    /// across a native Enter (or an in-app rich paste). Detection is
+    /// pure so it can be unit-tested without a UITextView.
+    struct ParagraphIdentityFixup: Equatable {
+        /// Paragraph range INCLUDING the trailing `\n` (the newline
+        /// carries the paragraph attrs and must be retagged too).
+        let range: NSRange
+        let freshBlockID: UUID
+        /// Non-nil when the duplicate must also change chrome —
+        /// heading split demotes the second half to body (matches
+        /// Notion / Bear / Apple Notes and the reducer's
+        /// `insertParagraphAtCursor`).
+        let demoteToParagraph: Bool
+        /// Non-nil when the duplicate is a list item — the new row
+        /// needs its own ListItem identity while staying in the same
+        /// group.
+        let freshListItemID: UUID?
+    }
+
+    /// Detect duplicate-`.blockID` paragraphs after a structural edit.
+    /// The FIRST paragraph carrying an id keeps it (it's the original
+    /// — Enter splits leave the first half in place); each subsequent
+    /// duplicate gets a fresh id, plus a chrome demotion when the
+    /// duplicate is a heading (Enter-on-heading drops to body) and a
+    /// fresh ListItem id when it's a list row.
+    static func paragraphIdentityFixups(
+        in storage: NSAttributedString
+    ) -> [ParagraphIdentityFixup] {
+        let ns = storage.string as NSString
+        var seen: Set<UUID> = []
+        var fixups: [ParagraphIdentityFixup] = []
+        var cursor = 0
+        while cursor < ns.length {
+            let (textRange, probe) = paragraphSlice(at: cursor, in: storage)
+            let hasTrailingNewline = textRange.location + textRange.length < ns.length
+            let fullRange = NSRange(
+                location: textRange.location,
+                length: textRange.length + (hasTrailingNewline ? 1 : 0)
+            )
+            if let probe, probe < storage.length {
+                let attrs = storage.attributes(at: probe, effectiveRange: nil)
+                if let blockID = attrs[.blockID] as? UUID {
+                    if seen.contains(blockID) {
+                        let chrome = (attrs[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
+                        let isHeading = chrome == .heading1 || chrome == .heading2 || chrome == .heading3
+                        let isListItem = chrome == .bulletListItem || chrome == .orderedListItem
+                        fixups.append(ParagraphIdentityFixup(
+                            range: fullRange,
+                            freshBlockID: UUID(),
+                            demoteToParagraph: isHeading,
+                            freshListItemID: isListItem ? UUID() : nil
+                        ))
+                    } else {
+                        seen.insert(blockID)
+                    }
+                }
+            }
+            cursor = fullRange.location + max(fullRange.length, 1)
+        }
+        return fixups
+    }
+
     // MARK: - Slash trigger evaluation (pure, testable)
 
     /// Result of evaluating whether a single text change armed a
@@ -1228,6 +1596,24 @@ struct TextKitEditorView: UIViewRepresentable {
         /// (invariant: all three move together).
         var flattenIDMap: FlattenIDMap = [:]
 
+        /// Leaf-id → full block path, rebuilt at every document sync.
+        /// The per-keystroke selection bridge reads this so caret
+        /// moves cost O(paragraph) instead of a map scan over a
+        /// freshly re-flattened document.
+        var pathIndex: [UUID: [UUID]] = [:]
+
+        /// `\n` count at the last sync — the structural-change
+        /// discriminator. A didChange that doesn't move this number
+        /// didn't add/remove/merge paragraphs and needs no immediate
+        /// parse-back.
+        var lastNewlineCount: Int = 0
+
+        /// In-flight debounced document sync (typing path). Cancelled
+        /// and superseded by every keystroke; flushed immediately on
+        /// structural change, palette interaction, command handoff,
+        /// end-editing, and teardown.
+        private var syncTask: Task<Void, Never>? = nil
+
         /// Set while we're programmatically applying a binding-driven
         /// update; suppresses the delegate did-change callbacks so a
         /// binding write doesn't loop into another binding write.
@@ -1263,6 +1649,227 @@ struct TextKitEditorView: UIViewRepresentable {
             super.init()
         }
 
+        // MARK: - Document sync (imperative boundary, EDD §22.4.1)
+
+        /// Parse the storage into a document, rebuild the bridging
+        /// indexes, and push the result through the binding. The ONE
+        /// place storage → document flows. Sets `lastSyncedDocument`
+        /// BEFORE pushing so `updateUIView`'s reconciliation never
+        /// wholesale-replaces in response to our own push.
+        func syncDocumentFromStorage(_ textView: UITextView) {
+            cancelPendingSync()
+            let parsed = TextKitEditorView.parseBack(textView.attributedText)
+            pathIndex = TextKitEditorView.leafPathIndex(parsed)
+            let rebuilt = TextKitEditorView.maps(
+                fromStorage: textView.attributedText,
+                pathIndex: pathIndex
+            )
+            flattenMap = rebuilt.flattenMap
+            flattenIDMap = rebuilt.flattenIDMap
+            lastNewlineCount = TextKitEditorView.newlineCount(in: textView.text as NSString)
+            lastSyncedDocument = parsed
+            if parsed != parent.document {
+                parent.document = parsed
+            }
+        }
+
+        /// Typing path: defer the parse until the user pauses. The
+        /// reducer's own persist debounce stacks on top, so a save
+        /// lands ~idle + 600ms after the last keystroke — same order
+        /// of magnitude as before, without the per-keystroke
+        /// full-document parse + throwaway re-flatten.
+        func scheduleDebouncedSync(_ textView: UITextView) {
+            syncTask?.cancel()
+            syncTask = Task { [weak self, weak textView] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self, let textView else { return }
+                self.syncDocumentFromStorage(textView)
+            }
+        }
+
+        func cancelPendingSync() {
+            syncTask?.cancel()
+            syncTask = nil
+        }
+
+        /// True while a debounced sync is pending — the teardown path
+        /// uses this to decide whether a final flush is needed.
+        var hasPendingSync: Bool { syncTask != nil }
+
+        // MARK: - Storage surgery primitives
+
+        /// Replace characters in the storage, registering a
+        /// self-inverting undo operation (undo restores the prior
+        /// attributed substring; redo re-registers symmetrically) and
+        /// re-syncing the document after each undo/redo application
+        /// so the reducer's mirror follows the storage.
+        func replaceCharactersRegisteringUndo(
+            in textView: UITextView,
+            range: NSRange,
+            with replacement: NSAttributedString
+        ) {
+            let storage = textView.textStorage
+            guard range.location + range.length <= storage.length else { return }
+            let before = storage.attributedSubstring(from: range)
+            storage.replaceCharacters(in: range, with: replacement)
+            let newRange = NSRange(location: range.location, length: replacement.length)
+            textView.undoManager?.registerUndo(withTarget: self) { coordinator in
+                guard let tv = coordinator.textView else { return }
+                coordinator.replaceCharactersRegisteringUndo(in: tv, range: newRange, with: before)
+                coordinator.syncDocumentFromStorage(tv)
+            }
+        }
+
+        /// Toggle an inline format across the current selection as
+        /// paragraph-local storage surgery: parse the host paragraph's
+        /// runs, apply the SAME tested mark logic the reducer uses
+        /// (`TextEditingFeature.applyMarkToInlineRuns`), rebuild the
+        /// paragraph through the SAME attribute composer flatten uses
+        /// (`paragraphContent`), and swap it in with undo registered.
+        /// Text length is unchanged, so the selection restores
+        /// verbatim. Contract parity with the reducer path:
+        /// insertion-point selections no-op; code blocks ignore
+        /// inline formats; multi-paragraph selections clamp to the
+        /// host paragraph (fix S2).
+        func applyInlineToggle(_ format: TextEditingFeature.InlineFormat) {
+            guard let textView = self.textView,
+                  textView.markedTextRange == nil else { return }
+            let sel = textView.selectedRange
+            guard sel.length > 0 else { return }
+            let storage: NSTextStorage = textView.textStorage
+
+            let (paraRange, probe) = TextKitEditorView.paragraphSlice(at: sel.location, in: storage)
+            guard paraRange.length > 0, let probe, probe < storage.length else { return }
+            let attrs = storage.attributes(at: probe, effectiveRange: nil)
+            guard let chromeRaw = attrs[.blockChrome] as? Int,
+                  let chrome = BlockChrome(rawValue: chromeRaw),
+                  chrome != .codeBlock, chrome != .divider,
+                  let blockID = attrs[.blockID] as? UUID else { return }
+
+            let runs = TextKitEditorView.parseInlineRuns(
+                attributed: storage,
+                range: paraRange,
+                chrome: chrome
+            )
+            let clampedEnd = min(sel.location + sel.length, paraRange.location + paraRange.length)
+            let (rebuilt, _) = TextEditingFeature.applyMarkToInlineRuns(
+                runs: runs,
+                mark: TextEditingFeature.mark(for: format),
+                startUTF16: sel.location - paraRange.location,
+                endUTF16: clampedEnd - paraRange.location
+            )
+            let replacement = TextKitEditorView.paragraphContent(
+                runs: rebuilt,
+                chrome: chrome,
+                blockID: blockID,
+                groupID: attrs[.groupID] as? UUID,
+                languageHint: attrs[.fromInkLanguageHint] as? String,
+                listItemID: attrs[.fromInkListItemID] as? UUID,
+                bodyFont: parent.bodyFont,
+                bodyColor: parent.bodyColor
+            )
+            replaceCharactersRegisteringUndo(in: textView, range: paraRange, with: replacement)
+            // Same text, new attributes — the original selection is
+            // still valid (clamped to the paragraph like the bridge).
+            textView.selectedRange = NSRange(
+                location: sel.location,
+                length: clampedEnd - sel.location
+            )
+            syncDocumentFromStorage(textView)
+        }
+
+        /// Apply the post-structural-edit identity fixups (fresh
+        /// blockIDs on duplicate paragraphs, heading→body demotion,
+        /// fresh ListItem ids) with undo registered per fixup —
+        /// attribute restoration joins the native edit's undo group
+        /// (same runloop), so ⌘Z of an Enter restores both the text
+        /// AND the identity attributes.
+        func applyParagraphIdentityFixups(_ textView: UITextView) {
+            let storage: NSTextStorage = textView.textStorage
+            let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
+            guard !fixups.isEmpty else { return }
+            for fixup in fixups {
+                let snapshotBefore = storage.attributedSubstring(from: fixup.range)
+                storage.addAttribute(.blockID, value: fixup.freshBlockID, range: fixup.range)
+                if let freshItemID = fixup.freshListItemID {
+                    storage.addAttribute(.fromInkListItemID, value: freshItemID, range: fixup.range)
+                }
+                if fixup.demoteToParagraph {
+                    demoteToBodyParagraph(storage: storage, range: fixup.range)
+                }
+                registerAttributeRestore(
+                    snapshotBefore,
+                    at: fixup.range.location,
+                    in: textView
+                )
+            }
+            // The caret usually sits inside a just-fixed paragraph —
+            // refresh typingAttributes so the next keystroke inherits
+            // the fixed identity, not the pre-split one.
+            TextKitEditorView.refreshTypingAttributes(
+                textView: textView,
+                document: lastSyncedDocument,
+                selection: parent.selection,
+                bodyFont: parent.bodyFont,
+                bodyColor: parent.bodyColor
+            )
+        }
+
+        /// Demote a heading paragraph to body chrome in place: chrome
+        /// + paragraph style + per-run font retargeting that preserves
+        /// bold/italic traits (inline marks survive the demotion, the
+        /// heading typography doesn't).
+        private func demoteToBodyParagraph(storage: NSTextStorage, range: NSRange) {
+            storage.addAttribute(.blockChrome, value: BlockChrome.paragraph.rawValue, range: range)
+            storage.addAttribute(
+                .paragraphStyle,
+                value: TextKitEditorView.paragraphStyle(for: .paragraph),
+                range: range
+            )
+            let bodyFont = parent.bodyFont
+            storage.enumerateAttribute(.font, in: range, options: []) { value, runRange, _ in
+                guard let oldFont = value as? UIFont else {
+                    storage.addAttribute(.font, value: bodyFont, range: runRange)
+                    return
+                }
+                let oldTraits = oldFont.fontDescriptor.symbolicTraits
+                var newTraits = bodyFont.fontDescriptor.symbolicTraits
+                if oldTraits.contains(.traitBold) { newTraits.insert(.traitBold) }
+                if oldTraits.contains(.traitItalic) { newTraits.insert(.traitItalic) }
+                let retargeted = bodyFont.fontDescriptor.withSymbolicTraits(newTraits)
+                    .map { UIFont(descriptor: $0, size: 0) } ?? bodyFont
+                storage.addAttribute(.font, value: retargeted, range: runRange)
+            }
+        }
+
+        /// Register a self-inverting attribute-restore undo op: undo
+        /// re-applies `snapshot`'s attributes over the same range and
+        /// registers the inverse again so redo works symmetrically.
+        private func registerAttributeRestore(
+            _ snapshot: NSAttributedString,
+            at location: Int,
+            in textView: UITextView
+        ) {
+            textView.undoManager?.registerUndo(withTarget: self) { coordinator in
+                guard let tv = coordinator.textView else { return }
+                let storage = tv.textStorage
+                let range = NSRange(location: location, length: snapshot.length)
+                guard range.location + range.length <= storage.length else { return }
+                let current = storage.attributedSubstring(from: range)
+                snapshot.enumerateAttributes(
+                    in: NSRange(location: 0, length: snapshot.length),
+                    options: []
+                ) { attrs, runRange, _ in
+                    storage.setAttributes(
+                        attrs,
+                        range: NSRange(location: location + runRange.location, length: runRange.length)
+                    )
+                }
+                coordinator.registerAttributeRestore(current, at: location, in: tv)
+                coordinator.syncDocumentFromStorage(tv)
+            }
+        }
+
         // MARK: - UITextViewDelegate
 
         func textView(
@@ -1295,38 +1902,32 @@ struct TextKitEditorView: UIViewRepresentable {
                 pendingSlashLocation = nil
             }
 
-            // Empty-list-item Enter → exit the list. The exit
-            // happens through the reducer; we suppress the newline
-            // here so the user never sees a fleeting extra empty
-            // item before the format flips. Lookup uses the
-            // freshly-parsed `parent.document` (kept in sync by
-            // `textViewDidChange`), so this works as soon as the
-            // user's prior edits have settled.
+            // Empty-list-item Enter → exit the list. The exit goes
+            // through the reducer (cold path); we suppress the
+            // newline so the user never sees a fleeting extra empty
+            // item before the format flips. Emptiness + chrome are
+            // read from the STORAGE (always fresh) rather than the
+            // debounce-stale document, and the document is synced
+            // first so the reducer's surgery starts from current
+            // content.
             if TextKitEditorView.shouldExitList(
                 replacementText: text,
                 replacementRange: range,
-                selection: parent.selection,
-                document: parent.document
+                storage: textView.attributedText
             ) {
                 pendingSlashLocation = nil
+                syncDocumentFromStorage(textView)
                 parent.onCommand(.exitList)
                 return false
             }
 
-            // Generic Enter on any other leaf (non-empty list
-            // item, top-level paragraph, heading, blockquote
-            // paragraph) — route through the reducer so the
-            // document is the source of truth for paragraph
-            // structure. See `EditorCommand.insertParagraph` for
-            // the rationale. Only the literal `\n` insertion case;
-            // multi-character pastes that contain newlines still
-            // fall through to UIKit + parse-back.
-            if text == "\n", range.length == 0, !parent.selection.path.isEmpty {
-                pendingSlashLocation = nil
-                parent.onCommand(.insertParagraph)
-                return false
-            }
-
+            // Every other Enter is UIKit-native (imperative boundary,
+            // EDD §22.4.1): the input system inserts the newline —
+            // undo-registered, IME-safe, marks split correctly by
+            // attribute continuation — and `textViewDidChange`'s
+            // structural path assigns the new paragraph its identity
+            // (fresh blockID, heading demotion) before the immediate
+            // document sync.
             return true
         }
 
@@ -1347,17 +1948,46 @@ struct TextKitEditorView: UIViewRepresentable {
             // final didChange with `markedTextRange == nil`, which
             // re-syncs everything below.
             guard textView.markedTextRange == nil else { return }
-            let parsed = TextKitEditorView.parseBack(textView.attributedText)
-            let reflatten = TextKitEditorView.flatten(
-                document: parsed,
-                bodyFont: parent.bodyFont,
-                bodyColor: parent.bodyColor
-            )
-            self.flattenMap = reflatten.flattenMap
-            self.flattenIDMap = reflatten.flattenIDMap
-            self.lastSyncedDocument = parsed
-            if parsed != parent.document {
-                parent.document = parsed
+
+            // Structural change? (Enter, paste with newlines,
+            // cross-paragraph delete.) Paragraph identity must be
+            // fixed up and the document synced NOW — selection
+            // bridging and reducer surgery depend on fresh structure.
+            // Plain typing schedules a debounced sync instead: no
+            // full-document parse, no throwaway re-flatten, per
+            // keystroke (EDD §22.4.1).
+            let newlines = TextKitEditorView.newlineCount(in: textView.text as NSString)
+            let isStructural = newlines != lastNewlineCount
+            // Typing past the final `\n` mints a new paragraph
+            // without moving the newline count — same identity
+            // problem, same fixups.
+            let needsTailFixup = !isStructural
+                && TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText)
+            if isStructural || needsTailFixup {
+                applyParagraphIdentityFixups(textView)
+            }
+
+            // While the palette is open (or a trigger is pending),
+            // every keystroke syncs immediately — a palette command
+            // is a reducer-driven mutation, and the reducer must
+            // never act on a document missing the last few hundred
+            // ms of typing.
+            let paletteInteraction = pinnedSlashLocation != nil || pendingSlashLocation != nil
+            if isStructural || needsTailFixup || paletteInteraction {
+                syncDocumentFromStorage(textView)
+            } else {
+                scheduleDebouncedSync(textView)
+            }
+
+            // Live filter republish while the palette is open —
+            // computed storage-side; nil dismisses (trigger deleted).
+            if let pinned = pinnedSlashLocation {
+                parent.onSlashFilterChanged(
+                    TextKitEditorView.slashFilter(
+                        storage: textView.attributedText,
+                        triggerLocation: pinned
+                    )
+                )
             }
 
             // Consume any pending slash trigger from shouldChangeTextIn.
@@ -1373,9 +2003,10 @@ struct TextKitEditorView: UIViewRepresentable {
             let char = (attributedText.string as NSString).substring(with: charRange)
             guard char == "/" else { return }
 
-            let bridged = TextKitEditorView.selection(
-                forNSRange: NSRange(location: slashLocation, length: 0),
-                flattenMap: reflatten.flattenMap
+            let bridged = TextKitEditorView.bridgeSelection(
+                storage: attributedText,
+                selectedRange: NSRange(location: slashLocation, length: 0),
+                pathIndex: pathIndex
             )
             guard !bridged.path.isEmpty else { return }
 
@@ -1398,13 +2029,30 @@ struct TextKitEditorView: UIViewRepresentable {
             parent.onSlashTyped(bridged.path, bridged.startUTF16, caretRect)
         }
 
+        func textViewDidEndEditing(_ textView: UITextView) {
+            // Keyboard dismissal / focus loss — flush any pending
+            // debounced sync so the reducer's flush-on-disappear
+            // persists current content, not content minus the last
+            // few hundred ms of typing.
+            if hasPendingSync {
+                syncDocumentFromStorage(textView)
+            }
+        }
+
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !isApplyingBindingUpdate else { return }
-            let bridged = TextKitEditorView.selection(
-                forNSRange: textView.selectedRange,
-                flattenMap: flattenMap
+            // Attribute-based bridge: O(paragraph) against the live
+            // storage. The flatten maps are only rebuilt at sync
+            // points and their offsets go stale between keystrokes —
+            // the bridge never does.
+            let bridged = TextKitEditorView.bridgeSelection(
+                storage: textView.attributedText,
+                selectedRange: textView.selectedRange,
+                pathIndex: pathIndex
             )
-            parent.selection = bridged
+            if bridged != parent.selection {
+                parent.selection = bridged
+            }
         }
 
         // MARK: - UIScrollViewDelegate

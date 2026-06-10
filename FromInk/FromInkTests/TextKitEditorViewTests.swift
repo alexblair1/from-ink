@@ -985,5 +985,198 @@ final class TextKitEditorViewTests: XCTestCase {
             2
         )
     }
+
+    // MARK: - Storage-side selection bridge
+
+    func test_bridgeSelection_resolvesNestedLeafPathAndParagraphLocalOffsets() {
+        let listLeafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "intro")])),
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(id: listLeafID, kind: .paragraph(inline: [Inline(text: "item one")]))])
+            ]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let pathIndex = TextKitEditorView.leafPathIndex(doc)
+
+        // "intro\nitem one\n" — caret inside "item one" at its
+        // local offset 5 (absolute 6 + 5 = 11).
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: result.attributed,
+            selectedRange: NSRange(location: 11, length: 3),
+            pathIndex: pathIndex
+        )
+        XCTAssertEqual(bridged.path, [doc.blocks[1].id, listLeafID], "Path includes the list container, skips the ListItem id")
+        XCTAssertEqual(bridged.startUTF16, 5)
+        XCTAssertEqual(bridged.endUTF16, 8)
+    }
+
+    func test_bridgeSelection_multiParagraphRange_clampsToHostLeaf() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "first")])),
+            Block(kind: .paragraph(inline: [Inline(text: "second")]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let pathIndex = TextKitEditorView.leafPathIndex(doc)
+
+        // Drag from "fi|rst" into "second" — clamps to first leaf
+        // (single-leaf selection invariant, fix S2).
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: result.attributed,
+            selectedRange: NSRange(location: 2, length: 8),
+            pathIndex: pathIndex
+        )
+        XCTAssertEqual(bridged.path, [doc.blocks[0].id])
+        XCTAssertEqual(bridged.startUTF16, 2)
+        XCTAssertEqual(bridged.endUTF16, 5, "End clamps to the host paragraph's length")
+    }
+
+    func test_bridgeSelection_caretPastFinalNewline_returnsUnset() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "tail")]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: result.attributed,
+            selectedRange: NSRange(location: result.attributed.length, length: 0),
+            pathIndex: TextKitEditorView.leafPathIndex(doc)
+        )
+        XCTAssertTrue(bridged.isUnset, "Phantom line after the final \\n matches the old map-based bridge's unset contract")
+    }
+
+    func test_mapsFromStorage_matchesFlattenMapRanges() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [Inline(text: "Body text")])),
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "row")]))])
+            ]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let rebuilt = TextKitEditorView.maps(
+            fromStorage: result.attributed,
+            pathIndex: TextKitEditorView.leafPathIndex(doc)
+        )
+        XCTAssertEqual(rebuilt.flattenMap, result.flattenMap, "Storage-derived maps must equal flatten's — same ranges, same paths")
+    }
+
+    // MARK: - Paragraph identity hygiene
+
+    /// Append a paragraph to flatten output the way native typing
+    /// does: text + trailing newline inheriting the LAST paragraph's
+    /// attributes (the typingAttributes carry-forward that produces
+    /// duplicate blockIDs after Enter).
+    private func appendInheritedParagraph(
+        _ text: String,
+        to attributed: NSAttributedString,
+        terminated: Bool = true
+    ) -> NSMutableAttributedString {
+        let mutable = NSMutableAttributedString(attributedString: attributed)
+        let inherited = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
+        mutable.append(NSAttributedString(string: terminated ? text + "\n" : text, attributes: inherited))
+        return mutable
+    }
+
+    func test_paragraphIdentityFixups_duplicateHeading_demotesAndMintsFreshID() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 2, inline: [Inline(text: "Heading")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // Simulate Enter-at-end-of-heading + typing: a second
+        // paragraph carrying the SAME blockID + heading chrome.
+        let storage = appendInheritedParagraph("body", to: flat.attributed)
+
+        let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
+        XCTAssertEqual(fixups.count, 1)
+        let fixup = fixups[0]
+        XCTAssertTrue(fixup.demoteToParagraph, "Duplicate heading paragraph demotes to body — Enter on a heading drops to body text")
+        XCTAssertNil(fixup.freshListItemID)
+        XCTAssertNotEqual(fixup.freshBlockID, doc.blocks[0].id)
+        // The fixup covers the SECOND paragraph (including its \n).
+        XCTAssertEqual(fixup.range, NSRange(location: 8, length: 5), "Range covers 'body\\n' after 'Heading\\n'")
+    }
+
+    func test_paragraphIdentityFixups_duplicateListItem_keepsChromeMintsFreshItemID() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "first")]))])
+            ]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let storage = appendInheritedParagraph("second", to: flat.attributed)
+
+        let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
+        XCTAssertEqual(fixups.count, 1)
+        let fixup = fixups[0]
+        XCTAssertFalse(fixup.demoteToParagraph, "List rows keep their chrome — Enter continues the list")
+        XCTAssertNotNil(fixup.freshListItemID, "The new row needs its own ListItem identity")
+    }
+
+    func test_paragraphIdentityFixups_uniqueIDs_noFixups() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "one")])),
+            Block(kind: .paragraph(inline: [Inline(text: "two")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertTrue(TextKitEditorView.paragraphIdentityFixups(in: flat.attributed).isEmpty)
+    }
+
+    func test_tailParagraphNeedsIdentityFixup_detectsPhantomLineTyping() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "para")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertFalse(TextKitEditorView.tailParagraphNeedsIdentityFixup(in: flat.attributed))
+
+        // Typing on the phantom line after the final \n — inherited
+        // attrs, NO trailing newline, newline count unchanged.
+        let typed = appendInheritedParagraph("x", to: flat.attributed, terminated: false)
+        XCTAssertTrue(TextKitEditorView.tailParagraphNeedsIdentityFixup(in: typed))
+    }
+
+    // MARK: - Storage-side exit-list + slash filter
+
+    func test_shouldExitList_storageBased_emptyListItem_true_nonEmpty_false() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "full")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // "full\n\n" — the empty item's paragraph is at location 5.
+        XCTAssertTrue(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 5, length: 0),
+            storage: flat.attributed
+        ))
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 2, length: 0),
+            storage: flat.attributed
+        ), "Non-empty list item gets the native Enter (split into a new row)")
+    }
+
+    func test_slashFilter_returnsTextAfterTrigger_andNilWhenTriggerGone() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "see /head below")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertEqual(
+            TextKitEditorView.slashFilter(storage: flat.attributed, triggerLocation: 4),
+            "head below",
+            "Filter is the slice from after the trigger to the paragraph end"
+        )
+        XCTAssertNil(
+            TextKitEditorView.slashFilter(storage: flat.attributed, triggerLocation: 0),
+            "Location no longer holding a `/` dismisses"
+        )
+    }
+
+    func test_newlineCount_countsParagraphTerminators() {
+        XCTAssertEqual(TextKitEditorView.newlineCount(in: "" as NSString), 0)
+        XCTAssertEqual(TextKitEditorView.newlineCount(in: "abc" as NSString), 0)
+        XCTAssertEqual(TextKitEditorView.newlineCount(in: "a\nb\nc\n" as NSString), 3)
+    }
 }
 #endif

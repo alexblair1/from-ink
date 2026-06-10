@@ -100,6 +100,17 @@ struct TextNoteWiringView: View {
                     // textView scrolls.
                     slashPopoverAnchorRect = rect
                 },
+                onFilterChanged: { filter in
+                    // Storage-side live filter (the reducer's
+                    // document-based refresh converges to the same
+                    // value on each debounced documentEdited). nil
+                    // means the trigger `/` was deleted.
+                    if let filter {
+                        store.send(.textEditing(.slashPalette(.filterChanged(filter))))
+                    } else {
+                        store.send(.textEditing(.slashPalette(.dismissed)))
+                    }
+                },
                 onDismissed: {
                     store.send(.textEditing(.slashPalette(.dismissed)))
                 }
