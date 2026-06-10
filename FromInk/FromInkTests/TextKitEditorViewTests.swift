@@ -538,6 +538,123 @@ final class TextKitEditorViewTests: XCTestCase {
         ])
     }
 
+    // MARK: - evaluateSlashTrigger (pure)
+
+    func test_slashTrigger_emptyDocument_armsAtZero() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 0, length: 0),
+            currentText: ""
+        )
+        XCTAssertEqual(result, .armed(location: 0))
+    }
+
+    func test_slashTrigger_afterNewline_arms() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 6, length: 0),
+            currentText: "Hello\n"
+        )
+        XCTAssertEqual(result, .armed(location: 6))
+    }
+
+    func test_slashTrigger_afterSpace_arms() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 6, length: 0),
+            currentText: "Hello "
+        )
+        XCTAssertEqual(result, .armed(location: 6))
+    }
+
+    func test_slashTrigger_afterTab_arms() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 6, length: 0),
+            currentText: "Hello\t"
+        )
+        XCTAssertEqual(result, .armed(location: 6), "Tab is whitespace — should arm")
+    }
+
+    func test_slashTrigger_afterNonBreakingSpace_arms() {
+        // U+00A0 NO-BREAK SPACE — common in PDF / RTF imports.
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 6, length: 0),
+            currentText: "Hello\u{00A0}"
+        )
+        XCTAssertEqual(result, .armed(location: 6), "Non-breaking space is whitespace")
+    }
+
+    func test_slashTrigger_afterIdeographicSpace_arms() {
+        // U+3000 IDEOGRAPHIC SPACE — common on CJK keyboards.
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 6, length: 0),
+            currentText: "Hello\u{3000}"
+        )
+        XCTAssertEqual(result, .armed(location: 6), "Ideographic space is whitespace")
+    }
+
+    func test_slashTrigger_midWord_isClear() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 5, length: 0),
+            currentText: "Hello"
+        )
+        XCTAssertEqual(result, .clear, "Slash after 'Hello' (no boundary) must not arm")
+    }
+
+    func test_slashTrigger_afterEmoji_isClear_notACrash() {
+        // 👋 is U+1F44B — a surrogate pair (2 UTF-16 code units).
+        // Pre-fix: substringing the lone trailing surrogate would
+        // either crash or return an invalid scalar.
+        // Post-fix: Character-based evaluation sees the FULL emoji
+        // grapheme, recognizes it as non-whitespace, returns .clear.
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 2, length: 0),
+            currentText: "👋"
+        )
+        XCTAssertEqual(result, .clear, "Slash after emoji is not at a boundary")
+    }
+
+    func test_slashTrigger_afterEmojiAndSpace_arms() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 3, length: 0),
+            currentText: "👋 "
+        )
+        XCTAssertEqual(result, .armed(location: 3), "Slash after emoji + space arms")
+    }
+
+    func test_slashTrigger_replacementTextIsNotSlash_clears() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "a",
+            replacementRange: NSRange(location: 0, length: 0),
+            currentText: ""
+        )
+        XCTAssertEqual(result, .clear, "Any non-slash text clears pending")
+    }
+
+    func test_slashTrigger_multiCharReplacement_isClear() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "Hi /",
+            replacementRange: NSRange(location: 0, length: 0),
+            currentText: ""
+        )
+        XCTAssertEqual(result, .clear, "Paste / autocorrect / predictive multi-char inputs don't arm (v1 limitation)")
+    }
+
+    func test_slashTrigger_outOfRangeLocation_isClear_notACrash() {
+        let result = TextKitEditorView.evaluateSlashTrigger(
+            replacementText: "/",
+            replacementRange: NSRange(location: 99, length: 0),
+            currentText: "Hi"
+        )
+        XCTAssertEqual(result, .clear)
+    }
+
     func test_blockTreeTextView_onEditorCommand_firesForListShortcuts() {
         let textView = BlockTreeTextView()
         var receivedCommands: [EditorCommand] = []

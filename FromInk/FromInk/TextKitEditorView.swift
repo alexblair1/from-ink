@@ -937,6 +937,58 @@ struct TextKitEditorView: UIViewRepresentable {
         )
     }
 
+    // MARK: - Slash trigger evaluation (pure, testable)
+
+    /// Result of evaluating whether a single text change armed a
+    /// pending slash trigger. The Coordinator stores `.armed` and
+    /// clears on `.clear`; nothing else fires `onSlashTyped`.
+    enum SlashTriggerEvaluation: Equatable {
+        case armed(location: Int)
+        case clear
+    }
+
+    /// Pure function: given a `shouldChangeTextIn` replacement and
+    /// the current pre-mutation text, decide whether to arm a
+    /// pending slash trigger. Lives outside the Coordinator so it
+    /// can be unit-tested without a UITextView.
+    ///
+    /// Trigger semantics:
+    ///   1. The replacement text must be exactly `"/"`. Multi-character
+    ///      replacements (paste, autocorrect, predictive insert) do
+    ///      NOT arm — v1 limitation.
+    ///   2. The character BEFORE `range.location` must be a paragraph
+    ///      boundary: either the start of the document, a newline,
+    ///      or any Unicode whitespace (`Character.isWhitespace`,
+    ///      which covers tab, non-breaking space, ideographic space,
+    ///      em/en spaces, and Unicode whitespace generally).
+    ///   3. The previous character is read by Character (grapheme
+    ///      cluster), NOT by UTF-16 code unit — so a slash typed
+    ///      after an emoji or a flag is correctly evaluated against
+    ///      the FULL preceding cluster, not a lone surrogate.
+    static func evaluateSlashTrigger(
+        replacementText text: String,
+        replacementRange range: NSRange,
+        currentText: String
+    ) -> SlashTriggerEvaluation {
+        guard text == "/" else { return .clear }
+        if range.location == 0 { return .armed(location: range.location) }
+
+        // Find the character immediately preceding the replacement
+        // range. `range.location` is in UTF-16 code units; we need
+        // to walk back to the previous grapheme cluster boundary.
+        let utf16 = currentText.utf16
+        guard range.location <= utf16.count else { return .clear }
+        let cutoff = utf16.index(utf16.startIndex, offsetBy: range.location)
+        let prefix = String(utf16[utf16.startIndex..<cutoff]) ?? ""
+        guard let prev = prefix.last else {
+            return .armed(location: range.location)
+        }
+        if prev.isNewline || prev.isWhitespace {
+            return .armed(location: range.location)
+        }
+        return .clear
+    }
+
     // MARK: - Coordinator
 
     @MainActor
@@ -987,28 +1039,16 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            // Any non-slash edit invalidates a previously-armed
-            // pending slash. Without this, a pending could leak
-            // across an unrelated typing burst and fire `slashTyped`
-            // for the wrong NSRange in a later didChange.
-            guard text == "/" else {
+            switch TextKitEditorView.evaluateSlashTrigger(
+                replacementText: text,
+                replacementRange: range,
+                currentText: textView.text ?? ""
+            ) {
+            case .armed(let location):
+                pendingSlashLocation = location
+            case .clear:
                 pendingSlashLocation = nil
-                return true
             }
-            let ns = textView.text as NSString
-            let isAtParagraphStart = range.location == 0
-                || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
-            let isAfterWhitespace = range.location > 0
-                && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
-            guard isAtParagraphStart || isAfterWhitespace else {
-                pendingSlashLocation = nil
-                return true
-            }
-            // Arm a pending slash; textViewDidChange consumes it
-            // AFTER parse-back has fresh data. See
-            // `pendingSlashLocation` doc and commit c4a7597 for the
-            // iOS-26 ordering quirk this works around.
-            pendingSlashLocation = range.location
             return true
         }
 
