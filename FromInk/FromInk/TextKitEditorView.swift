@@ -1020,14 +1020,11 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            guard !isApplyingBindingUpdate else { return }
-            // Parse the entire attributed text back to a
-            // RichTextDocument. v1 simplification — coarse but
-            // correct. A future iteration can swap in a diff-aware
-            // parser to preserve block IDs across structural edits.
+            guard !isApplyingBindingUpdate else {
+                parent.onSlashDebug?("didChange SKIPPED (isApplyingBindingUpdate=true)")
+                return
+            }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
-            // Refresh the flatten map so future selection bridges
-            // resolve against the updated text.
             let reflatten = TextKitEditorView.flatten(
                 document: parsed,
                 bodyFont: parent.bodyFont,
@@ -1036,6 +1033,7 @@ struct TextKitEditorView: UIViewRepresentable {
             self.flattenMap = reflatten.flattenMap
             self.flattenIDMap = reflatten.flattenIDMap
             self.lastSyncedDocument = parsed
+            parent.onSlashDebug?("didChange mapCount=\(reflatten.flattenMap.count) blocks=\(parsed.blocks.count)")
             if parsed != parent.document {
                 parent.document = parsed
             }
