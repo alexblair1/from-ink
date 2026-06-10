@@ -1728,6 +1728,23 @@ struct TextKitEditorView: UIViewRepresentable {
             if parsed != parent.document {
                 parent.document = parsed
             }
+            // Re-mirror the selection AFTER the document: identity
+            // hygiene can reassign the caret paragraph's blockID
+            // (fresh id on the new line after Enter) WITHOUT a
+            // selection change, leaving the reducer's selection
+            // naming the OLD block. updateUIView's semantic gate
+            // would then "correct" the caret back to the old
+            // paragraph — the caret-jumps-to-previous-line bug.
+            // Bridging against the freshly rebuilt pathIndex keeps
+            // the reducer's mirror agreeing with storage identity.
+            let bridged = TextKitEditorView.bridgeSelection(
+                storage: textView.attributedText,
+                selectedRange: textView.selectedRange,
+                pathIndex: pathIndex
+            )
+            if bridged != parent.selection {
+                parent.selection = bridged
+            }
         }
 
         /// Typing path: defer the parse until the user pauses. The

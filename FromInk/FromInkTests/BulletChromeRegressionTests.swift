@@ -25,9 +25,16 @@ final class BulletChromeRegressionTests: XCTestCase {
 
     /// Full editor rig: hand-built TextKit 1 stack + a real
     /// Coordinator wired as delegate, exactly like `makeUIView`.
+    /// Observable stand-in for the reducer's mirrored state — the rig
+    /// asserts what the coordinator pushes through the bindings.
+    private final class ReducerMirror {
+        var document: RichTextDocument = .empty
+        var selection: BlockTreeSelection = BlockTreeSelection()
+    }
+
     private func makeEditorRig(
         document: RichTextDocument
-    ) -> (textView: UITextView, coordinator: TextKitEditorView.Coordinator) {
+    ) -> (textView: UITextView, coordinator: TextKitEditorView.Coordinator, mirror: ReducerMirror) {
         let storage = NSTextStorage()
         let layoutManager = BlockDecoratingLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -42,9 +49,11 @@ final class BulletChromeRegressionTests: XCTestCase {
         textView.textColor = bodyColor
         textView.textContainer.lineFragmentPadding = 0
 
+        let mirror = ReducerMirror()
+        mirror.document = document
         let view = TextKitEditorView(
-            document: .constant(document),
-            selection: .constant(BlockTreeSelection()),
+            document: Binding(get: { mirror.document }, set: { mirror.document = $0 }),
+            selection: Binding(get: { mirror.selection }, set: { mirror.selection = $0 }),
             onSlashTyped: { _, _, _ in },
             onCommand: { _ in },
             onCaretAnchorMoved: { _ in },
@@ -59,7 +68,9 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         let flat = TextKitEditorView.flatten(document: document, bodyFont: bodyFont, bodyColor: bodyColor)
         textView.attributedText = flat.attributed
-        return (textView, coordinator)
+        coordinator.pathIndex = TextKitEditorView.leafPathIndex(document)
+        coordinator.lastNewlineCount = TextKitEditorView.newlineCount(in: flat.attributed.string as NSString)
+        return (textView, coordinator, mirror)
     }
 
     private func emptyBulletDoc() -> RichTextDocument {
@@ -100,7 +111,7 @@ final class BulletChromeRegressionTests: XCTestCase {
     }
 
     func test_typingIntoEmptyBulletItem_afterCaretPlacement_keepsBulletChrome() {
-        let (textView, coordinator) = makeEditorRig(document: emptyBulletDoc())
+        let (textView, coordinator, _) = makeEditorRig(document: emptyBulletDoc())
 
         // The tap-to-focus path: a selection change makes UIKit strip
         // the custom keys from typingAttributes; the delegate's
@@ -124,7 +135,7 @@ final class BulletChromeRegressionTests: XCTestCase {
                 ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "item")]))])
             ]))
         ])
-        let (textView, coordinator) = makeEditorRig(document: doc)
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
 
         // Caret move into the middle of the item (the arrow-key /
         // tap-mid-word path), then type.
@@ -140,7 +151,7 @@ final class BulletChromeRegressionTests: XCTestCase {
     }
 
     func test_parseBack_afterTypingIntoEmptyBulletItem_preservesListStructure() {
-        let (textView, coordinator) = makeEditorRig(document: emptyBulletDoc())
+        let (textView, coordinator, _) = makeEditorRig(document: emptyBulletDoc())
         moveCaretAndType("a", at: 0, textView: textView, coordinator: coordinator)
 
         let parsed = TextKitEditorView.parseBack(textView.attributedText)
@@ -154,6 +165,63 @@ final class BulletChromeRegressionTests: XCTestCase {
             return
         }
         XCTAssertEqual(inline.first?.text, "a")
+    }
+
+    func test_enterOnBulletItem_caretStaysOnNewLine_reducerMirrorAgrees() {
+        // The caret-jumps-to-previous-line bug: after Enter, identity
+        // hygiene reassigns the new line a fresh blockID WITHOUT a
+        // selection change, so the reducer's mirrored selection still
+        // named the OLD block. updateUIView's semantic gate then
+        // "corrected" the caret back to the previous bullet line.
+        // The sync must re-mirror the bridged selection so reducer
+        // state and storage identity agree.
+        let originalLeafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(id: originalLeafID, kind: .paragraph(inline: [Inline(text: "abc")]))])
+            ]))
+        ])
+        let (textView, coordinator, mirror) = makeEditorRig(document: doc)
+
+        // Return at the end of "abc": event sequence as on-device —
+        // selection settle, shouldChange (returns true: native Enter),
+        // insertion, then the (next-runloop on device) didChange.
+        moveCaretAndType("\n", at: 3, textView: textView, coordinator: coordinator)
+        coordinator.textViewDidChangeSelection(textView)
+        coordinator.textViewDidChange(textView)
+
+        // Caret is on the new (second) line.
+        XCTAssertEqual(textView.selectedRange, NSRange(location: 4, length: 0))
+        XCTAssertEqual(textView.attributedText.string, "abc\n\n")
+        XCTAssertEqual(chrome(at: 4, in: textView), .bulletListItem, "New line keeps the bullet chrome")
+
+        // The reducer's mirrored selection must agree with the
+        // storage's post-hygiene identity (fresh second-item id, NOT
+        // the original leaf) — disagreement is what yanked the caret.
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: textView.attributedText,
+            selectedRange: textView.selectedRange,
+            pathIndex: coordinator.pathIndex
+        )
+        XCTAssertEqual(mirror.selection, bridged, "Sync must re-mirror the bridged selection")
+        XCTAssertNotEqual(mirror.selection.path.last, originalLeafID, "Selection names the NEW line's fresh id")
+
+        // And updateUIView's re-sync would be a no-op: the reducer
+        // selection maps back to exactly the textView's current caret.
+        let nsRange = TextKitEditorView.nsRange(
+            for: mirror.selection,
+            flattenIDMap: coordinator.flattenIDMap,
+            totalLength: textView.attributedText.length
+        )
+        XCTAssertEqual(nsRange, textView.selectedRange, "Reducer selection round-trips to the current caret — no jump")
+
+        // Document mirror has two list items, original id on the first.
+        guard case .bulletList(let items) = mirror.document.blocks.first?.kind else {
+            XCTFail("Expected bullet list in the mirrored document")
+            return
+        }
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items.first?.content.first?.id, originalLeafID, "First half keeps the original leaf id")
     }
 
     func test_typingAttributesPreservingChrome_keepsDerivedStandardAttributes() {
