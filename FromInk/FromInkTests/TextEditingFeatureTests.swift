@@ -1052,6 +1052,90 @@ final class TextEditingFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.isDirty)
     }
 
+    // MARK: - insertParagraph
+
+    @MainActor
+    func test_insertParagraph_midRun_preservesMarksOnBothHalves() async {
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: leafID, kind: .paragraph(inline: [
+                Inline(text: "Hello ", marks: [.bold]),
+                Inline(text: "world", marks: [])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        // Caret mid-way through the bold run: "Hel|lo world".
+        initial.selection = .insertion(at: [leafID], offset: 3)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.insertParagraph)
+
+        XCTAssertEqual(store.state.document.blocks.count, 2)
+        guard case .paragraph(let firstRuns) = store.state.document.blocks[0].kind,
+              case .paragraph(let secondRuns) = store.state.document.blocks[1].kind else {
+            XCTFail("Expected two paragraphs after the split")
+            return
+        }
+        XCTAssertEqual(
+            firstRuns,
+            [Inline(text: "Hel", marks: [.bold])],
+            "First half keeps the bold mark on the carved run"
+        )
+        XCTAssertEqual(
+            secondRuns,
+            [Inline(text: "lo ", marks: [.bold]), Inline(text: "world", marks: [])],
+            "Second half keeps the bold mark on its half of the carved run AND the unmarked run"
+        )
+        XCTAssertEqual(store.state.document.blocks[0].id, leafID, "First half retains the original leaf id")
+        XCTAssertEqual(
+            store.state.selection,
+            .insertion(at: [store.state.document.blocks[1].id], offset: 0),
+            "Caret lands at the start of the new second leaf"
+        )
+    }
+
+    @MainActor
+    func test_insertParagraph_heading_secondHalfIsBodyParagraph_marksPreserved() async {
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: leafID, kind: .heading(level: 2, inline: [
+                Inline(text: "Quarterly", marks: [.italic])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 4)  // "Quar|terly"
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.insertParagraph)
+
+        guard case .heading(let level, let firstRuns) = store.state.document.blocks[0].kind,
+              case .paragraph(let secondRuns) = store.state.document.blocks[1].kind else {
+            XCTFail("Expected heading + body paragraph after splitting a heading")
+            return
+        }
+        XCTAssertEqual(level, 2)
+        XCTAssertEqual(firstRuns, [Inline(text: "Quar", marks: [.italic])])
+        XCTAssertEqual(
+            secondRuns,
+            [Inline(text: "terly", marks: [.italic])],
+            "Enter on a heading drops to body text but the carved run's marks survive"
+        )
+    }
+
     // MARK: - flush
 
     @MainActor

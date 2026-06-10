@@ -919,5 +919,71 @@ final class TextKitEditorViewTests: XCTestCase {
             document: doc
         ))
     }
+
+    // MARK: - Ordered-list ordinal
+
+    func test_orderedItemOrdinal_countsPositionWithinGroup_independentOfDrawRange() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .orderedList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "one")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "two")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "three")]))])
+            ]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let starts = result.flattenMap.map(\.nsRange.location)
+        XCTAssertEqual(starts.count, 3)
+
+        for (index, start) in starts.enumerated() {
+            let groupID = result.attributed.attribute(.groupID, at: start, effectiveRange: nil) as? UUID
+            // The ordinal derives from storage position alone — the
+            // draw-call's glyph range plays no part. Asking for item
+            // N's ordinal without having "drawn" items 0..<N first is
+            // exactly the scrolled-mid-list case that the old per-draw
+            // running counter got wrong (item 11 rendered as "1.").
+            XCTAssertEqual(
+                BlockDecoratingLayoutManager.orderedItemOrdinal(
+                    in: result.attributed,
+                    paragraphStart: start,
+                    groupID: groupID
+                ),
+                index + 1
+            )
+        }
+    }
+
+    func test_orderedItemOrdinal_restartsAcrossSeparateLists() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .orderedList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "a1")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "a2")]))])
+            ])),
+            Block(kind: .paragraph(inline: [Inline(text: "interlude")])),
+            Block(kind: .orderedList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "b1")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "b2")]))])
+            ]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let starts = result.flattenMap.map(\.nsRange.location)
+        XCTAssertEqual(starts.count, 5)
+
+        let secondListFirst = starts[3]
+        let secondListSecond = starts[4]
+        let groupID = result.attributed.attribute(.groupID, at: secondListFirst, effectiveRange: nil) as? UUID
+        XCTAssertEqual(
+            BlockDecoratingLayoutManager.orderedItemOrdinal(
+                in: result.attributed, paragraphStart: secondListFirst, groupID: groupID
+            ),
+            1,
+            "A fresh group restarts at 1 — the walk stops at the interlude paragraph"
+        )
+        XCTAssertEqual(
+            BlockDecoratingLayoutManager.orderedItemOrdinal(
+                in: result.attributed, paragraphStart: secondListSecond, groupID: groupID
+            ),
+            2
+        )
+    }
 }
 #endif

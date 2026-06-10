@@ -1270,6 +1270,20 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
+            // Marked text active (CJK composition, dictation
+            // mid-utterance) — the input system owns the buffer.
+            // No slash arming and, critically, no Enter interception:
+            // Return during composition COMMITS the composition, and
+            // routing it through the reducer (which re-flattens and
+            // replaces `attributedText`) would destroy the marked-
+            // text session. Let UIKit handle everything; the
+            // document re-syncs from `textViewDidChange` once the
+            // composition ends.
+            if textView.markedTextRange != nil {
+                pendingSlashLocation = nil
+                return true
+            }
+
             switch TextKitEditorView.evaluateSlashTrigger(
                 replacementText: text,
                 replacementRange: range,
@@ -1326,6 +1340,13 @@ struct TextKitEditorView: UIViewRepresentable {
                 // can't fire spuriously.
                 return
             }
+            // Composition in flight — don't parse provisional marked
+            // text into the document (it would persist half-composed
+            // CJK input and push a binding update whose re-flatten
+            // could destroy the composition). The commit fires a
+            // final didChange with `markedTextRange == nil`, which
+            // re-syncs everything below.
+            guard textView.markedTextRange == nil else { return }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             let reflatten = TextKitEditorView.flatten(
                 document: parsed,
@@ -1595,9 +1616,6 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         let nsString = textStorage.string as NSString
         let storageLength = textStorage.length
 
-        // Track consecutive listItem index for numbering.
-        var orderedRunningNumber: [UUID: Int] = [:]
-
         // Enumerate by **paragraph boundary** (split on `\n`), not
         // by `.blockChrome` or `.blockID`. Both attribute-based
         // enumerations have a fatal flaw for live editing: when
@@ -1662,10 +1680,20 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 case .bulletListItem:
                     drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
                 case .orderedListItem:
-                    let groupID = (textStorage.attribute(.groupID, at: probeLocation, effectiveRange: nil) as? UUID) ?? UUID()
-                    let next = (orderedRunningNumber[groupID] ?? 0) + 1
-                    orderedRunningNumber[groupID] = next
-                    drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
+                    // The ordinal is derived from the item's position
+                    // within its group in the STORAGE, not from a
+                    // per-draw running counter. drawBackground is
+                    // invoked with only the glyph range being redrawn
+                    // — a counter that starts at the first *drawn*
+                    // item renders item 11 as "1." the moment a long
+                    // list is scrolled mid-way.
+                    let groupID = textStorage.attribute(.groupID, at: probeLocation, effectiveRange: nil) as? UUID
+                    let ordinal = Self.orderedItemOrdinal(
+                        in: textStorage,
+                        paragraphStart: paraRange.location,
+                        groupID: groupID
+                    )
+                    drawNumber(ordinal, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
                 default:
                     break
                 }
@@ -1674,6 +1702,47 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
             if nlRange.location == NSNotFound { break }
             cursor = paraEnd + 1
         }
+    }
+
+    // MARK: - Ordered-list ordinal (pure, testable)
+
+    /// 1-based ordinal of the ordered-list item whose paragraph starts
+    /// at `paragraphStart`, computed by walking PRECEDING paragraphs in
+    /// the storage while they carry the same `.groupID` and
+    /// `.orderedListItem` chrome. Pure over the attributed string so it
+    /// can be unit-tested against `flatten` output without a layout
+    /// pass.
+    ///
+    /// The walk probes each preceding paragraph at its first character
+    /// — or at its trailing `\n` for empty paragraphs, which carries
+    /// the paragraph attrs per the flatten contract (and per
+    /// `typingAttributes` for freshly typed lines).
+    static func orderedItemOrdinal(
+        in storage: NSAttributedString,
+        paragraphStart: Int,
+        groupID: UUID?
+    ) -> Int {
+        let nsString = storage.string as NSString
+        var ordinal = 1
+        var cursor = paragraphStart
+        while cursor > 0 {
+            // `cursor - 1` is the previous paragraph's terminating
+            // `\n`. Find that paragraph's start.
+            let searchRange = NSRange(location: 0, length: max(0, cursor - 1))
+            let prevNL = nsString.range(of: "\n", options: .backwards, range: searchRange)
+            let prevStart = prevNL.location != NSNotFound ? prevNL.location + 1 : 0
+            // Probe at the paragraph start; an empty previous
+            // paragraph's start IS its trailing newline, which
+            // carries the paragraph attrs.
+            guard prevStart < storage.length else { break }
+            let attrs = storage.attributes(at: prevStart, effectiveRange: nil)
+            let prevChrome = (attrs[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
+            let prevGroup = attrs[.groupID] as? UUID
+            guard prevChrome == .orderedListItem, prevGroup == groupID else { break }
+            ordinal += 1
+            cursor = prevStart
+        }
+        return ordinal
     }
 
     // MARK: - Per-chrome drawing

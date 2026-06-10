@@ -482,34 +482,47 @@ extension TextEditingFeature {
         _ runs: [Inline],
         atUTF16 cutoff: Int
     ) -> [Inline] {
-        guard cutoff > 0 else { return [] }
-        var out: [Inline] = []
+        splitInlineRuns(runs, atUTF16: cutoff).first
+    }
+
+    /// Split a list of inline runs at the given UTF-16 offset into the
+    /// runs before the offset and the runs at-or-after it. The run
+    /// straddling the boundary is carved into two runs that each keep
+    /// the original's marks — splitting bold text mid-run yields two
+    /// bold runs. Offsets clamp: `cutoff <= 0` puts everything in
+    /// `second`; `cutoff >= total length` puts everything in `first`.
+    fileprivate static func splitInlineRuns(
+        _ runs: [Inline],
+        atUTF16 cutoff: Int
+    ) -> (first: [Inline], second: [Inline]) {
+        guard cutoff > 0 else { return ([], runs) }
+        var first: [Inline] = []
+        var second: [Inline] = []
         var cursor = 0
         for run in runs {
             let runUTF16Count = run.text.utf16.count
             if cursor >= cutoff {
-                // Already past the cutoff — drop the rest.
-                break
+                second.append(run)
+            } else if cursor + runUTF16Count <= cutoff {
+                first.append(run)
+            } else {
+                // Run straddles the cutoff — carve, keep marks on
+                // both halves.
+                let localCutoff = cutoff - cursor
+                let utf16 = run.text.utf16
+                let splitIdx = utf16.index(utf16.startIndex, offsetBy: localCutoff)
+                let firstText = String(decoding: Array(utf16[utf16.startIndex..<splitIdx]), as: UTF16.self)
+                let secondText = String(decoding: Array(utf16[splitIdx..<utf16.endIndex]), as: UTF16.self)
+                if !firstText.isEmpty {
+                    first.append(Inline(text: firstText, marks: run.marks))
+                }
+                if !secondText.isEmpty {
+                    second.append(Inline(text: secondText, marks: run.marks))
+                }
             }
-            if cursor + runUTF16Count <= cutoff {
-                // Whole run survives verbatim.
-                out.append(run)
-                cursor += runUTF16Count
-                continue
-            }
-            // Run straddles the cutoff — truncate text, keep marks.
-            let localCutoff = cutoff - cursor
-            let utf16 = run.text.utf16
-            let truncatedText = String(
-                decoding: Array(utf16.prefix(localCutoff)),
-                as: UTF16.self
-            )
-            if !truncatedText.isEmpty {
-                out.append(Inline(text: truncatedText, marks: run.marks))
-            }
-            break
+            cursor += runUTF16Count
         }
-        return out
+        return (first, second)
     }
 
     /// Apply a block-level format to the leaf at `selection.path`. If
@@ -763,10 +776,9 @@ extension TextEditingFeature {
     ///
     /// Returns true on success. False means the selection didn't
     /// point at a leaf that can split (empty path, unresolvable
-    /// path, divider). Inline marks are dropped on the cursor's
-    /// boundary in v1 — splitting bold text at the cursor produces
-    /// two unbolded halves. Acceptable v1 simplification; revisit
-    /// when run-splitting becomes a regression source.
+    /// path, divider). Inline marks survive the split: runs are
+    /// carved at the cursor boundary via `splitInlineRuns`, so
+    /// splitting bold text mid-run yields two bold halves.
     fileprivate static func insertParagraphAtCursor(
         document: inout RichTextDocument,
         selection: inout BlockTreeSelection
@@ -776,37 +788,33 @@ extension TextEditingFeature {
 
         let cursorOffset = max(0, selection.startUTF16)
 
-        let firstText: String
-        let secondText: String
-        let leafText = leaf.joinedInlineText ?? ""
-        let utf16 = leafText.utf16
-        let split = min(cursorOffset, utf16.count)
-        let splitIdx = utf16.index(utf16.startIndex, offsetBy: split)
-        firstText = String(utf16[utf16.startIndex..<splitIdx]) ?? ""
-        secondText = String(utf16[splitIdx..<utf16.endIndex]) ?? ""
-
-        // First-half leaf retains the original block's kind and id.
-        let firstLeaf: Block
-        switch leaf.kind {
-        case .paragraph:
-            firstLeaf = Block(id: leaf.id, kind: .paragraph(inline: [Inline(text: firstText)]))
-        case .heading(let level, _):
-            firstLeaf = Block(id: leaf.id, kind: .heading(level: level, inline: [Inline(text: firstText)]))
-        case .codeBlock(_, let lang):
-            firstLeaf = Block(id: leaf.id, kind: .codeBlock(text: firstText, languageHint: lang))
-        case .divider, .bulletList, .orderedList, .blockquote:
-            return false
-        }
-
-        // Second-half leaf: new id, kind depends on first's kind.
+        // First-half leaf retains the original block's kind and id;
+        // second-half gets a fresh id. Heading → body paragraph on
+        // the second half (matches Notion / Bear / Apple Notes);
+        // codeBlock splits into two code blocks, language hint
+        // preserved on both.
         let secondID = UUID()
+        let firstLeaf: Block
         let secondLeaf: Block
         switch leaf.kind {
-        case .codeBlock(_, let lang):
+        case .paragraph(let inline):
+            let (first, second) = splitInlineRuns(inline, atUTF16: cursorOffset)
+            firstLeaf = Block(id: leaf.id, kind: .paragraph(inline: first))
+            secondLeaf = Block(id: secondID, kind: .paragraph(inline: second))
+        case .heading(let level, let inline):
+            let (first, second) = splitInlineRuns(inline, atUTF16: cursorOffset)
+            firstLeaf = Block(id: leaf.id, kind: .heading(level: level, inline: first))
+            secondLeaf = Block(id: secondID, kind: .paragraph(inline: second))
+        case .codeBlock(let text, let lang):
+            let utf16 = text.utf16
+            let split = min(cursorOffset, utf16.count)
+            let splitIdx = utf16.index(utf16.startIndex, offsetBy: split)
+            let firstText = String(utf16[utf16.startIndex..<splitIdx]) ?? ""
+            let secondText = String(utf16[splitIdx..<utf16.endIndex]) ?? ""
+            firstLeaf = Block(id: leaf.id, kind: .codeBlock(text: firstText, languageHint: lang))
             secondLeaf = Block(id: secondID, kind: .codeBlock(text: secondText, languageHint: lang))
-        default:
-            // Heading → body paragraph; paragraph → paragraph.
-            secondLeaf = Block(id: secondID, kind: .paragraph(inline: [Inline(text: secondText)]))
+        case .divider, .bulletList, .orderedList, .blockquote:
+            return false
         }
 
         // Resolve container shape.

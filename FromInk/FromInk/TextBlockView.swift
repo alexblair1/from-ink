@@ -376,7 +376,16 @@ extension TextBlockView.Model {
         self.isPresented = isPresented
         self.failureState = failureState
         self.document = document
+        // `plainText` feeds only the macOS read-only placeholder.
+        // Resolving it on iOS would walk the entire document on every
+        // SwiftUI render — every keystroke AND every caret move (the
+        // selection mirror re-renders the wiring view). Same render-
+        // cost rule as the `isDocumentEmpty` short-circuit below (S4).
+        #if os(macOS)
         self.plainText = document.plainText
+        #else
+        self.plainText = ""
+        #endif
         // Avoid walking the entire document via `plainText` on every
         // SwiftUI render (S4). Short-circuit on the first block that
         // has any visible content; divider counts as content.
