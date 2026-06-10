@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "com.fromink.app", category: "RichTextDocument")
 
 /// The block-tree content shape of a Text `PageBlock`.
 ///
@@ -36,14 +39,22 @@ import Foundation
 struct RichTextDocument: Codable, Equatable, Sendable {
 
     /// Schema version. Bumped any time the encoded shape changes in a
-    /// way that requires a decoder migration. Content migrations live
-    /// here, not in SwiftData's `VersionedSchema`.
+    /// way that requires a decoder migration. Content migrations will
+    /// live here, not in SwiftData's `VersionedSchema`.
+    ///
+    /// **Reserved for future use as of v1.** The decoder does not
+    /// currently dispatch on `version` — a future-version client
+    /// reading a v1 document just decodes with v1 semantics, and vice
+    /// versa. When the first content-schema change ships, this is
+    /// where the dispatch wires in.
     var version: Int
 
     /// Ordered top-level blocks. An empty array is a valid document
     /// (the empty block) — the editor renders it with the placeholder.
     var blocks: [Block]
 
+    /// Schema version that this build's encoder stamps on every
+    /// document it writes. Reserved — see `version`.
     static let currentVersion: Int = 1
 
     init(version: Int = RichTextDocument.currentVersion, blocks: [Block] = []) {
@@ -129,14 +140,26 @@ struct Block: Codable, Equatable, Sendable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        // `id` is REQUIRED. Block IDs are the addressing key for
+        // NoteRegion text-range anchors (`anchorBlockPath: [UUID]`);
+        // silently regenerating a UUID on decode would break every
+        // anchor pointing at this block. A producer writing an
+        // id-less block is a bug — we fail loudly so it gets caught.
+        self.id = try container.decode(UUID.self, forKey: .id)
 
         // The "type" tag drives which payload fields to read. An
-        // unknown tag is the forward-compat path: collapse to an
-        // empty paragraph so the surrounding document survives.
+        // unknown tag is the forward-compat path — we degrade to a
+        // paragraph but SALVAGE any inline runs the unknown block
+        // carried, so the user's words survive across version
+        // downgrades. A v2 callout block becomes a v1 paragraph with
+        // the same text, instead of a silent empty paragraph.
         let typeRaw = try container.decode(String.self, forKey: .type)
         guard let tag = KindTag(rawValue: typeRaw) else {
-            self.kind = .paragraph(inline: [])
+            let salvagedInline = try container.decodeIfPresent([Inline].self, forKey: .inline) ?? []
+            log.warning(
+                "Decoded unknown block kind '\(typeRaw, privacy: .public)' — degraded to paragraph with \(salvagedInline.count) salvaged inline runs"
+            )
+            self.kind = .paragraph(inline: salvagedInline)
             return
         }
 
@@ -237,6 +260,13 @@ struct ListItem: Codable, Equatable, Sendable, Identifiable {
 /// Inline runs are the only place inline marks live; `codeBlock` is
 /// plain text by construction (no marks) and container kinds hold
 /// blocks, not inline runs.
+///
+/// **Forward-compat decoder.** Custom `init(from:)` iterates the
+/// marks array and drops elements that fail to decode (unknown
+/// `Mark` tags from a future schema). The user's `text` is preserved
+/// verbatim; only the unfamiliar emphasis degrades. `encode(to:)` is
+/// synthesised — round-tripping a v1 document is byte-stable under
+/// `JSONEncoder(.sortedKeys)`.
 struct Inline: Codable, Equatable, Sendable {
     var text: String
     var marks: [Mark]
@@ -244,6 +274,36 @@ struct Inline: Codable, Equatable, Sendable {
     init(text: String, marks: [Mark] = []) {
         self.text = text
         self.marks = marks
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case marks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.text = try container.decode(String.self, forKey: .text)
+
+        // Iterate marks one slot at a time. `try?` returns nil on an
+        // unknown Mark tag without throwing; if it returns nil we
+        // explicitly advance past the slot with `EmptyDecodable`,
+        // which has no required fields and so accepts any JSON value
+        // (including null and arbitrarily-shaped objects). This is
+        // the only safe way to skip an unknown element in an
+        // UnkeyedDecodingContainer — relying on `decode(_:)` to
+        // advance on throw is undefined behaviour.
+        var marksContainer = try container.nestedUnkeyedContainer(forKey: .marks)
+        var preserved: [Mark] = []
+        while !marksContainer.isAtEnd {
+            if let mark = try? marksContainer.decode(Mark.self) {
+                preserved.append(mark)
+            } else {
+                _ = try? marksContainer.decode(EmptyDecodable.self)
+                log.warning("Decoded unknown inline mark — dropped from run, text preserved")
+            }
+        }
+        self.marks = preserved
     }
 }
 
@@ -327,41 +387,10 @@ enum Mark: Codable, Hashable, Sendable {
     }
 }
 
-// MARK: - Inline forward-compat decoder
-
-extension Inline {
-    /// Custom decoder that drops unknown `Mark` cases from `marks`
-    /// rather than failing the whole Inline run. The user keeps the
-    /// `text`; only the unfamiliar emphasis is lost.
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.text = try container.decode(String.self, forKey: .text)
-
-        var marksContainer = try container.nestedUnkeyedContainer(forKey: .marks)
-        var preserved: [Mark] = []
-        while !marksContainer.isAtEnd {
-            // Pop each mark via a single-element nested decoder so
-            // an unknown mark throws here but the loop continues.
-            do {
-                let mark = try marksContainer.decode(Mark.self)
-                preserved.append(mark)
-            } catch {
-                // Skip the entry — advance past it. `decode(Mark.self)`
-                // consumed the slot whether it succeeded or threw.
-                _ = try? marksContainer.decode(EmptyDecodable.self)
-            }
-        }
-        self.marks = preserved
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case text
-        case marks
-    }
-}
-
 /// Throwaway type used inside `Inline`'s forward-compat decoder to
-/// pop unknown elements without inspecting their shape.
+/// pop unknown elements without inspecting their shape. Conforms to
+/// `Decodable` with no fields, so it accepts any JSON value — null,
+/// number, string, array, deeply-nested object — without throwing.
 private struct EmptyDecodable: Decodable {}
 
 // MARK: - HighlightKind
@@ -383,9 +412,23 @@ extension RichTextDocument {
 
     /// Walk the document by block-ID path. The path is the chain of
     /// `Block.id` values from the document root to the target leaf.
-    /// Path goes THROUGH `ListItem` rows — a paragraph inside a
-    /// bulletList's first item is addressed `[bulletList.id, paragraph.id]`
-    /// (the ListItem's own id is not part of the path).
+    ///
+    /// **Path skips ListItem IDs** (deliberate). A paragraph inside a
+    /// bulletList's first item is addressed `[bulletList.id, paragraph.id]`,
+    /// not `[bulletList.id, listItem.id, paragraph.id]`. We chose this
+    /// because:
+    ///
+    ///   - Region anchors (the main caller) only need to address leaf
+    ///     blocks (paragraph / heading / codeBlock). They don't need
+    ///     to address a ListItem row directly.
+    ///   - Path length stays minimal — easier to reason about in tests
+    ///     and quicker to walk on render.
+    ///
+    /// **Trade-off:** if a future feature needs to address a specific
+    /// list ROW (e.g. "reorder item X within this list"), it has to
+    /// use a different mechanism (ListItem.id directly) rather than
+    /// extending this path scheme. Acceptable for v1; revisit when
+    /// row-level addressing becomes a requirement.
     ///
     /// Returns nil if the path no longer resolves — typically because
     /// the user deleted a block somewhere along the chain. NoteRegion
@@ -442,11 +485,21 @@ extension Block {
 extension RichTextDocument {
 
     /// Concatenated plain text across the entire document, suitable
-    /// for the `PageBlock.plainText` query mirror. Paragraphs and
-    /// headings join with single newlines; code blocks preserve
-    /// their text; lists flatten one item per line; blockquote
-    /// contents flatten in place. Dividers contribute a blank line
-    /// so search snippets don't read like a wall of text.
+    /// for the `PageBlock.plainText` query mirror.
+    ///
+    /// Composition strategy (optimized for cheap, deterministic
+    /// composition rather than reading nuance):
+    ///
+    ///   - Every leaf block emits one entry — paragraph + heading
+    ///     join their inline runs into a single string; codeBlock
+    ///     emits its text; divider emits an empty string.
+    ///   - All entries are joined by a single `\n`. We deliberately
+    ///     do NOT add extra spacing around headings or between list
+    ///     items — search and indexing read the joined text as a
+    ///     stream of words, and the cheaper composition gives stable
+    ///     content hashes.
+    ///   - List items flatten one paragraph per line; blockquote
+    ///     contents flatten in place; no quote-marker prefix.
     ///
     /// Order matches the user's reading order — depth-first
     /// in-order traversal.

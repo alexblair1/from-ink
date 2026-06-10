@@ -235,7 +235,7 @@ final class RichTextDocumentTests: XCTestCase {
 
     // MARK: - Forward compatibility — unknown Block kind degrades
 
-    func test_unknownBlockKind_collapsesToEmptyParagraph() throws {
+    func test_unknownBlockKind_withoutInlineField_collapsesToEmptyParagraph() throws {
         let json = #"""
         {
           "version": 1,
@@ -252,13 +252,11 @@ final class RichTextDocumentTests: XCTestCase {
             from: Data(json.utf8)
         )
         XCTAssertEqual(doc.blocks.count, 3, "Tree structure survives the unknown block")
-        // Middle block degrades.
         guard case .paragraph(let inline) = doc.blocks[1].kind else {
             XCTFail("Unknown block must collapse to .paragraph")
             return
         }
-        XCTAssertEqual(inline, [], "Unknown block decodes as empty paragraph")
-        // Surrounding blocks intact.
+        XCTAssertEqual(inline, [], "Unknown block with no `inline` field decodes as empty paragraph")
         guard case .paragraph(let before) = doc.blocks[0].kind,
               case .paragraph(let after) = doc.blocks[2].kind else {
             XCTFail("Surrounding paragraphs must survive")
@@ -266,6 +264,202 @@ final class RichTextDocumentTests: XCTestCase {
         }
         XCTAssertEqual(before.first?.text, "Before")
         XCTAssertEqual(after.first?.text, "After")
+    }
+
+    func test_unknownBlockKind_withInlineField_salvagesInlineRuns() throws {
+        // Forward-compat fix C1: a v2 future block kind that happens
+        // to carry an `inline` array (e.g. a callout, an admonition)
+        // must hand its text to the v1 decoder so the user's words
+        // survive the version downgrade.
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "type": "calloutBlock",
+              "style": "warning",
+              "inline": [
+                { "text": "Important ", "marks": [] },
+                { "text": "warning", "marks": [ { "type": "bold" } ] }
+              ]
+            }
+          ]
+        }
+        """#
+
+        let doc = try JSONDecoder().decode(
+            RichTextDocument.self,
+            from: Data(json.utf8)
+        )
+        guard case .paragraph(let inline) = doc.blocks.first?.kind else {
+            XCTFail("Unknown block with `inline` field must degrade to paragraph carrying that inline")
+            return
+        }
+        XCTAssertEqual(inline.count, 2, "Both inline runs salvaged")
+        XCTAssertEqual(inline[0].text, "Important ")
+        XCTAssertEqual(inline[1].text, "warning")
+        XCTAssertEqual(inline[1].marks, [.bold], "Marks on salvaged inline survive too")
+    }
+
+    func test_unknownMarkAtStartOfRun_dropped_remainderPreserved() throws {
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "type": "paragraph",
+              "inline": [
+                { "text": "start", "marks": [ { "type": "unobtanium" }, { "type": "bold" } ] }
+              ]
+            }
+          ]
+        }
+        """#
+        let doc = try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8))
+        guard case .paragraph(let inline) = doc.blocks[0].kind else { XCTFail(); return }
+        XCTAssertEqual(inline.first?.text, "start")
+        XCTAssertEqual(inline.first?.marks, [.bold])
+    }
+
+    func test_unknownMarkAtEndOfRun_dropped_remainderPreserved() throws {
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "type": "paragraph",
+              "inline": [
+                { "text": "end", "marks": [ { "type": "bold" }, { "type": "unobtanium" } ] }
+              ]
+            }
+          ]
+        }
+        """#
+        let doc = try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8))
+        guard case .paragraph(let inline) = doc.blocks[0].kind else { XCTFail(); return }
+        XCTAssertEqual(inline.first?.text, "end")
+        XCTAssertEqual(inline.first?.marks, [.bold])
+    }
+
+    func test_consecutiveUnknownMarks_bothDropped_remainderPreserved() throws {
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "type": "paragraph",
+              "inline": [
+                { "text": "x", "marks": [ { "type": "bold" }, { "type": "u1" }, { "type": "u2" }, { "type": "italic" } ] }
+              ]
+            }
+          ]
+        }
+        """#
+        let doc = try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8))
+        guard case .paragraph(let inline) = doc.blocks[0].kind else { XCTFail(); return }
+        XCTAssertEqual(inline.first?.marks, [.bold, .italic])
+    }
+
+    func test_allUnknownMarks_yieldsEmptyMarksArray_textPreserved() throws {
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "type": "paragraph",
+              "inline": [
+                { "text": "only text survives", "marks": [ { "type": "u1" }, { "type": "u2" } ] }
+              ]
+            }
+          ]
+        }
+        """#
+        let doc = try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8))
+        guard case .paragraph(let inline) = doc.blocks[0].kind else { XCTFail(); return }
+        XCTAssertEqual(inline.first?.text, "only text survives")
+        XCTAssertEqual(inline.first?.marks, [])
+    }
+
+    // MARK: - Required field enforcement (fix C3 + missing-type)
+
+    func test_decodingBlockWithoutID_throws() throws {
+        // Forward-compat fix C3: a block without an id MUST fail to
+        // decode rather than silently regenerate. Anchor stability
+        // depends on it.
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            { "type": "paragraph", "inline": [ { "text": "no id", "marks": [] } ] }
+          ]
+        }
+        """#
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8)),
+            "Missing block id must throw — anchor stability depends on id presence"
+        )
+    }
+
+    func test_decodingBlockWithoutType_throws() throws {
+        let json = #"""
+        {
+          "version": 1,
+          "blocks": [
+            { "id": "00000000-0000-0000-0000-000000000001", "inline": [] }
+          ]
+        }
+        """#
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(RichTextDocument.self, from: Data(json.utf8)),
+            "Missing block type must throw — we don't know how to decode without it"
+        )
+    }
+
+    // MARK: - Idempotent round-trip (canonical form check)
+
+    func test_encodeDecodeEncode_producesByteStableOutput_underSortedKeys() throws {
+        // Content hashes (PageBlock.contentHash, NotePage.extractedTextHash)
+        // depend on stable encoded bytes — otherwise an idempotent
+        // re-save would change the hash and trip ML cache
+        // invalidation pointlessly. Verify under `.sortedKeys` so
+        // dictionary ordering is deterministic.
+        let original = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Plain "),
+                Inline(text: "bold", marks: [.bold])
+            ])),
+            Block(kind: .bulletList(items: [
+                ListItem(content: [
+                    Block(kind: .paragraph(inline: [Inline(text: "One")]))
+                ]),
+                ListItem(content: [
+                    Block(kind: .paragraph(inline: [Inline(text: "Two")]))
+                ])
+            ])),
+            Block(kind: .divider),
+            Block(kind: .blockquote(children: [
+                Block(kind: .paragraph(inline: [Inline(text: "Quote")]))
+            ]))
+        ])
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+
+        let firstPass = try encoder.encode(original)
+        let recovered = try JSONDecoder().decode(RichTextDocument.self, from: firstPass)
+        let secondPass = try encoder.encode(recovered)
+
+        XCTAssertEqual(
+            firstPass,
+            secondPass,
+            "encode → decode → encode must produce byte-identical output under .sortedKeys"
+        )
     }
 
     // MARK: - Heading level clamping
