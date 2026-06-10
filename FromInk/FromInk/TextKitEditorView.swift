@@ -1056,6 +1056,46 @@ struct TextKitEditorView: UIViewRepresentable {
         return .clear
     }
 
+    // MARK: - Exit-list trigger evaluation (pure, testable)
+
+    /// Decide whether a `\n` insertion on an empty list-item
+    /// paragraph should fire `.exitList` instead of letting UIKit
+    /// insert a fresh empty item. Pure for testability — no
+    /// `UITextView` access, only the inputs the Coordinator already
+    /// has at the `shouldChangeTextIn` call site.
+    ///
+    /// Conditions (all must hold):
+    ///   1. The replacement is exactly `"\n"` with `length == 0`
+    ///      (Enter at a caret, not Enter replacing a selection).
+    ///   2. The caret's leaf path resolves to a paragraph inside a
+    ///      `bulletList` or `orderedList`. The path's second-to-last
+    ///      component is the container — we walk it via
+    ///      `document.block(at:)` and switch on `kind`.
+    ///   3. The leaf paragraph is empty (`joinedInlineText` is empty
+    ///      or nil). Non-empty list items get the normal Enter
+    ///      behavior (split into a fresh item).
+    static func shouldExitList(
+        replacementText text: String,
+        replacementRange range: NSRange,
+        selection: BlockTreeSelection,
+        document: RichTextDocument
+    ) -> Bool {
+        guard text == "\n", range.length == 0 else { return false }
+        guard selection.path.count >= 2 else { return false }
+        // Container is one level up from the leaf.
+        let containerPath = Array(selection.path.dropLast())
+        guard let container = document.block(at: containerPath) else { return false }
+        switch container.kind {
+        case .bulletList, .orderedList:
+            break
+        default:
+            return false
+        }
+        guard let leaf = document.block(at: selection.path) else { return false }
+        let text = leaf.joinedInlineText ?? ""
+        return text.isEmpty
+    }
+
     // MARK: - Coordinator
 
     @MainActor
@@ -1127,6 +1167,25 @@ struct TextKitEditorView: UIViewRepresentable {
             case .clear:
                 pendingSlashLocation = nil
             }
+
+            // Empty-list-item Enter → exit the list. The exit
+            // happens through the reducer; we suppress the newline
+            // here so the user never sees a fleeting extra empty
+            // item before the format flips. Lookup uses the
+            // freshly-parsed `parent.document` (kept in sync by
+            // `textViewDidChange`), so this works as soon as the
+            // user's prior edits have settled.
+            if TextKitEditorView.shouldExitList(
+                replacementText: text,
+                replacementRange: range,
+                selection: parent.selection,
+                document: parent.document
+            ) {
+                pendingSlashLocation = nil
+                parent.onCommand(.exitList)
+                return false
+            }
+
             return true
         }
 

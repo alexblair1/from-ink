@@ -681,5 +681,139 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(nsRange?.location, 5, "Start clamps to leaf's text length")
         XCTAssertEqual(nsRange?.length, 0, "End clamps to leaf's text length too")
     }
+
+    // MARK: - shouldExitList (pure)
+    //
+    // Pins the contract for the empty-list-item Enter detector.
+    // The Coordinator's `shouldChangeTextIn` only suppresses the
+    // newline when this function says yes; everything else falls
+    // through to the default Enter behavior. Same testability
+    // pattern as `evaluateSlashTrigger`.
+
+    func test_shouldExitList_emptyBulletItem_atParagraphLeaf_isTrue() {
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        XCTAssertTrue(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_emptyOrderedItem_isTrue() {
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .orderedList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        XCTAssertTrue(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_nonEmptyListItem_isFalse() {
+        // Non-empty list item Enter is a normal list-split — DO NOT
+        // suppress; let UIKit insert the newline so a fresh item
+        // gets created.
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [
+                    Block(id: leafID, kind: .paragraph(inline: [Inline(text: "hello")]))
+                ])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 5, endUTF16: 5)
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 5, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_topLevelParagraph_isFalse() {
+        // No list container above this leaf — Enter on an empty
+        // body paragraph should NOT exit anything.
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: leafID, kind: .paragraph(inline: []))
+        ])
+        let selection = BlockTreeSelection(path: [leafID], startUTF16: 0, endUTF16: 0)
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_nonNewlineReplacement_isFalse() {
+        // A regular character on an empty list item should NOT
+        // exit — that's just typing into the item.
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "a",
+            replacementRange: NSRange(location: 0, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_newlineReplacingSelection_isFalse() {
+        // Enter while a multi-char selection is active means
+        // "delete selection then newline" — not an exit attempt,
+        // even if the selection is inside an empty list item
+        // (which is itself unusual but defensible).
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 3),
+            selection: selection,
+            document: doc
+        ))
+    }
+
+    func test_shouldExitList_emptySelectionPath_isFalse() {
+        // Stale selection where path didn't resolve — no list to
+        // exit. Defends against the editor firing the command
+        // before selection has been synced.
+        let doc = RichTextDocument(blocks: [])
+        let selection = BlockTreeSelection()
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            selection: selection,
+            document: doc
+        ))
+    }
 }
 #endif

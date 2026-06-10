@@ -806,6 +806,252 @@ final class TextEditingFeatureTests: XCTestCase {
         XCTAssertEqual(inline.first?.text, "Hello ", "Trigger slice '/h' stripped, surviving text preserved")
     }
 
+    // MARK: - exitList
+
+    /// Only-item case: the list dissolves and is replaced by the
+    /// exited paragraph. Paragraph preserves the item's leaf id so
+    /// the caller's selection stays valid without a re-bridge.
+    @MainActor
+    func test_exitList_singleItemList_dissolvesIntoParagraph() async {
+        let leafID = UUID()
+        let listID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [
+                    Block(id: leafID, kind: .paragraph(inline: []))
+                ])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [listID, leafID], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.exitList)
+
+        XCTAssertEqual(store.state.document.blocks.count, 1)
+        guard case .paragraph(let inline) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected list to dissolve into a paragraph")
+            return
+        }
+        XCTAssertTrue(inline.isEmpty, "Exited paragraph starts empty")
+        XCTAssertEqual(store.state.document.blocks.first?.id, leafID,
+                       "Paragraph reuses the empty item's id for selection stability")
+        XCTAssertEqual(store.state.selection.path, [leafID])
+        XCTAssertEqual(store.state.selection.startUTF16, 0)
+    }
+
+    /// Trailing-empty-item case: paragraph emits AFTER the
+    /// surviving list, list container's id is preserved.
+    @MainActor
+    func test_exitList_lastItemEmpty_emitsParagraphAfterList() async {
+        let listID = UUID()
+        let firstItemLeaf = UUID()
+        let secondItemLeaf = UUID()
+        let emptyLeaf = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: firstItemLeaf, kind: .paragraph(inline: [Inline(text: "one")]))]),
+                ListItem(id: UUID(), content: [Block(id: secondItemLeaf, kind: .paragraph(inline: [Inline(text: "two")]))]),
+                ListItem(id: UUID(), content: [Block(id: emptyLeaf, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [listID, emptyLeaf], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.exitList)
+
+        XCTAssertEqual(store.state.document.blocks.count, 2)
+        XCTAssertEqual(store.state.document.blocks[0].id, listID,
+                       "Surviving list keeps the outer container id")
+        guard case .bulletList(let items) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected surviving bulletList")
+            return
+        }
+        XCTAssertEqual(items.count, 2, "Empty item removed; first two items remain")
+        XCTAssertEqual(items[0].content.first?.id, firstItemLeaf)
+        XCTAssertEqual(items[1].content.first?.id, secondItemLeaf)
+
+        guard case .paragraph = store.state.document.blocks[1].kind else {
+            XCTFail("Expected paragraph after list")
+            return
+        }
+        XCTAssertEqual(store.state.document.blocks[1].id, emptyLeaf)
+        XCTAssertEqual(store.state.selection.path, [emptyLeaf])
+    }
+
+    /// Leading-empty-item case: paragraph emits BEFORE the
+    /// surviving list.
+    @MainActor
+    func test_exitList_firstItemEmpty_emitsParagraphBeforeList() async {
+        let listID = UUID()
+        let emptyLeaf = UUID()
+        let secondLeaf = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: emptyLeaf, kind: .paragraph(inline: []))]),
+                ListItem(id: UUID(), content: [Block(id: secondLeaf, kind: .paragraph(inline: [Inline(text: "second")]))])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [listID, emptyLeaf], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.exitList)
+
+        XCTAssertEqual(store.state.document.blocks.count, 2)
+        guard case .paragraph = store.state.document.blocks[0].kind else {
+            XCTFail("Expected paragraph before surviving list")
+            return
+        }
+        XCTAssertEqual(store.state.document.blocks[0].id, emptyLeaf)
+        guard case .bulletList(let items) = store.state.document.blocks[1].kind else {
+            XCTFail("Expected surviving bulletList")
+            return
+        }
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].content.first?.id, secondLeaf)
+    }
+
+    /// Middle-empty-item case: the list SPLITS into a prefix list,
+    /// paragraph, and suffix list. The prefix list keeps the
+    /// original container id; the suffix list gets a fresh id
+    /// (anchor migration is a follow-up).
+    @MainActor
+    func test_exitList_middleItemEmpty_splitsListAroundParagraph() async {
+        let listID = UUID()
+        let firstLeaf = UUID()
+        let emptyLeaf = UUID()
+        let thirdLeaf = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: firstLeaf, kind: .paragraph(inline: [Inline(text: "a")]))]),
+                ListItem(id: UUID(), content: [Block(id: emptyLeaf, kind: .paragraph(inline: []))]),
+                ListItem(id: UUID(), content: [Block(id: thirdLeaf, kind: .paragraph(inline: [Inline(text: "c")]))])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [listID, emptyLeaf], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.exitList)
+
+        XCTAssertEqual(store.state.document.blocks.count, 3)
+        XCTAssertEqual(store.state.document.blocks[0].id, listID, "Prefix list keeps the original outer id")
+        guard case .bulletList(let prefixItems) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected prefix bulletList")
+            return
+        }
+        XCTAssertEqual(prefixItems.count, 1)
+        XCTAssertEqual(prefixItems[0].content.first?.id, firstLeaf)
+
+        XCTAssertEqual(store.state.document.blocks[1].id, emptyLeaf)
+        guard case .paragraph = store.state.document.blocks[1].kind else {
+            XCTFail("Expected paragraph between split lists")
+            return
+        }
+
+        XCTAssertNotEqual(store.state.document.blocks[2].id, listID,
+                          "Suffix list gets a fresh outer id")
+        guard case .bulletList(let suffixItems) = store.state.document.blocks[2].kind else {
+            XCTFail("Expected suffix bulletList")
+            return
+        }
+        XCTAssertEqual(suffixItems.count, 1)
+        XCTAssertEqual(suffixItems[0].content.first?.id, thirdLeaf)
+    }
+
+    /// Ordered list parity: empty item in an orderedList exits to
+    /// a paragraph with the same surgery (numbering rebuilds on
+    /// the surviving list).
+    @MainActor
+    func test_exitList_orderedList_lastItemEmpty_emitsParagraphAfter() async {
+        let listID = UUID()
+        let firstLeaf = UUID()
+        let emptyLeaf = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .orderedList(items: [
+                ListItem(id: UUID(), content: [Block(id: firstLeaf, kind: .paragraph(inline: [Inline(text: "one")]))]),
+                ListItem(id: UUID(), content: [Block(id: emptyLeaf, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [listID, emptyLeaf], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.exitList)
+
+        XCTAssertEqual(store.state.document.blocks.count, 2)
+        guard case .orderedList(let items) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected surviving orderedList")
+            return
+        }
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].content.first?.id, firstLeaf)
+        XCTAssertEqual(store.state.document.blocks[1].id, emptyLeaf)
+    }
+
+    /// Selection not pointing at a list-item leaf — exitList is a
+    /// no-op. Defends against the editor firing the command
+    /// spuriously (e.g. a future code path that gets the
+    /// detection wrong).
+    @MainActor
+    func test_exitList_notInsideList_isNoOp() async {
+        let doc = paragraphDoc("Hello")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // No state change — exitList early-returns when the
+        // selection's container isn't a list.
+        await store.send(.exitList)
+        XCTAssertEqual(store.state.document, doc, "Document unchanged")
+        XCTAssertFalse(store.state.isDirty)
+    }
+
     // MARK: - flush
 
     @MainActor

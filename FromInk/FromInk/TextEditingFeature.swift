@@ -108,6 +108,13 @@ struct TextEditingFeature: Reducer {
         /// range. Insertion-point-only selections no-op.
         case toggleInlineFormat(InlineFormat)
 
+        /// Exit the current list: convert the (empty) list-item
+        /// paragraph at `selection.path` into a body paragraph
+        /// and split the surrounding list if needed. Fired by the
+        /// editor's `shouldChangeTextIn` when the user presses
+        /// Enter on an empty list item — see `EditorCommand.exitList`.
+        case exitList
+
         case slashPalette(SlashCommandPaletteFeature.Action)
     }
 
@@ -241,6 +248,20 @@ struct TextEditingFeature: Reducer {
                     document: &state.document,
                     selection: state.selection
                 )
+                state.isDirty = true
+                return schedulePersist()
+
+            case .exitList:
+                guard state.loadFailure == nil else { return .none }
+                // Capture-mutate-write-back: Swift exclusivity rules
+                // forbid passing two `&state.*` inouts in one call
+                // (memory rule under MainActor isolation).
+                var doc = state.document
+                var sel = state.selection
+                let didExit = Self.exitList(document: &doc, selection: &sel)
+                guard didExit else { return .none }
+                state.document = doc
+                state.selection = sel
                 state.isDirty = true
                 return schedulePersist()
 
@@ -607,6 +628,94 @@ extension TextEditingFeature {
         }
     }
 
+    /// Exit the current list: convert the empty list-item
+    /// paragraph at `selection.path` into a body paragraph,
+    /// splitting the parent list if the empty item is not at the
+    /// end. Returns true if the surgery ran; false if the
+    /// selection doesn't point at a list-item leaf (the caller
+    /// no-ops in that case so a stale command doesn't dirty the
+    /// document).
+    ///
+    /// **Four cases for `prefix + paragraph + suffix`:**
+    ///   - **List has one item, the empty target:** the list
+    ///     dissolves entirely, replaced by the paragraph.
+    ///   - **Target is the first item:** paragraph emits before
+    ///     the surviving list. List keeps the outer container's
+    ///     `id` so NoteRegion anchors stay stable on the items
+    ///     that didn't move.
+    ///   - **Target is the last item:** paragraph emits after
+    ///     the surviving list. Same id-stability rule.
+    ///   - **Target is in the middle:** the list splits — first
+    ///     half keeps the outer id, paragraph between, second
+    ///     half gets a fresh id (anchors on items after the
+    ///     split need an explicit migration, tracked alongside
+    ///     the text-range anchor sweep work).
+    ///
+    /// The new paragraph reuses the empty leaf's `id` so the
+    /// caller's selection (which still names that id) lands on
+    /// the paragraph naturally — caret at offset 0, ready to type
+    /// body text.
+    fileprivate static func exitList(
+        document: inout RichTextDocument,
+        selection: inout BlockTreeSelection
+    ) -> Bool {
+        guard let leafID = selection.path.last,
+              selection.path.count >= 2 else { return false }
+        let containerPath = Array(selection.path.dropLast())
+        guard let container = document.block(at: containerPath) else { return false }
+
+        let items: [ListItem]
+        let isOrdered: Bool
+        switch container.kind {
+        case .bulletList(let xs):
+            items = xs
+            isOrdered = false
+        case .orderedList(let xs):
+            items = xs
+            isOrdered = true
+        default:
+            return false
+        }
+
+        guard let itemIndex = items.firstIndex(where: { item in
+            item.content.contains(where: { $0.id == leafID })
+        }) else { return false }
+
+        let prefix = Array(items.prefix(itemIndex))
+        let suffix = Array(items.suffix(from: itemIndex + 1))
+        let exitedParagraph = Block(id: leafID, kind: .paragraph(inline: []))
+
+        var replacements: [Block] = []
+        if !prefix.isEmpty {
+            // Keep outer container id so the items before the
+            // split keep stable identity.
+            let kind: Block.Kind = isOrdered
+                ? .orderedList(items: prefix)
+                : .bulletList(items: prefix)
+            replacements.append(Block(id: container.id, kind: kind))
+        }
+        replacements.append(exitedParagraph)
+        if !suffix.isEmpty {
+            // Fresh outer id — anchors on these items need
+            // migration when text-range NoteRegion ships.
+            let kind: Block.Kind = isOrdered
+                ? .orderedList(items: suffix)
+                : .bulletList(items: suffix)
+            replacements.append(Block(id: UUID(), kind: kind))
+        }
+
+        document.replaceBlock(id: container.id, with: replacements)
+
+        // Selection lands on the exited paragraph. Path drops the
+        // (now-replaced) container id and ends at the paragraph's
+        // id (which equals the original leaf id).
+        var newPath = containerPath
+        newPath.removeLast()
+        newPath.append(leafID)
+        selection = .insertion(at: newPath, offset: 0)
+        return true
+    }
+
     /// Apply or remove `format` across the selection's UTF-16 range
     /// inside the leaf at `selection.path`. Inline runs are split at
     /// the range boundaries; runs fully covered by the range have the
@@ -813,6 +922,28 @@ extension RichTextDocument {
             }
         }
     }
+
+    /// Replace the block with `id` by an arbitrary sequence of
+    /// `replacements`. Used by exit-list surgery, which substitutes
+    /// a list container with `[prefix list] + paragraph + [suffix list]`
+    /// (any of the three may be absent).
+    ///
+    /// Like the other helpers, walks top-level blocks first, then
+    /// recurses through containers — list items and blockquote
+    /// children — so a list nested inside a blockquote can be
+    /// replaced in place (the blockquote wrapper stays put,
+    /// holding the replacement sequence).
+    mutating func replaceBlock(id: UUID, with replacements: [Block]) {
+        for index in blocks.indices where blocks[index].id == id {
+            blocks.replaceSubrange(index...index, with: replacements)
+            return
+        }
+        for index in blocks.indices {
+            if blocks[index].replaceDescendantBlock(id: id, with: replacements) {
+                return
+            }
+        }
+    }
 }
 
 extension Block {
@@ -966,6 +1097,58 @@ extension Block {
                 child.replaceDescendant(id: id, transform)
             }
         }
+    }
+
+    /// Replace the descendant block matching `id` with the given
+    /// sequence. Returns true if the substitution ran somewhere
+    /// inside this block's subtree. Symmetric with `insertDescendant`
+    /// — same container-walking shape, same recursion fallback.
+    /// Only `bulletList` / `orderedList` / `blockquote` host nested
+    /// blocks at all; everything else returns false immediately.
+    fileprivate mutating func replaceDescendantBlock(
+        id: UUID,
+        with replacements: [Block]
+    ) -> Bool {
+        switch kind {
+        case .bulletList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for j in content.indices where content[j].id == id {
+                    content.replaceSubrange(j...j, with: replacements)
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .bulletList(items: items)
+                    return true
+                }
+            }
+        case .orderedList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for j in content.indices where content[j].id == id {
+                    content.replaceSubrange(j...j, with: replacements)
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .orderedList(items: items)
+                    return true
+                }
+            }
+        case .blockquote(var children):
+            for i in children.indices where children[i].id == id {
+                children.replaceSubrange(i...i, with: replacements)
+                kind = .blockquote(children: children)
+                return true
+            }
+        default:
+            break
+        }
+        // Recursion fallback for deeper nesting (list inside
+        // blockquote, blockquote inside list item, etc.).
+        var replaced = false
+        mapEachContainer { child in
+            guard !replaced else { return }
+            if child.replaceDescendantBlock(id: id, with: replacements) {
+                replaced = true
+            }
+        }
+        return replaced
     }
 
     fileprivate mutating func insertDescendant(_ block: Block, after id: UUID) -> Bool {

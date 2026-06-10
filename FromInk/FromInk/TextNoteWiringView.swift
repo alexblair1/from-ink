@@ -198,6 +198,8 @@ struct TextNoteWiringView: View {
             store.send(.textEditing(.applyBlockFormat(.bulletedList)))
         case .applyNumberedList:
             store.send(.textEditing(.applyBlockFormat(.numberedList)))
+        case .exitList:
+            store.send(.textEditing(.exitList))
         case .openSlashPalette(let caretRectInEditor):
             let selection = store.textEditing.selection
             // Empty selection — fall back to the document's last leaf

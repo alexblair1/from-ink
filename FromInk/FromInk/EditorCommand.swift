@@ -43,4 +43,16 @@ enum EditorCommand: Equatable, Sendable {
     /// responder) — the popover degrades to the attached view's
     /// top-leading.
     case openSlashPalette(caretRectInEditor: CGRect)
+
+    /// Pressing Enter on an empty list item exits the list — the
+    /// item becomes a body paragraph in place. Matches the standard
+    /// Notion / Bear / Apple Notes behavior; without this the user
+    /// has no way to exit a list except via the slash palette or
+    /// keyboard shortcut.
+    ///
+    /// Detected by `TextKitEditorView` in `shouldChangeTextIn` so
+    /// the newline insertion can be suppressed (no flicker of an
+    /// extra empty item before the exit lands). The reducer's
+    /// `.exitList` handler does the document surgery.
+    case exitList
 }
