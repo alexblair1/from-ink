@@ -1578,10 +1578,20 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         // Track consecutive listItem index for numbering.
         var orderedRunningNumber: [UUID: Int] = [:]
 
-        textStorage.enumerateAttribute(.blockChrome, in: charRange, options: []) { value, range, _ in
-            guard let raw = value as? Int, let chrome = BlockChrome(rawValue: raw) else { return }
+        // Enumerate by `.blockID`, not `.blockChrome` (fix L2).
+        // `enumerateAttribute(.blockChrome)` consolidates adjacent
+        // ranges with the same chrome value, so a list with N items
+        // returned ONE giant range covering all of them — and our
+        // drawBullet only paints at the first line of its range,
+        // producing a single bullet for the entire list. Every leaf
+        // carries a unique `.blockID`, so enumerating that splits
+        // per paragraph and each item gets its own chrome paint.
+        textStorage.enumerateAttribute(.blockID, in: charRange, options: []) { _, leafRange, _ in
+            guard leafRange.length > 0,
+                  let chromeRaw = textStorage.attribute(.blockChrome, at: leafRange.location, effectiveRange: nil) as? Int,
+                  let chrome = BlockChrome(rawValue: chromeRaw) else { return }
 
-            let glyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let glyphRange = self.glyphRange(forCharacterRange: leafRange, actualCharacterRange: nil)
 
             switch chrome {
             case .blockquoteParagraph:
@@ -1591,12 +1601,12 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
             case .divider:
                 drawDivider(glyphRange: glyphRange, origin: origin)
             case .bulletListItem:
-                drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: range)
+                drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: leafRange)
             case .orderedListItem:
-                let groupID = (textStorage.attribute(.groupID, at: range.location, effectiveRange: nil) as? UUID) ?? UUID()
+                let groupID = (textStorage.attribute(.groupID, at: leafRange.location, effectiveRange: nil) as? UUID) ?? UUID()
                 let next = (orderedRunningNumber[groupID] ?? 0) + 1
                 orderedRunningNumber[groupID] = next
-                drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: range)
+                drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: leafRange)
             default:
                 break
             }
@@ -1660,21 +1670,37 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         }
     }
 
+    /// Draw the leading list marker in the **indent space** (left
+    /// of the text column), not inside the text column.
+    ///
+    /// `usedRect.minX` is where the glyphs start — that's `28` for
+    /// list-item paragraphs (matching `firstLineHeadIndent`), so
+    /// the old `usedRect.minX + 8` placed the bullet at x=36
+    /// *inside* the text column, sitting under the first character.
+    /// Using `lineFragmentRect.minX` instead gives the container's
+    /// leading edge; adding `lineFragmentPadding + offset` puts the
+    /// marker in the gutter the indent reserves for exactly this
+    /// purpose. We enumerate (rather than calling a helper) so the
+    /// closure receives both rects + the container in one pass.
     private func drawBullet(
         glyphRange: NSRange,
         origin: CGPoint,
         storage: NSTextStorage,
         charRange: NSRange
     ) {
-        guard let firstLineFrag = self.firstLineFragmentRect(forGlyphRange: glyphRange) else { return }
-        let frag = firstLineFrag.offsetBy(dx: origin.x, dy: origin.y)
-        let bulletAttrs: [NSAttributedString.Key: Any] = [
-            .font: storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
-                ?? UIFont.preferredFont(forTextStyle: .body),
+        let bulletFont = storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
+            ?? UIFont.preferredFont(forTextStyle: .body)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: bulletFont,
             .foregroundColor: tintColor.withAlphaComponent(0.85)
         ]
-        let bullet = NSAttributedString(string: "•", attributes: bulletAttrs)
-        bullet.draw(at: CGPoint(x: frag.minX + 8, y: frag.minY))
+        let bullet = NSAttributedString(string: "•", attributes: attrs)
+        enumerateLineFragments(forGlyphRange: glyphRange) { lineFragRect, usedRect, container, _, stop in
+            let x = origin.x + lineFragRect.minX + container.lineFragmentPadding + 10
+            let y = origin.y + usedRect.minY
+            bullet.draw(at: CGPoint(x: x, y: y))
+            stop.pointee = true
+        }
     }
 
     private func drawNumber(
@@ -1684,27 +1710,19 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         storage: NSTextStorage,
         charRange: NSRange
     ) {
-        guard let firstLineFrag = self.firstLineFragmentRect(forGlyphRange: glyphRange) else { return }
-        let frag = firstLineFrag.offsetBy(dx: origin.x, dy: origin.y)
+        let labelFont = storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
+            ?? UIFont.preferredFont(forTextStyle: .body)
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
-                ?? UIFont.preferredFont(forTextStyle: .body),
+            .font: labelFont,
             .foregroundColor: tintColor.withAlphaComponent(0.85)
         ]
         let label = NSAttributedString(string: "\(n).", attributes: attrs)
-        label.draw(at: CGPoint(x: frag.minX + 4, y: frag.minY))
-    }
-
-    /// Returns the rect of the FIRST line fragment for the glyph
-    /// range — used to position list markers at the leading edge of
-    /// the first line of each item.
-    private func firstLineFragmentRect(forGlyphRange glyphRange: NSRange) -> CGRect? {
-        var firstFragRect: CGRect? = nil
-        enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, _, stop in
-            firstFragRect = usedRect
+        enumerateLineFragments(forGlyphRange: glyphRange) { lineFragRect, usedRect, container, _, stop in
+            let x = origin.x + lineFragRect.minX + container.lineFragmentPadding + 4
+            let y = origin.y + usedRect.minY
+            label.draw(at: CGPoint(x: x, y: y))
             stop.pointee = true
         }
-        return firstFragRect
     }
 }
 #endif
