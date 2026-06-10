@@ -219,7 +219,18 @@ struct TextEditingFeature: Reducer {
 
             case .applyBlockFormat(let format):
                 guard state.loadFailure == nil else { return .none }
-                Self.applyBlockFormat(format, document: &state.document, selection: state.selection)
+                // Pass both as inout via local vars — Swift's
+                // exclusivity rules forbid two `&state.foo` inouts in
+                // one call (memory rule on MainActor isolation).
+                var doc = state.document
+                var sel = state.selection
+                Self.applyBlockFormat(
+                    format,
+                    document: &doc,
+                    selection: &sel
+                )
+                state.document = doc
+                state.selection = sel
                 state.isDirty = true
                 return schedulePersist()
 
@@ -240,6 +251,16 @@ struct TextEditingFeature: Reducer {
                         document: &state.document,
                         leafPath: state.slashPalette.triggerBlockPath,
                         triggerOffsetUTF16: triggerOffset
+                    )
+                    // Reset selection to the position where the trigger
+                    // USED to be — the strip removed [trigger..end] of
+                    // the leaf, so the caret lands at the trigger
+                    // offset (which is now end-of-leaf). Without this,
+                    // any subsequent inline-format action would target
+                    // stale UTF-16 offsets past the new end of text.
+                    state.selection = .insertion(
+                        at: state.slashPalette.triggerBlockPath,
+                        offset: triggerOffset
                     )
                 }
                 let formatAction = Self.blockFormatAction(for: command)
@@ -276,6 +297,14 @@ struct TextEditingFeature: Reducer {
     /// the trigger leaf, find the `/` at the trigger offset, and
     /// re-derive the filter from the slice after it. Dismiss if the
     /// trigger location is no longer valid.
+    ///
+    /// **Capture semantics.** The values pulled off `state` here
+    /// (`path`, `offset`, `document`) are captured by value into the
+    /// `Effect.run` closure that this method returns. The caller
+    /// ALREADY mutated `state.document = new` before invoking this —
+    /// so `document` below is the post-edit value, which is what we
+    /// want. Don't move this method's body inline above the
+    /// assignment or the capture would see the pre-edit document.
     private func refreshSlashFilterEffect(state: State) -> Effect<Action> {
         let path = state.slashPalette.triggerBlockPath
         let offset = state.slashPalette.triggerOffset
@@ -368,109 +397,213 @@ extension TextEditingFeature {
     /// the leaf at `leafPath`. The trigger offset is in UTF-16 units
     /// of the leaf's joined inline text; everything from the trigger
     /// to the end of the leaf is removed.
+    ///
+    /// **Mark preservation (fix C3).** Walks the existing inline runs,
+    /// keeping runs that fall entirely before the trigger offset, and
+    /// truncating the run that straddles the trigger boundary while
+    /// preserving its marks. Runs after the trigger are dropped. If
+    /// the user bolded text BEFORE typing the slash, the bold survives
+    /// the strip.
     fileprivate static func stripTriggerSlice(
         document: inout RichTextDocument,
         leafPath: [UUID],
         triggerOffsetUTF16: Int
     ) {
-        guard let leafID = leafPath.last else { return }
         document.mapLeaf(at: leafPath) { leaf in
-            guard let text = leaf.joinedInlineText else { return }
-            let utf16 = text.utf16
-            guard triggerOffsetUTF16 < utf16.count else { return }
-            // Build new inline by walking and dropping everything
-            // from the trigger onward.
-            let truncated = String(
-                decoding: Array(utf16.prefix(triggerOffsetUTF16)),
-                as: UTF16.self
-            )
-            // Replace leaf's inline (paragraph / heading) with a
-            // single inline run carrying the prefix; preserves the
-            // marks on the surviving prefix only roughly (a more
-            // careful implementation would re-walk to preserve
-            // per-character marks, but for the slash-strip path the
-            // user expected the trailing characters to evaporate).
             switch leaf.kind {
-            case .paragraph:
-                leaf.kind = .paragraph(inline: truncated.isEmpty ? [] : [Inline(text: truncated)])
-            case .heading(let level, _):
-                leaf.kind = .heading(level: level, inline: truncated.isEmpty ? [] : [Inline(text: truncated)])
-            case .codeBlock(_, let hint):
+            case .paragraph(let inline):
+                let truncated = truncateInlineRuns(inline, atUTF16: triggerOffsetUTF16)
+                leaf.kind = .paragraph(inline: truncated)
+            case .heading(let level, let inline):
+                let truncated = truncateInlineRuns(inline, atUTF16: triggerOffsetUTF16)
+                leaf.kind = .heading(level: level, inline: truncated)
+            case .codeBlock(let text, let hint):
+                // codeBlock has no inline runs — straight UTF-16 prefix.
+                let utf16 = text.utf16
+                guard triggerOffsetUTF16 <= utf16.count else { return }
+                let truncated = String(
+                    decoding: Array(utf16.prefix(triggerOffsetUTF16)),
+                    as: UTF16.self
+                )
                 leaf.kind = .codeBlock(text: truncated, languageHint: hint)
             case .divider, .bulletList, .orderedList, .blockquote:
                 return
             }
-            _ = leafID
         }
+    }
+
+    /// Truncate a list of inline runs at the given UTF-16 offset.
+    /// Runs that fall entirely before the offset survive verbatim with
+    /// all marks intact. The run straddling the offset gets its text
+    /// truncated but its marks preserved. Runs after the offset are
+    /// dropped.
+    fileprivate static func truncateInlineRuns(
+        _ runs: [Inline],
+        atUTF16 cutoff: Int
+    ) -> [Inline] {
+        guard cutoff > 0 else { return [] }
+        var out: [Inline] = []
+        var cursor = 0
+        for run in runs {
+            let runUTF16Count = run.text.utf16.count
+            if cursor >= cutoff {
+                // Already past the cutoff — drop the rest.
+                break
+            }
+            if cursor + runUTF16Count <= cutoff {
+                // Whole run survives verbatim.
+                out.append(run)
+                cursor += runUTF16Count
+                continue
+            }
+            // Run straddles the cutoff — truncate text, keep marks.
+            let localCutoff = cutoff - cursor
+            let utf16 = run.text.utf16
+            let truncatedText = String(
+                decoding: Array(utf16.prefix(localCutoff)),
+                as: UTF16.self
+            )
+            if !truncatedText.isEmpty {
+                out.append(Inline(text: truncatedText, marks: run.marks))
+            }
+            break
+        }
+        return out
     }
 
     /// Apply a block-level format to the leaf at `selection.path`. If
     /// the selection is unset, the document's last leaf is targeted.
+    ///
+    /// **Leaf identity preservation (fix C2).** Wrapping a leaf in a
+    /// container (blockquote / bulletList / orderedList) KEEPS the
+    /// leaf's `id` on the inner paragraph that carries the user's
+    /// content; the new outer container gets a fresh UUID. This means:
+    ///
+    ///   - The block tree's leaf identity follows the content. A
+    ///     NoteRegion text anchor that pointed at the leaf BEFORE the
+    ///     wrap still has a structurally valid target after the wrap —
+    ///     same id, content unchanged, just nested deeper.
+    ///   - `BlockTreeSelection.path` MUST be updated to prefix with
+    ///     the new outer container's id, otherwise the editor's caret
+    ///     would still be addressed by the old top-level path and no
+    ///     longer resolve.
+    ///   - NoteRegion anchor sweep (separate concern; lands with the
+    ///     text-range NoteRegion commit) is responsible for rewriting
+    ///     stored `anchorBlockPath` arrays the same way.
+    ///
+    /// **Divider order (fix C1).** Divider inserts BELOW the target
+    /// leaf as a horizontal rule. The caller expects
+    /// `[..., target, divider, fresh paragraph, ...]` — caret on the
+    /// fresh paragraph so typing continues below the rule. Insert
+    /// order: paragraph first, then divider — both anchored after the
+    /// target leaf. Each insert lands at `target index + 1`, so the
+    /// second insert displaces the first to `target index + 2`.
     fileprivate static func applyBlockFormat(
         _ format: BlockFormat,
         document: inout RichTextDocument,
-        selection: BlockTreeSelection
+        selection: inout BlockTreeSelection
     ) {
         // Resolve the target leaf — either via the selection's path
         // or the document's last leaf.
         let targetID: UUID
-        if !selection.path.isEmpty, let last = selection.path.last {
+        if let last = selection.path.last {
             targetID = last
         } else if let lastLeaf = document.lastLeafBlock {
             targetID = lastLeaf.id
         } else {
-            // Empty document — seed a paragraph then re-target.
+            // Empty document — seed a paragraph and target it. Inline
+            // (no recursion) so the selection update below sees the
+            // expected pre-state.
             let paragraph = Block(kind: .paragraph(inline: []))
             document.blocks.append(paragraph)
-            applyBlockFormat(format, document: &document, selection: .insertion(at: [paragraph.id], offset: 0))
+            selection = .insertion(at: [paragraph.id], offset: 0)
+            applyBlockFormat(format, document: &document, selection: &selection)
             return
         }
 
-        // For divider, we INSERT a new block after the target rather
-        // than replacing it — preserves the user's text and creates
-        // a hairline below it.
+        // Divider — insert paragraph then divider, both after target.
+        // Order matters: see doc comment above.
         if case .divider = format {
-            document.insertBlock(
-                Block(kind: .divider),
-                afterLeafID: targetID
-            )
-            // Also append a fresh paragraph after the divider so the
-            // caret can land on something writable.
-            document.insertBlock(
-                Block(kind: .paragraph(inline: [])),
-                afterLeafID: targetID
-            )
+            let paragraph = Block(kind: .paragraph(inline: []))
+            document.insertBlock(paragraph, afterLeafID: targetID)
+            document.insertBlock(Block(kind: .divider), afterLeafID: targetID)
+            // Caret lands on the fresh paragraph below the rule.
+            // Update selection.path: drop the last path component
+            // (the divider's target leaf) and replace with the new
+            // paragraph's id at the same nesting level.
+            if !selection.path.isEmpty {
+                var newPath = selection.path
+                newPath[newPath.count - 1] = paragraph.id
+                selection = .insertion(at: newPath, offset: 0)
+            } else {
+                selection = .insertion(at: [paragraph.id], offset: 0)
+            }
             return
         }
 
-        // Other formats replace the target leaf.
+        // Track which leaf id should be the addressable leaf AFTER the
+        // operation, plus the path prefix to prepend on a wrap.
+        var newOuterIDForWrap: UUID? = nil
+
         document.replaceLeaf(id: targetID) { existing in
-            // Salvage inline runs across the kind change. Code blocks
-            // flatten inline runs to plain text (no marks); other
-            // kinds preserve marks where possible.
             let existingInline = existing.kind.inlineRuns
             let existingText = existingInline?.reduce(into: "") { $0.append($1.text) } ?? ""
 
             switch format {
             case .heading(let level):
                 return Block(id: existing.id, kind: .heading(level: level, inline: existingInline ?? []))
+
             case .body:
                 return Block(id: existing.id, kind: .paragraph(inline: existingInline ?? []))
+
             case .blockQuote:
-                // Wrap the existing leaf in a blockquote container.
-                let wrapped = Block(id: UUID(), kind: existing.kind)
-                return Block(id: existing.id, kind: .blockquote(children: [wrapped]))
+                // Inner KEEPS existing.id so leaf identity follows
+                // the content. Outer wrapper gets a fresh UUID.
+                let wrapperID = UUID()
+                newOuterIDForWrap = wrapperID
+                return Block(id: wrapperID, kind: .blockquote(children: [existing]))
+
             case .codeBlock:
+                // codeBlock is plain text by construction — inline
+                // marks discard intentionally. If we ever round-trip
+                // paragraph → code → paragraph the marks are gone for
+                // good; that's the documented semantic.
                 return Block(id: existing.id, kind: .codeBlock(text: existingText, languageHint: nil))
+
             case .bulletedList:
-                let paragraph = Block(id: UUID(), kind: .paragraph(inline: existingInline ?? []))
-                return Block(id: existing.id, kind: .bulletList(items: [ListItem(content: [paragraph])]))
+                let wrapperID = UUID()
+                newOuterIDForWrap = wrapperID
+                let paragraph = Block(id: existing.id, kind: .paragraph(inline: existingInline ?? []))
+                return Block(id: wrapperID, kind: .bulletList(items: [ListItem(content: [paragraph])]))
+
             case .numberedList:
-                let paragraph = Block(id: UUID(), kind: .paragraph(inline: existingInline ?? []))
-                return Block(id: existing.id, kind: .orderedList(items: [ListItem(content: [paragraph])]))
+                let wrapperID = UUID()
+                newOuterIDForWrap = wrapperID
+                let paragraph = Block(id: existing.id, kind: .paragraph(inline: existingInline ?? []))
+                return Block(id: wrapperID, kind: .orderedList(items: [ListItem(content: [paragraph])]))
+
             case .divider:
                 return existing  // unreachable; handled above
             }
+        }
+
+        // After a wrap, the inner leaf's path gains the new outer
+        // container's id. Update selection.path so the editor's
+        // caret still addresses the leaf where the user's content
+        // ended up.
+        if let wrapperID = newOuterIDForWrap,
+           !selection.path.isEmpty,
+           selection.path.last == targetID {
+            // Replace the trailing component with [wrapperID, targetID]
+            // so the path grows by one level for the new wrapper.
+            var newPath = Array(selection.path.dropLast())
+            newPath.append(wrapperID)
+            newPath.append(targetID)
+            selection = BlockTreeSelection(
+                path: newPath,
+                startUTF16: selection.startUTF16,
+                endUTF16: selection.endUTF16
+            )
         }
     }
 
@@ -683,8 +816,37 @@ extension RichTextDocument {
 }
 
 extension Block {
+    /// Mutate the leaf at `path`. Walks direct children for the next
+    /// path id; if not found there, recurses through each container
+    /// child with the SAME path so deeply nested structures
+    /// (blockquote-inside-blockquote, list-inside-blockquote, etc.)
+    /// stay reachable. Path convention is the full chain of container
+    /// ids from this block to the leaf (skipping ListItem ids per
+    /// the §11 ListItem-path-skip rule).
     fileprivate mutating func mapDescendant(at path: [UUID], _ transform: (inout Block) -> Void) {
         guard let next = path.first else { return }
+        // Direct-child match (the common case).
+        if mapDirectChild(matching: next, remainingPath: path, transform) {
+            return
+        }
+        // Fallback: drill through container children. The path's
+        // first id wasn't a direct child, but it might be nested
+        // deeper. Recursing with the SAME path lets each container
+        // re-check ITS direct children. Used by edge cases where a
+        // wrap happened without a path update.
+        mapEachContainer { child in
+            child.mapDescendant(at: path, transform)
+        }
+    }
+
+    /// Try to descend through a direct child matching `next`. Returns
+    /// true if a child was matched (and transformed); false if no
+    /// direct child matches.
+    private mutating func mapDirectChild(
+        matching next: UUID,
+        remainingPath path: [UUID],
+        _ transform: (inout Block) -> Void
+    ) -> Bool {
         switch kind {
         case .bulletList(var items):
             for (i, item) in items.enumerated() {
@@ -697,9 +859,10 @@ extension Block {
                     }
                     items[i] = ListItem(id: item.id, content: content)
                     kind = .bulletList(items: items)
-                    return
+                    return true
                 }
             }
+            return false
         case .orderedList(var items):
             for (i, item) in items.enumerated() {
                 var content = item.content
@@ -711,9 +874,10 @@ extension Block {
                     }
                     items[i] = ListItem(id: item.id, content: content)
                     kind = .orderedList(items: items)
-                    return
+                    return true
                 }
             }
+            return false
         case .blockquote(var children):
             for (i, child) in children.enumerated() where child.id == next {
                 if path.count == 1 {
@@ -722,46 +886,85 @@ extension Block {
                     children[i].mapDescendant(at: Array(path.dropFirst()), transform)
                 }
                 kind = .blockquote(children: children)
-                return
+                return true
             }
+            return false
+        default:
+            return false
+        }
+    }
+
+    /// Visit every container child by reference. Used by the
+    /// fallback recursion paths in the mutation helpers.
+    private mutating func mapEachContainer(_ visit: (inout Block) -> Void) {
+        switch kind {
+        case .bulletList(var items):
+            for i in items.indices {
+                var content = items[i].content
+                for j in content.indices {
+                    visit(&content[j])
+                }
+                items[i] = ListItem(id: items[i].id, content: content)
+            }
+            kind = .bulletList(items: items)
+        case .orderedList(var items):
+            for i in items.indices {
+                var content = items[i].content
+                for j in content.indices {
+                    visit(&content[j])
+                }
+                items[i] = ListItem(id: items[i].id, content: content)
+            }
+            kind = .orderedList(items: items)
+        case .blockquote(var children):
+            for i in children.indices {
+                visit(&children[i])
+            }
+            kind = .blockquote(children: children)
         default:
             break
         }
     }
 
     fileprivate mutating func replaceDescendant(id: UUID, _ transform: (Block) -> Block) {
+        var matched = false
         switch kind {
         case .bulletList(var items):
-            var changed = false
             for (i, item) in items.enumerated() {
                 var content = item.content
                 for (j, child) in content.enumerated() where child.id == id {
                     content[j] = transform(child)
                     items[i] = ListItem(id: item.id, content: content)
-                    changed = true
+                    matched = true
                 }
             }
-            if changed { kind = .bulletList(items: items) }
+            if matched { kind = .bulletList(items: items) }
         case .orderedList(var items):
-            var changed = false
             for (i, item) in items.enumerated() {
                 var content = item.content
                 for (j, child) in content.enumerated() where child.id == id {
                     content[j] = transform(child)
                     items[i] = ListItem(id: item.id, content: content)
-                    changed = true
+                    matched = true
                 }
             }
-            if changed { kind = .orderedList(items: items) }
+            if matched { kind = .orderedList(items: items) }
         case .blockquote(var children):
-            var changed = false
             for (i, child) in children.enumerated() where child.id == id {
                 children[i] = transform(child)
-                changed = true
+                matched = true
             }
-            if changed { kind = .blockquote(children: children) }
+            if matched { kind = .blockquote(children: children) }
         default:
             break
+        }
+        // Fallback: drill through containers if the id wasn't a
+        // direct child of this block. Same correctness rationale as
+        // mapDescendant's fallback.
+        if !matched {
+            mapEachContainer { child in
+                child.replaceDescendant(id: id, transform)
+            }
         }
     }
 
@@ -796,6 +999,15 @@ extension Block {
         default:
             break
         }
-        return false
+        // Fallback: recurse into containers in case the target id is
+        // nested deeper.
+        var inserted = false
+        mapEachContainer { child in
+            guard !inserted else { return }
+            if child.insertDescendant(block, after: id) {
+                inserted = true
+            }
+        }
+        return inserted
     }
 }

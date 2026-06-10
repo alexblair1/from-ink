@@ -384,6 +384,9 @@ final class TextEditingFeatureTests: XCTestCase {
 
     @MainActor
     func test_applyBlockFormat_divider_insertsAfterTargetLeaf() async {
+        // Regression for fix C1: the previous implementation inserted
+        // [target, paragraph, divider] (wrong order). Correct order is
+        // [target, divider, fresh paragraph for the caret].
         let doc = paragraphDoc("Above")
         let leafID = doc.blocks[0].id
         var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
@@ -400,15 +403,95 @@ final class TextEditingFeatureTests: XCTestCase {
         await store.send(.applyBlockFormat(.divider))
 
         let blocks = store.state.document.blocks
-        XCTAssertEqual(blocks.count, 3, "Original paragraph + divider + fresh paragraph after")
-        XCTAssertEqual(blocks[0].id, leafID, "Original paragraph stays at index 0 by id")
-        // After insertion: target stays, fresh paragraph inserted first, then divider after target.
-        // The reducer inserts a paragraph after the divider so the caret has somewhere to land —
-        // but inserts in reverse order (paragraph, then divider) so the divider ends up right
-        // after the target leaf.
-        let kinds = blocks.map { String(describing: $0.kind).prefix(10) }
-        let hasDivider = blocks.contains { if case .divider = $0.kind { return true } else { return false } }
-        XCTAssertTrue(hasDivider, "Document must now contain a divider — found kinds: \(kinds)")
+        XCTAssertEqual(blocks.count, 3)
+        XCTAssertEqual(blocks[0].id, leafID, "Original paragraph stays at index 0")
+        // Pin the EXACT order — block at index 1 is the divider, not
+        // the fresh paragraph.
+        if case .divider = blocks[1].kind {
+            // ok
+        } else {
+            XCTFail("Expected divider at index 1, got \(blocks[1].kind)")
+        }
+        // Block at index 2 is the fresh paragraph for the caret.
+        guard case .paragraph(let freshInline) = blocks[2].kind else {
+            XCTFail("Expected fresh paragraph at index 2")
+            return
+        }
+        XCTAssertEqual(freshInline, [], "Fresh paragraph below the divider must be empty")
+        // Caret lands on the fresh paragraph below the rule.
+        XCTAssertEqual(store.state.selection.path, [blocks[2].id])
+        XCTAssertEqual(store.state.selection.startUTF16, 0)
+    }
+
+    // MARK: - C2 — leaf identity preservation on wrap
+
+    @MainActor
+    func test_applyBlockFormat_blockQuote_preservesInnerLeafID() async {
+        // Regression for fix C2: wrapping a leaf in a blockquote must
+        // KEEP the leaf's id on the inner paragraph so NoteRegion text
+        // anchors continue to point at the same structural unit (the
+        // leaf carrying the user's content).
+        let doc = paragraphDoc("Important text")
+        let originalLeafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [originalLeafID], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.blockQuote))
+
+        guard case .blockquote(let children) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected blockquote")
+            return
+        }
+        XCTAssertEqual(
+            children.first?.id, originalLeafID,
+            "Inner leaf MUST keep the original id so anchor paths can be rewritten to it"
+        )
+        // The outer wrapper has a different id.
+        XCTAssertNotEqual(
+            store.state.document.blocks[0].id, originalLeafID,
+            "Outer wrapper has a fresh id"
+        )
+        // Selection updated to address the leaf at its new path.
+        XCTAssertEqual(
+            store.state.selection.path,
+            [store.state.document.blocks[0].id, originalLeafID],
+            "Selection path must prefix with the new outer container id"
+        )
+    }
+
+    @MainActor
+    func test_applyBlockFormat_bulletedList_preservesInnerLeafID() async {
+        let doc = paragraphDoc("Item text")
+        let originalLeafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [originalLeafID], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.bulletedList))
+
+        guard case .bulletList(let items) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected bulletList")
+            return
+        }
+        XCTAssertEqual(
+            items.first?.content.first?.id, originalLeafID,
+            "Inner paragraph of the list item MUST keep the original leaf id"
+        )
     }
 
     @MainActor
@@ -565,6 +648,125 @@ final class TextEditingFeatureTests: XCTestCase {
         }
         XCTAssertEqual(inline[0].text, "link")
         XCTAssertEqual(inline[0].marks, [.underline])
+    }
+
+    // MARK: - C3 — stripTriggerSlice preserves marks
+
+    @MainActor
+    func test_slashPaletteCommandSelected_preservesMarksOnSurvivingPrefix() async {
+        // Regression for fix C3: when the user has bolded text BEFORE
+        // typing "/", the bold MUST survive the strip. The previous
+        // implementation rebuilt the paragraph as a single unmarked
+        // inline run, silently destroying the user's formatting.
+        let bold = Inline(text: "Bold", marks: [.bold])
+        let plain = Inline(text: " plain /h", marks: [])
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [bold, plain]))
+        ])
+        let leafID = doc.blocks[0].id
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        // "Bold plain /h" — UTF-16 offsets: 0=B, 4=' ', 10='/', 11='h'.
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.triggerOffset = 11   // index of "/"
+        initial.slashPalette.triggerBlockPath = [leafID]
+        initial.selection = .insertion(at: [leafID], offset: 13)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading2)))
+        await store.receive(.applyBlockFormat(.heading(level: 2)))
+
+        // Heading 2 applied. Inline runs reflect the surviving text
+        // up to the trigger, with bold preserved on the "Bold" prefix.
+        guard case .heading(_, let inline) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected heading")
+            return
+        }
+        XCTAssertEqual(inline.count, 2, "Both runs (bold prefix + plain space portion) preserved")
+        XCTAssertEqual(inline[0].text, "Bold")
+        XCTAssertEqual(inline[0].marks, [.bold], "Bold mark MUST survive the strip")
+        XCTAssertEqual(inline[1].text, " plain ", "Plain text up to the trigger preserved")
+        XCTAssertEqual(inline[1].marks, [], "Plain text run keeps its (empty) mark set")
+    }
+
+    // MARK: - S1 — selection reset after stripTriggerSlice
+
+    @MainActor
+    func test_slashPaletteCommandSelected_resetsSelectionToTriggerOffset() async {
+        let doc = paragraphDoc("Hello /heading")
+        let leafID = doc.blocks[0].id
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.triggerOffset = 6
+        initial.slashPalette.triggerBlockPath = [leafID]
+        // Caret was past the filter text at offset 14 (end of "/heading").
+        initial.selection = .insertion(at: [leafID], offset: 14)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading1)))
+        await store.receive(.applyBlockFormat(.heading(level: 1)))
+
+        // Selection's UTF-16 offset must reset to the trigger
+        // position (end of surviving text). Without this, the offset
+        // would point past the leaf's new end after the strip.
+        XCTAssertEqual(store.state.selection.path, [leafID])
+        XCTAssertEqual(store.state.selection.startUTF16, 6)
+        XCTAssertEqual(store.state.selection.endUTF16, 6)
+    }
+
+    // MARK: - Nested container traversal (fix C4)
+
+    @MainActor
+    func test_applyBlockFormat_inDeeplyNestedBlockquote_targetsCorrectLeaf() async {
+        // Regression for fix C4: mapDescendant / replaceDescendant must
+        // recurse through container children even when the path's
+        // first id isn't a direct child. Construct
+        // blockquote(blockquote(paragraph)) and apply heading to the
+        // inner paragraph via its FULL path.
+        let inner = Block(kind: .paragraph(inline: [Inline(text: "Nested")]))
+        let middle = Block(kind: .blockquote(children: [inner]))
+        let outer = Block(kind: .blockquote(children: [middle]))
+        let doc = RichTextDocument(blocks: [outer])
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        // Full path: outer → middle → inner.
+        initial.selection = .insertion(at: [outer.id, middle.id, inner.id], offset: 0)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.heading(level: 3)))
+
+        // The inner paragraph should now be a heading. Reach into the
+        // nested structure to verify.
+        guard case .blockquote(let outerChildren) = store.state.document.blocks[0].kind,
+              case .blockquote(let middleChildren) = outerChildren[0].kind,
+              case .heading(let level, let text) = middleChildren[0].kind else {
+            XCTFail("Inner paragraph should have become a heading")
+            return
+        }
+        XCTAssertEqual(level, 3)
+        XCTAssertEqual(text.first?.text, "Nested")
     }
 
     // MARK: - slashPaletteCommandSelected

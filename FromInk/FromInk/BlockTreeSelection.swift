@@ -73,6 +73,10 @@ extension RichTextDocument {
     /// in-order traversal). Used by block-format actions when the
     /// selection is unset — applies the format to the document's
     /// last paragraph, matching the prior end-of-document fallback.
+    ///
+    /// Returns nil for an empty document (no blocks at all). Callers
+    /// are responsible for seeding a fresh paragraph in that case
+    /// before applying any block-level format.
     var lastLeafBlock: Block? {
         // Walk depth-first, last-first.
         for block in blocks.reversed() {

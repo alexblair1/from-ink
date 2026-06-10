@@ -287,7 +287,7 @@ struct Inline: Codable, Equatable, Sendable {
 
         // Iterate marks one slot at a time. `try?` returns nil on an
         // unknown Mark tag without throwing; if it returns nil we
-        // explicitly advance past the slot with `EmptyDecodable`,
+        // explicitly advance past the slot with `ConsumedSlot`,
         // which has no required fields and so accepts any JSON value
         // (including null and arbitrarily-shaped objects). This is
         // the only safe way to skip an unknown element in an
@@ -299,7 +299,7 @@ struct Inline: Codable, Equatable, Sendable {
             if let mark = try? marksContainer.decode(Mark.self) {
                 preserved.append(mark)
             } else {
-                _ = try? marksContainer.decode(EmptyDecodable.self)
+                _ = try? marksContainer.decode(ConsumedSlot.self)
                 log.warning("Decoded unknown inline mark — dropped from run, text preserved")
             }
         }
@@ -387,11 +387,13 @@ enum Mark: Codable, Hashable, Sendable {
     }
 }
 
-/// Throwaway type used inside `Inline`'s forward-compat decoder to
-/// pop unknown elements without inspecting their shape. Conforms to
-/// `Decodable` with no fields, so it accepts any JSON value — null,
-/// number, string, array, deeply-nested object — without throwing.
-private struct EmptyDecodable: Decodable {}
+/// Throwaway placeholder used inside `Inline`'s forward-compat
+/// decoder to advance the unkeyed container past an unknown element
+/// without inspecting its shape. Conforms to `Decodable` with no
+/// fields, so it accepts any JSON value — null, number, string,
+/// array, deeply-nested object — without throwing. The name reflects
+/// what it does: consume one slot of the array.
+private struct ConsumedSlot: Decodable {}
 
 // MARK: - HighlightKind
 
