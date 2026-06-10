@@ -146,22 +146,30 @@ struct TextNoteWiringView: View {
             rows: rows,
             filterText: store.textEditing.slashPalette.filterText
         ))
-        let caretRect = slashCaretRectScreen
 
-        return GeometryReader { proxy in
-            let overlayOriginScreen = proxy.frame(in: .global).origin
-            let translatedX = max(0, caretRect.minX - overlayOriginScreen.x)
-            let translatedY = max(0, caretRect.maxY - overlayOriginScreen.y + 6)
-            // Tap-outside dismiss surface (transparent, full-bounds).
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        store.send(.textEditing(.slashPalette(.dismissed)))
-                    }
-                popover
-                    .offset(x: translatedX, y: translatedY)
-            }
+        // Caret-anchored positioning via overlay alignment + padding.
+        // The padding values are derived from the screen-coord caret
+        // rect — the wiring view's outer ZStack is full-screen, so
+        // `caretRect.minX`/`caretRect.maxY` map roughly to padding
+        // values into the popover overlay. The `max(...)` floors
+        // keep the popover visible during the initial frame when
+        // `slashCaretRectScreen` is still `.zero`.
+        let caretRect = slashCaretRectScreen
+        let leadingPadding = max(ds.spacing.lg + ds.spacing.md, caretRect.minX)
+        let topPadding = max(ds.spacing.xxl, caretRect.maxY + 6)
+
+        return ZStack(alignment: .topLeading) {
+            // Transparent tap-dismiss surface covers everything
+            // EXCEPT the popover itself (which is rendered on top
+            // and absorbs its own taps).
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    store.send(.textEditing(.slashPalette(.dismissed)))
+                }
+            popover
+                .padding(.top, topPadding)
+                .padding(.leading, leadingPadding)
         }
     }
 
