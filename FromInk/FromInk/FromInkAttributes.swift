@@ -132,16 +132,11 @@ enum SlashInsertionAttribute: CodableAttributedStringKey, Sendable {
     static let inheritedByAddedText = true
 }
 
-/// Visual + semantic highlight kind. The full set lands with the
-/// selection menu in a later commit; v1 carries the four default
-/// color kinds so the AttributedString Codable round-trip exercises
-/// real values rather than placeholders.
-enum HighlightKind: String, Codable, Hashable, Sendable {
-    case yellow
-    case red
-    case blue
-    case green
-}
+// `HighlightKind` moved to `RichTextDocument.swift` as part of the
+// 2026-06-09 block-tree pivot. The old AttributedString scope here is
+// being retired commit-by-commit (text experience EDD §22.4 / §22.10);
+// the highlight key still typealiases to the type, but the canonical
+// definition lives next to the rest of the document schema now.
 
 /// Stable identifier for a slash command. Placeholder until the full
 /// `SlashCommand` enum lands in PR 2; until then any future commands
