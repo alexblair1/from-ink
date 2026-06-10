@@ -200,6 +200,8 @@ struct TextNoteWiringView: View {
             store.send(.textEditing(.applyBlockFormat(.numberedList)))
         case .exitList:
             store.send(.textEditing(.exitList))
+        case .insertParagraph:
+            store.send(.textEditing(.insertParagraph))
         case .openSlashPalette(let caretRectInEditor):
             let selection = store.textEditing.selection
             // Empty selection — fall back to the document's last leaf

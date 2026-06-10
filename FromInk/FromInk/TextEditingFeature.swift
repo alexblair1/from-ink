@@ -115,6 +115,15 @@ struct TextEditingFeature: Reducer {
         /// Enter on an empty list item — see `EditorCommand.exitList`.
         case exitList
 
+        /// Split the current leaf at the cursor, creating a new
+        /// leaf below with the post-cursor text. List items split
+        /// into adjacent list items; headings split into the
+        /// heading + a body paragraph (Enter doesn't propagate the
+        /// heading). Fired by the editor's `shouldChangeTextIn`
+        /// when the user presses Enter — see
+        /// `EditorCommand.insertParagraph`.
+        case insertParagraph
+
         case slashPalette(SlashCommandPaletteFeature.Action)
     }
 
@@ -260,6 +269,17 @@ struct TextEditingFeature: Reducer {
                 var sel = state.selection
                 let didExit = Self.exitList(document: &doc, selection: &sel)
                 guard didExit else { return .none }
+                state.document = doc
+                state.selection = sel
+                state.isDirty = true
+                return schedulePersist()
+
+            case .insertParagraph:
+                guard state.loadFailure == nil else { return .none }
+                var doc = state.document
+                var sel = state.selection
+                let didSplit = Self.insertParagraphAtCursor(document: &doc, selection: &sel)
+                guard didSplit else { return .none }
                 state.document = doc
                 state.selection = sel
                 state.isDirty = true
@@ -712,6 +732,124 @@ extension TextEditingFeature {
         var newPath = containerPath
         newPath.removeLast()
         newPath.append(leafID)
+        selection = .insertion(at: newPath, offset: 0)
+        return true
+    }
+
+    /// Split the leaf at `selection.path` into two leaves at the
+    /// cursor (UTF-16 offset = `selection.startUTF16`).
+    ///
+    /// **Shape per leaf kind:**
+    ///   - `paragraph` → splits into `paragraph` + `paragraph`.
+    ///   - `heading(level)` → `heading(level)` + `paragraph` —
+    ///     Enter on a heading drops back to body text (matches
+    ///     Notion / Bear / Apple Notes).
+    ///   - `codeBlock` → split into two code blocks, language
+    ///     hint preserved on the first half. (Hitting Enter in a
+    ///     code block stays in code; Shift-Enter / explicit
+    ///     `.applyBody` is how the user exits.)
+    ///   - `divider` / container kinds → no-op (the caller
+    ///     shouldn't be able to position a cursor there).
+    ///
+    /// **Container shape:**
+    ///   - Inside a list item: replace the original leaf with
+    ///     first-half, then insert a NEW list item right after
+    ///     containing the second-half leaf. The outer list's
+    ///     identity is preserved.
+    ///   - Inside a blockquote: insert the new leaf inside the
+    ///     same blockquote children, after the original.
+    ///   - Top-level: insert the new leaf at the next top-level
+    ///     position.
+    ///
+    /// Returns true on success. False means the selection didn't
+    /// point at a leaf that can split (empty path, unresolvable
+    /// path, divider). Inline marks are dropped on the cursor's
+    /// boundary in v1 — splitting bold text at the cursor produces
+    /// two unbolded halves. Acceptable v1 simplification; revisit
+    /// when run-splitting becomes a regression source.
+    fileprivate static func insertParagraphAtCursor(
+        document: inout RichTextDocument,
+        selection: inout BlockTreeSelection
+    ) -> Bool {
+        guard let leafID = selection.path.last,
+              let leaf = document.block(at: selection.path) else { return false }
+
+        let cursorOffset = max(0, selection.startUTF16)
+
+        let firstText: String
+        let secondText: String
+        let leafText = leaf.joinedInlineText ?? ""
+        let utf16 = leafText.utf16
+        let split = min(cursorOffset, utf16.count)
+        let splitIdx = utf16.index(utf16.startIndex, offsetBy: split)
+        firstText = String(utf16[utf16.startIndex..<splitIdx]) ?? ""
+        secondText = String(utf16[splitIdx..<utf16.endIndex]) ?? ""
+
+        // First-half leaf retains the original block's kind and id.
+        let firstLeaf: Block
+        switch leaf.kind {
+        case .paragraph:
+            firstLeaf = Block(id: leaf.id, kind: .paragraph(inline: [Inline(text: firstText)]))
+        case .heading(let level, _):
+            firstLeaf = Block(id: leaf.id, kind: .heading(level: level, inline: [Inline(text: firstText)]))
+        case .codeBlock(_, let lang):
+            firstLeaf = Block(id: leaf.id, kind: .codeBlock(text: firstText, languageHint: lang))
+        case .divider, .bulletList, .orderedList, .blockquote:
+            return false
+        }
+
+        // Second-half leaf: new id, kind depends on first's kind.
+        let secondID = UUID()
+        let secondLeaf: Block
+        switch leaf.kind {
+        case .codeBlock(_, let lang):
+            secondLeaf = Block(id: secondID, kind: .codeBlock(text: secondText, languageHint: lang))
+        default:
+            // Heading → body paragraph; paragraph → paragraph.
+            secondLeaf = Block(id: secondID, kind: .paragraph(inline: [Inline(text: secondText)]))
+        }
+
+        // Resolve container shape.
+        let containerPath = Array(selection.path.dropLast())
+        if !containerPath.isEmpty,
+           let container = document.block(at: containerPath) {
+            switch container.kind {
+            case .bulletList(let items), .orderedList(let items):
+                guard let itemIndex = items.firstIndex(where: { item in
+                    item.content.contains(where: { $0.id == leafID })
+                }) else { return false }
+
+                var newItems = items
+                newItems[itemIndex] = ListItem(id: items[itemIndex].id, content: [firstLeaf])
+                newItems.insert(ListItem(id: UUID(), content: [secondLeaf]), at: itemIndex + 1)
+
+                let isOrdered: Bool
+                if case .orderedList = container.kind { isOrdered = true } else { isOrdered = false }
+                let newKind: Block.Kind = isOrdered
+                    ? .orderedList(items: newItems)
+                    : .bulletList(items: newItems)
+                document.replaceBlock(
+                    id: container.id,
+                    with: [Block(id: container.id, kind: newKind)]
+                )
+
+                var newPath = containerPath
+                newPath.append(secondID)
+                selection = .insertion(at: newPath, offset: 0)
+                return true
+
+            default:
+                break
+            }
+        }
+
+        // Top-level or blockquote / other container — replace
+        // the leaf with first-half, insert second-half after.
+        document.replaceLeaf(id: leafID) { _ in firstLeaf }
+        document.insertBlock(secondLeaf, afterLeafID: leafID)
+
+        var newPath = Array(selection.path.dropLast())
+        newPath.append(secondID)
         selection = .insertion(at: newPath, offset: 0)
         return true
     }

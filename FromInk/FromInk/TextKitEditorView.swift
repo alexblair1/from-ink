@@ -409,11 +409,15 @@ struct TextKitEditorView: UIViewRepresentable {
                 bodyColor: bodyColor
             )
         }
-        // Trim a trailing newline if any leaf added one.
-        if mutable.length > 0,
-           mutable.attributedSubstring(from: NSRange(location: mutable.length - 1, length: 1)).string == "\n" {
-            mutable.deleteCharacters(in: NSRange(location: mutable.length - 1, length: 1))
-        }
+        // Flatten emits ONE trailing `\n` per paragraph as the
+        // paragraph-attributes carrier. We deliberately don't trim
+        // it: an empty list item flattens to just "\n", and the
+        // layout manager needs that `\n` as the line-fragment
+        // anchor so `drawBullet` has something to position
+        // against. Parse-back's `splitParagraphs` already treats
+        // the final `\n` as the terminator of its preceding
+        // paragraph (not a separator that creates an extra empty
+        // trailing paragraph), so the round-trip stays clean.
         // Build the leaf-id → entry index for O(1) bridging.
         var idMap: FlattenIDMap = [:]
         for entry in map {
@@ -1295,6 +1299,20 @@ struct TextKitEditorView: UIViewRepresentable {
                 return false
             }
 
+            // Generic Enter on any other leaf (non-empty list
+            // item, top-level paragraph, heading, blockquote
+            // paragraph) — route through the reducer so the
+            // document is the source of truth for paragraph
+            // structure. See `EditorCommand.insertParagraph` for
+            // the rationale. Only the literal `\n` insertion case;
+            // multi-character pastes that contain newlines still
+            // fall through to UIKit + parse-back.
+            if text == "\n", range.length == 0, !parent.selection.path.isEmpty {
+                pendingSlashLocation = nil
+                parent.onCommand(.insertParagraph)
+                return false
+            }
+
             return true
         }
 
@@ -1574,42 +1592,87 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         guard let textStorage = textStorage else { return }
 
         let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        let nsString = textStorage.string as NSString
+        let storageLength = textStorage.length
 
         // Track consecutive listItem index for numbering.
         var orderedRunningNumber: [UUID: Int] = [:]
 
-        // Enumerate by `.blockID`, not `.blockChrome` (fix L2).
-        // `enumerateAttribute(.blockChrome)` consolidates adjacent
-        // ranges with the same chrome value, so a list with N items
-        // returned ONE giant range covering all of them — and our
-        // drawBullet only paints at the first line of its range,
-        // producing a single bullet for the entire list. Every leaf
-        // carries a unique `.blockID`, so enumerating that splits
-        // per paragraph and each item gets its own chrome paint.
-        textStorage.enumerateAttribute(.blockID, in: charRange, options: []) { _, leafRange, _ in
-            guard leafRange.length > 0,
-                  let chromeRaw = textStorage.attribute(.blockChrome, at: leafRange.location, effectiveRange: nil) as? Int,
-                  let chrome = BlockChrome(rawValue: chromeRaw) else { return }
+        // Enumerate by **paragraph boundary** (split on `\n`), not
+        // by `.blockChrome` or `.blockID`. Both attribute-based
+        // enumerations have a fatal flaw for live editing: when
+        // the user types after pressing Enter, `typingAttributes`
+        // carries the previous paragraph's chrome AND blockID
+        // forward. UIKit applies those attrs to the new character,
+        // so two adjacent paragraphs in `attributedText` carry
+        // identical attribute values — `enumerateAttribute`
+        // consolidates them into one range, and only the first
+        // line gets a chrome paint. Splitting on `\n` instead
+        // gives us one paint call per paragraph regardless of
+        // attribute consolidation.
+        let end = charRange.location + charRange.length
+        var cursor = charRange.location
+        while cursor < end {
+            let searchRange = NSRange(location: cursor, length: end - cursor)
+            let nlRange = nsString.range(of: "\n", options: [], range: searchRange)
+            let paraEnd = nlRange.location != NSNotFound ? nlRange.location : end
+            let paraRange = NSRange(location: cursor, length: paraEnd - cursor)
 
-            let glyphRange = self.glyphRange(forCharacterRange: leafRange, actualCharacterRange: nil)
-
-            switch chrome {
-            case .blockquoteParagraph:
-                drawBlockquote(glyphRange: glyphRange, origin: origin)
-            case .codeBlock:
-                drawCodeBlock(glyphRange: glyphRange, origin: origin)
-            case .divider:
-                drawDivider(glyphRange: glyphRange, origin: origin)
-            case .bulletListItem:
-                drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: leafRange)
-            case .orderedListItem:
-                let groupID = (textStorage.attribute(.groupID, at: leafRange.location, effectiveRange: nil) as? UUID) ?? UUID()
-                let next = (orderedRunningNumber[groupID] ?? 0) + 1
-                orderedRunningNumber[groupID] = next
-                drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: leafRange)
-            default:
-                break
+            // Probe chrome at the first character of the
+            // paragraph, or at the trailing `\n` itself for empty
+            // paragraphs (the `\n` carries the paragraph's attrs
+            // because flatten sets them there too).
+            let probeLocation: Int
+            if paraRange.length > 0 {
+                probeLocation = paraRange.location
+            } else if paraEnd < storageLength {
+                probeLocation = paraEnd
+            } else if paraRange.location > 0 {
+                probeLocation = paraRange.location - 1
+            } else {
+                probeLocation = -1
             }
+
+            if probeLocation >= 0,
+               probeLocation < storageLength,
+               let chromeRaw = textStorage.attribute(.blockChrome, at: probeLocation, effectiveRange: nil) as? Int,
+               let chrome = BlockChrome(rawValue: chromeRaw) {
+
+                // Extend the glyph range by one when the paragraph
+                // has no text — `enumerateLineFragments` doesn't
+                // iterate over zero-length ranges, but the
+                // trailing `\n` at `paraEnd` has its own line
+                // fragment we can anchor against.
+                let extendedChar: NSRange
+                if paraRange.length == 0, paraEnd < storageLength {
+                    extendedChar = NSRange(location: paraRange.location, length: 1)
+                } else {
+                    extendedChar = paraRange
+                }
+                let glyphRange = self.glyphRange(forCharacterRange: extendedChar, actualCharacterRange: nil)
+                let probeRange = NSRange(location: probeLocation, length: 1)
+
+                switch chrome {
+                case .blockquoteParagraph:
+                    drawBlockquote(glyphRange: glyphRange, origin: origin)
+                case .codeBlock:
+                    drawCodeBlock(glyphRange: glyphRange, origin: origin)
+                case .divider:
+                    drawDivider(glyphRange: glyphRange, origin: origin)
+                case .bulletListItem:
+                    drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
+                case .orderedListItem:
+                    let groupID = (textStorage.attribute(.groupID, at: probeLocation, effectiveRange: nil) as? UUID) ?? UUID()
+                    let next = (orderedRunningNumber[groupID] ?? 0) + 1
+                    orderedRunningNumber[groupID] = next
+                    drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
+                default:
+                    break
+                }
+            }
+
+            if nlRange.location == NSNotFound { break }
+            cursor = paraEnd + 1
         }
     }
 

@@ -34,7 +34,10 @@ final class TextKitEditorViewTests: XCTestCase {
             Block(id: id, kind: .paragraph(inline: [Inline(text: "Hello")]))
         ])
         let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        XCTAssertEqual(result.attributed.string, "Hello")
+        // Flatten emits one trailing `\n` per paragraph as the
+        // chrome / line-fragment carrier (no trim — see flatten's
+        // inline comment for why).
+        XCTAssertEqual(result.attributed.string, "Hello\n")
         let attrs = result.attributed.attributes(at: 0, effectiveRange: nil)
         XCTAssertEqual(attrs[.blockChrome] as? Int, BlockChrome.paragraph.rawValue)
         XCTAssertEqual(attrs[.blockID] as? UUID, id)
@@ -58,7 +61,7 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        XCTAssertEqual(result.attributed.string, "A\nB")
+        XCTAssertEqual(result.attributed.string, "A\nB\n")
 
         let firstAttrs = result.attributed.attributes(at: 0, effectiveRange: nil)
         // Index 2 is the start of "B" (after "A\n").
@@ -107,7 +110,7 @@ final class TextKitEditorViewTests: XCTestCase {
             Block(kind: .divider)
         ])
         let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        XCTAssertEqual(result.attributed.string, "\u{00A0}")
+        XCTAssertEqual(result.attributed.string, "\u{00A0}\n")
         let attrs = result.attributed.attributes(at: 0, effectiveRange: nil)
         XCTAssertEqual(attrs[.blockChrome] as? Int, BlockChrome.divider.rawValue)
     }

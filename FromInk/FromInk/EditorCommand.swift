@@ -55,4 +55,22 @@ enum EditorCommand: Equatable, Sendable {
     /// extra empty item before the exit lands). The reducer's
     /// `.exitList` handler does the document surgery.
     case exitList
+
+    /// User pressed Enter on a non-empty leaf (or any non-list
+    /// leaf, empty or not). The editor suppresses UIKit's `\n`
+    /// insertion and asks the reducer to split the current leaf
+    /// at the cursor: first half stays in the original leaf, second
+    /// half becomes a new leaf below. Selection lands at the start
+    /// of the new leaf.
+    ///
+    /// **Why explicit rather than letting UIKit handle it.** UIKit
+    /// inserts `\n` into `attributedText` directly, which leaves
+    /// the document model out of sync until parse-back runs. The
+    /// parse-back can't tell "user pressed Enter at end of text"
+    /// from a trailing `\n` that's structurally part of the last
+    /// paragraph — so the new paragraph silently vanishes, the
+    /// next typed character has stale chrome, and bullets stop
+    /// rendering on subsequent lines. Routing through the reducer
+    /// keeps the document authoritative for paragraph structure.
+    case insertParagraph
 }
