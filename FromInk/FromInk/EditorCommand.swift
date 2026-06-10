@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Keyboard-invocable editor commands. Maps to `TextEditingFeature`
@@ -31,5 +32,9 @@ enum EditorCommand: Equatable, Sendable {
     case applyBody
     case applyBulletedList
     case applyNumberedList
-    case openSlashPalette
+    /// Open the slash palette at the cursor's current location.
+    /// `caretRect` is in SCREEN coordinates (via `UIView.convert(_:to:nil)`);
+    /// the wiring view uses a `GeometryReader` to translate to its own
+    /// local space for popover positioning.
+    case openSlashPalette(caretRect: CGRect)
 }

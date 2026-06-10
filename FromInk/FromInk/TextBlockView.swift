@@ -67,8 +67,8 @@ struct TextBlockView: View {
                     get: { model.selection },
                     set: { model.onSelectionChanged($0) }
                 ),
-                onSlashTyped: { path, offset in
-                    model.onSlashTyped(path, offset)
+                onSlashTyped: { path, offset, caretRect in
+                    model.onSlashTyped(path, offset, caretRect)
                 },
                 onCommand: { command in
                     model.onEditorCommand(command)
@@ -204,7 +204,7 @@ extension TextBlockView {
         /// transitional placeholder doesn't call any of them.
         let onDocumentEdited: (RichTextDocument) -> Void
         let onSelectionChanged: (BlockTreeSelection) -> Void
-        let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+        let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRectScreen: CGRect) -> Void
         let onEditorCommand: (EditorCommand) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
@@ -243,7 +243,7 @@ extension TextBlockView.Model {
         persistFailureTitle: String? = nil,
         onDocumentEdited: @escaping (RichTextDocument) -> Void = { _ in },
         onSelectionChanged: @escaping (BlockTreeSelection) -> Void = { _ in },
-        onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void = { _, _ in },
+        onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRectScreen: CGRect) -> Void = { _, _, _ in },
         onEditorCommand: @escaping (EditorCommand) -> Void = { _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,

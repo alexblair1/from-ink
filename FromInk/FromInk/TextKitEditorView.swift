@@ -55,7 +55,11 @@ import UIKit
 struct TextKitEditorView: UIViewRepresentable {
     @Binding var document: RichTextDocument
     @Binding var selection: BlockTreeSelection
-    let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+    /// Fired when the user types a `/` at a word boundary. The
+    /// caret rect is in **screen coordinates** (via
+    /// `UIView.convert(_:to:nil)`) — the wiring view translates to
+    /// its own local space for popover positioning.
+    let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRectScreen: CGRect) -> Void
     /// Routed from the custom UITextView subclass's `keyCommands` to
     /// the wiring view, which maps each `EditorCommand` onto a TCA
     /// action. The editor view stays feature-agnostic — it doesn't
@@ -937,6 +941,28 @@ struct TextKitEditorView: UIViewRepresentable {
         )
     }
 
+    // MARK: - Caret rect
+
+    /// Compute the caret rect at the given NSRange (in the text
+    /// view's attributed text) and return it in **screen
+    /// coordinates** via `UIView.convert(_:to:nil)`. The wiring view
+    /// uses this to anchor the slash popover at the caret regardless
+    /// of where the editor sits in the SwiftUI hierarchy.
+    ///
+    /// Falls back to the text view's own bounds origin if the
+    /// position can't be resolved.
+    static func caretRectInScreen(
+        for nsRange: NSRange,
+        in textView: UITextView
+    ) -> CGRect {
+        let start = textView.position(
+            from: textView.beginningOfDocument,
+            offset: nsRange.location
+        ) ?? textView.beginningOfDocument
+        let localRect = textView.caretRect(for: start)
+        return textView.convert(localRect, to: nil)
+    }
+
     // MARK: - Coordinator
 
     @MainActor
@@ -987,20 +1013,26 @@ struct TextKitEditorView: UIViewRepresentable {
                     // The "/" hasn't been inserted yet — its position
                     // will be `range.location`. Convert to a
                     // BlockTreeSelection-style location AFTER UITextView
-                    // applies the change.
+                    // applies the change. Capture the caret rect in
+                    // screen coords too so the wiring view can anchor
+                    // the popover at the right place.
                     let slashLocation = range.location
-                    // Wait one runloop tick so UITextView has inserted
-                    // the "/" and updated the flatten map (via
-                    // textViewDidChange below).
                     DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
+                        guard let self = self,
+                              let textView = self.textView else { return }
                         let updatedMap = self.flattenMap
                         let bridged = TextKitEditorView.selection(
                             forNSRange: NSRange(location: slashLocation, length: 0),
                             flattenMap: updatedMap
                         )
                         guard !bridged.path.isEmpty else { return }
-                        self.parent.onSlashTyped(bridged.path, bridged.startUTF16)
+                        // Caret rect AFTER the "/" was inserted — its
+                        // position is `slashLocation + 1`.
+                        let caretRect = TextKitEditorView.caretRectInScreen(
+                            for: NSRange(location: slashLocation + 1, length: 0),
+                            in: textView
+                        )
+                        self.parent.onSlashTyped(bridged.path, bridged.startUTF16, caretRect)
                     }
                 }
             }
@@ -1119,7 +1151,17 @@ final class BlockTreeTextView: UITextView {
     @objc func applyBodyParagraph(_ sender: Any?) { onEditorCommand?(.applyBody) }
     @objc func applyBulletedList(_ sender: Any?) { onEditorCommand?(.applyBulletedList) }
     @objc func applyNumberedList(_ sender: Any?) { onEditorCommand?(.applyNumberedList) }
-    @objc func openSlashPalette(_ sender: Any?) { onEditorCommand?(.openSlashPalette) }
+    @objc func openSlashPalette(_ sender: Any?) {
+        // Caret rect at the current selection, in screen coords. The
+        // wiring view translates back to local space for popover
+        // positioning via GeometryReader.
+        let nsRange = selectedRange
+        let pos = position(from: beginningOfDocument, offset: nsRange.location)
+            ?? beginningOfDocument
+        let localRect = caretRect(for: pos)
+        let screenRect = convert(localRect, to: nil)
+        onEditorCommand?(.openSlashPalette(caretRect: screenRect))
+    }
 }
 
 // MARK: - BlockChrome — paragraph-level discriminator
