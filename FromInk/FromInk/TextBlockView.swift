@@ -53,32 +53,57 @@ struct TextBlockView: View {
         }
     }
 
-    // MARK: - Editor (transitional placeholder)
+    // MARK: - Editor
 
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(model.editorPlaceholderHeadline)
-                .font(model.subheadFont)
-                .foregroundStyle(model.secondaryColor)
+        ZStack(alignment: .topLeading) {
+            #if os(iOS) || os(visionOS)
+            TextKitEditorView(
+                document: Binding(
+                    get: { model.document },
+                    set: { model.onDocumentEdited($0) }
+                ),
+                selection: Binding(
+                    get: { model.selection },
+                    set: { model.onSelectionChanged($0) }
+                ),
+                onSlashTyped: { path, offset in
+                    model.onSlashTyped(path, offset)
+                },
+                bodyFont: Self.serifBodyFont(),
+                bodyColor: UIColor(model.bodyColor)
+            )
+            #else
+            // macOS placeholder until the NSTextView wrapper lands.
+            Text(model.plainText)
+                .font(model.bodyFont)
+                .foregroundStyle(model.bodyColor)
+            #endif
 
-            // Read-only plain-text preview of the document. Survives
-            // empty + populated states. Commit 4 replaces this with
-            // the real TextKit 1 editor.
             if model.isDocumentEmpty {
                 Text(model.emptyBlockPlaceholder)
                     .font(model.bodyFont)
                     .foregroundStyle(model.placeholderColor)
-            } else {
-                Text(model.plainText)
-                    .font(model.bodyFont)
-                    .foregroundStyle(model.bodyColor)
-                    .textSelection(.enabled)
+                    .padding(.top, 8)
+                    .padding(.leading, 2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityLabel(model.editorAccessibilityLabel)
         .accessibilityHint(model.accessibilityHint)
     }
+
+    #if os(iOS) || os(visionOS)
+    /// Serif body font for the TextKit 1 editor — matches the
+    /// `.system(.body, design: .serif)` token used elsewhere.
+    private static func serifBodyFont() -> UIFont {
+        let base = UIFont.preferredFont(forTextStyle: .body)
+        let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
+        return UIFont(descriptor: descriptor, size: 0)
+    }
+    #endif
 
     // MARK: - Empty / failure placeholders
 
@@ -244,7 +269,7 @@ extension TextBlockView.Model {
         self.bannerHorizontalPadding = ds.spacing.md
         self.bannerVerticalPadding = ds.spacing.sm
         self.emptyBlockPlaceholder = AppStrings.TextEditing.emptyBlockPlaceholder
-        self.editorPlaceholderHeadline = "Editor refactor in progress — commit 4 will restore live typing."
+        self.editorPlaceholderHeadline = ""
         self.emptyNoteHeadline = AppStrings.TextEditing.emptyNoteHeadline
         self.emptyNoteSubhead = AppStrings.TextEditing.emptyNoteSubhead
         self.decodeFailureHeadline = AppStrings.TextEditing.bodyDecodeFailedHeadline

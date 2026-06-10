@@ -37,13 +37,6 @@ struct HomeWiringView: View {
     /// state and the binding wires to a `searchTextChanged` action.
     @State private var localSearchText: String = ""
 
-    /// **TEMPORARY — DELETE AFTER PoC VERIFICATION.** Drives the floating
-    /// "Slash Editor PoC" button that presents `SlashEditorPoCView`.
-    /// Used to verify the TextKit 1 + custom NSLayoutManager rendering
-    /// approach before refactoring the production editor. Remove this
-    /// state + the overlay below + SlashEditorPoC.swift once we've
-    /// confirmed the approach renders block-level structure.
-    @State private var showSlashEditorPoC = false
 
     private var filteredNotebooks: [NotebookSnapshot] {
         guard !localSearchText.isEmpty else { return store.library.notebooks }
@@ -120,24 +113,6 @@ struct HomeWiringView: View {
                 newNotebookOverlay
                     .transition(.opacity)
             }
-        }
-        // TEMPORARY — DELETE AFTER PoC VERIFICATION.
-        .overlay(alignment: .topTrailing) {
-            Button {
-                showSlashEditorPoC = true
-            } label: {
-                Text("PoC")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.red)
-            }
-            .padding(.top, 6)
-            .padding(.trailing, 6)
-        }
-        .fullScreenCover(isPresented: $showSlashEditorPoC) {
-            SlashEditorPoCView()
         }
         .overlay {
             if let sheet = store.eventActionSheet {

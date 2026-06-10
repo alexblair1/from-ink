@@ -1,0 +1,1079 @@
+#if os(iOS) || os(visionOS)
+import Combine
+import SwiftUI
+import UIKit
+
+/// TextKit 1-backed rich text editor for `RichTextDocument`.
+///
+/// **Why TextKit 1.** SwiftUI's `TextEditor` and
+/// `UITextView(usingTextLayoutManager: true)` (TextKit 2) honor
+/// inline attributes (bold / italic / etc.) but DO NOT paint
+/// block-level structure (headings, lists, blockquote, code blocks,
+/// dividers). Manual testing on 2026-06-09 confirmed both paths
+/// silently render block-level intents as plain prose.
+///
+/// The PoC verified that hand-building the TextKit 1 stack
+/// (`NSTextStorage` → custom `NSLayoutManager` subclass →
+/// `NSTextContainer` → `UITextView(frame:textContainer:)`) lets us
+/// override `drawBackground(forGlyphRange:at:)`, which is the ONLY
+/// API for drawing block-level chrome inside an editable text view
+/// on iOS. iOS 16+'s default UITextView uses TextKit 2 where the
+/// override never fires.
+///
+/// **Document model.** Content is a `RichTextDocument` (block tree
+/// per `text_experience_edd.md` §5.3). The view flattens the document
+/// to an `NSAttributedString` for layout, decorating each paragraph
+/// with custom attributes the `BlockDecoratingLayoutManager` reads in
+/// `drawBackground`. On user edits, the coordinator parses the
+/// updated `NSAttributedString` back into a `RichTextDocument` and
+/// pushes it to the reducer via `onDocumentEdited`.
+///
+/// **Flatten format.** One paragraph per leaf block:
+///
+///   - Each paragraph carries `.blockChrome` (an `Int` rawValue of
+///     `BlockChrome`) — the layout manager's discriminator for
+///     drawing chrome.
+///   - Each paragraph carries `.blockID` (the `UUID` of the source
+///     leaf) — the parse-back path needs this to preserve block IDs
+///     where possible.
+///   - List items and blockquote children carry `.groupID` (shared
+///     across all paragraphs in the same container) so the parse-back
+///     can re-group them into a single `bulletList` / `orderedList` /
+///     `blockquote` container.
+///   - Divider paragraphs contain a non-breaking space as a glyph
+///     anchor; the layout manager draws the actual rule.
+///
+/// **Caveat — ID stability across parse-back.** v1 parse-back assigns
+/// fresh UUIDs to paragraphs whose `.blockID` attribute is missing
+/// (e.g. a brand-new paragraph from pressing Enter) and re-uses the
+/// stored id where present. NoteRegion text-range anchors (Phase 6)
+/// will need a more careful approach — a Coordinator-level "structural
+/// edit" stream that emits explicit split/merge events rather than
+/// inferring from parse-back. Logged TODO; acceptable for v1 because
+/// NoteRegion text anchors aren't shipped yet.
+@MainActor
+struct TextKitEditorView: UIViewRepresentable {
+    @Binding var document: RichTextDocument
+    @Binding var selection: BlockTreeSelection
+    let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+    let bodyFont: UIFont
+    let bodyColor: UIColor
+
+    // MARK: - UIViewRepresentable
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        // Hand-build TextKit 1. UITextView's default TextKit 2 stack
+        // can't run the BlockDecoratingLayoutManager's overrides.
+        let storage = NSTextStorage()
+        let layoutManager = BlockDecoratingLayoutManager()
+        layoutManager.tintColor = bodyColor
+        storage.addLayoutManager(layoutManager)
+
+        let container = NSTextContainer(
+            size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        )
+        container.widthTracksTextView = true
+        layoutManager.addTextContainer(container)
+
+        let textView = UITextView(frame: .zero, textContainer: container)
+        textView.font = bodyFont
+        textView.textColor = bodyColor
+        textView.backgroundColor = .clear
+        textView.allowsEditingTextAttributes = true
+        textView.isScrollEnabled = true
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        textView.textContainer.lineFragmentPadding = 0
+        textView.autocorrectionType = .default
+        textView.spellCheckingType = .default
+        textView.delegate = context.coordinator
+
+        context.coordinator.textView = textView
+
+        // Seed initial content from the document.
+        let initial = Self.flatten(
+            document: document,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        context.coordinator.isApplyingBindingUpdate = true
+        textView.attributedText = initial.attributed
+        context.coordinator.flattenMap = initial.flattenMap
+        // Default typing attributes for an empty document.
+        textView.typingAttributes = Self.typingAttributes(
+            for: .paragraph,
+            blockID: UUID(),
+            groupID: nil,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        context.coordinator.isApplyingBindingUpdate = false
+
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.parent = self
+
+        // Body re-sync when the SwiftUI side diverges from what the
+        // editor already shows. Documents are Equatable; only the
+        // shape comparison triggers a re-flatten.
+        if document != context.coordinator.lastSyncedDocument {
+            let flattened = Self.flatten(
+                document: document,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+            context.coordinator.isApplyingBindingUpdate = true
+            let priorSelection = textView.selectedRange
+            textView.attributedText = flattened.attributed
+            // Restore caret to a valid position (clamp).
+            let clampedLocation = min(priorSelection.location, flattened.attributed.length)
+            textView.selectedRange = NSRange(location: clampedLocation, length: 0)
+            context.coordinator.flattenMap = flattened.flattenMap
+            context.coordinator.lastSyncedDocument = document
+            context.coordinator.isApplyingBindingUpdate = false
+        }
+
+        // Selection re-sync.
+        if let nsRange = Self.nsRange(for: selection, flattenMap: context.coordinator.flattenMap, totalLength: textView.attributedText.length),
+           nsRange != textView.selectedRange {
+            context.coordinator.isApplyingBindingUpdate = true
+            textView.selectedRange = nsRange
+            context.coordinator.isApplyingBindingUpdate = false
+        }
+    }
+
+    // MARK: - Flatten: RichTextDocument → NSAttributedString
+
+    /// Mapping from a flattened paragraph's NSRange to its source
+    /// block path. Used by the coordinator to translate UITextView
+    /// selection updates back into `BlockTreeSelection`.
+    struct FlattenEntry: Equatable {
+        let nsRange: NSRange       // range in the flattened NSAttributedString (excluding trailing \n)
+        let blockPath: [UUID]      // path to the leaf this paragraph belongs to
+    }
+
+    typealias FlattenMap = [FlattenEntry]
+
+    /// Build an `NSAttributedString` representation of `document` for
+    /// the editor + a map from each emitted paragraph's NSRange to
+    /// the corresponding block path. The map is read by the selection
+    /// bridge and the parse-back path.
+    static func flatten(
+        document: RichTextDocument,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) -> (attributed: NSAttributedString, flattenMap: FlattenMap) {
+        let mutable = NSMutableAttributedString()
+        var map: FlattenMap = []
+        for block in document.blocks {
+            appendBlock(
+                block,
+                pathPrefix: [],
+                into: mutable,
+                map: &map,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+        }
+        // Trim a trailing newline if any leaf added one.
+        if mutable.length > 0,
+           mutable.attributedSubstring(from: NSRange(location: mutable.length - 1, length: 1)).string == "\n" {
+            mutable.deleteCharacters(in: NSRange(location: mutable.length - 1, length: 1))
+        }
+        return (mutable, map)
+    }
+
+    private static func appendBlock(
+        _ block: Block,
+        pathPrefix: [UUID],
+        into mutable: NSMutableAttributedString,
+        map: inout FlattenMap,
+        bodyFont: UIFont,
+        bodyColor: UIColor,
+        groupID: UUID? = nil
+    ) {
+        let path = pathPrefix + [block.id]
+        switch block.kind {
+        case .paragraph(let inline):
+            appendLeaf(
+                runs: inline,
+                blockID: block.id,
+                path: path,
+                chrome: .paragraph,
+                groupID: groupID,
+                into: mutable,
+                map: &map,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+
+        case .heading(let level, let inline):
+            let chrome: BlockChrome
+            switch level {
+            case 1: chrome = .heading1
+            case 2: chrome = .heading2
+            default: chrome = .heading3
+            }
+            appendLeaf(
+                runs: inline,
+                blockID: block.id,
+                path: path,
+                chrome: chrome,
+                groupID: groupID,
+                into: mutable,
+                map: &map,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+
+        case .codeBlock(let text, _):
+            // Code blocks are a single inline run of plain text.
+            let runs = [Inline(text: text, marks: [])]
+            appendLeaf(
+                runs: runs,
+                blockID: block.id,
+                path: path,
+                chrome: .codeBlock,
+                groupID: groupID,
+                into: mutable,
+                map: &map,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+
+        case .divider:
+            // Divider has no real text — emit a non-breaking space
+            // as a glyph anchor; the layout manager draws the rule.
+            let runs = [Inline(text: "\u{00A0}", marks: [])]
+            appendLeaf(
+                runs: runs,
+                blockID: block.id,
+                path: path,
+                chrome: .divider,
+                groupID: groupID,
+                into: mutable,
+                map: &map,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+
+        case .bulletList(let items):
+            // Each list item's paragraph emits as its own line with
+            // .bulletListItem chrome + the SAME groupID so parse-back
+            // can re-group.
+            let listGroupID = UUID()
+            for item in items {
+                for (idx, child) in item.content.enumerated() {
+                    if idx == 0, case .paragraph(let inline) = child.kind {
+                        appendLeaf(
+                            runs: inline,
+                            blockID: child.id,
+                            path: path + [child.id],
+                            chrome: .bulletListItem,
+                            groupID: listGroupID,
+                            into: mutable,
+                            map: &map,
+                            bodyFont: bodyFont,
+                            bodyColor: bodyColor
+                        )
+                    } else {
+                        // Nested content (rare in v1) — flatten with
+                        // the same group id so the parse-back keeps it
+                        // associated with the list.
+                        appendBlock(
+                            child,
+                            pathPrefix: path,
+                            into: mutable,
+                            map: &map,
+                            bodyFont: bodyFont,
+                            bodyColor: bodyColor,
+                            groupID: listGroupID
+                        )
+                    }
+                }
+            }
+
+        case .orderedList(let items):
+            let listGroupID = UUID()
+            for item in items {
+                for (idx, child) in item.content.enumerated() {
+                    if idx == 0, case .paragraph(let inline) = child.kind {
+                        appendLeaf(
+                            runs: inline,
+                            blockID: child.id,
+                            path: path + [child.id],
+                            chrome: .orderedListItem,
+                            groupID: listGroupID,
+                            into: mutable,
+                            map: &map,
+                            bodyFont: bodyFont,
+                            bodyColor: bodyColor
+                        )
+                    } else {
+                        appendBlock(
+                            child,
+                            pathPrefix: path,
+                            into: mutable,
+                            map: &map,
+                            bodyFont: bodyFont,
+                            bodyColor: bodyColor,
+                            groupID: listGroupID
+                        )
+                    }
+                }
+            }
+
+        case .blockquote(let children):
+            let quoteGroupID = UUID()
+            for child in children {
+                appendBlock(
+                    child,
+                    pathPrefix: path,
+                    into: mutable,
+                    map: &map,
+                    bodyFont: bodyFont,
+                    bodyColor: bodyColor,
+                    groupID: quoteGroupID
+                )
+            }
+        }
+    }
+
+    private static func appendLeaf(
+        runs: [Inline],
+        blockID: UUID,
+        path: [UUID],
+        chrome: BlockChrome,
+        groupID: UUID?,
+        into mutable: NSMutableAttributedString,
+        map: inout FlattenMap,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) {
+        let startLocation = mutable.length
+        let font = font(for: chrome, bodyFont: bodyFont)
+        let paragraphStyle = paragraphStyle(for: chrome)
+        let foreground = foregroundColor(for: chrome, bodyColor: bodyColor)
+
+        // Build the paragraph text by concatenating inline runs.
+        for run in runs {
+            let runText = run.text
+            let runAttributes: [NSAttributedString.Key: Any] = inlineAttributes(
+                marks: run.marks,
+                baseFont: font,
+                baseColor: foreground
+            )
+            let runString = NSAttributedString(string: runText, attributes: runAttributes)
+            mutable.append(runString)
+        }
+        // If the leaf had no runs (empty paragraph), append an empty
+        // span to anchor the paragraph attributes.
+        let paragraphText = mutable.string as NSString
+        let paragraphLength = paragraphText.length - startLocation
+        let paragraphRange = NSRange(location: startLocation, length: paragraphLength)
+
+        // Apply paragraph-level attributes (font fallback,
+        // paragraphStyle, blockChrome + blockID + groupID).
+        var paragraphAttrs: [NSAttributedString.Key: Any] = [
+            .paragraphStyle: paragraphStyle,
+            .blockChrome: chrome.rawValue,
+            .blockID: blockID
+        ]
+        if let groupID {
+            paragraphAttrs[.groupID] = groupID
+        }
+        // Apply paragraph attrs only to characters that DON'T already
+        // carry a font (so inline-mark-induced fonts persist).
+        mutable.enumerateAttributes(in: paragraphRange, options: []) { attrs, range, _ in
+            if attrs[.font] == nil {
+                mutable.addAttribute(.font, value: font, range: range)
+            }
+            if attrs[.foregroundColor] == nil {
+                mutable.addAttribute(.foregroundColor, value: foreground, range: range)
+            }
+            for (key, value) in paragraphAttrs {
+                mutable.addAttribute(key, value: value, range: range)
+            }
+        }
+
+        // Always tag the paragraph attributes even on an empty
+        // paragraph (zero-length range can't carry attributes, but
+        // we tag the trailing newline below).
+
+        map.append(FlattenEntry(nsRange: paragraphRange, blockPath: path))
+
+        // Newline separator between paragraphs. The newline itself
+        // carries the SAME paragraph attributes so the layout
+        // manager's chrome painting extends to the end of the line
+        // fragment.
+        let newline = NSMutableAttributedString(string: "\n")
+        var newlineAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: foreground,
+            .paragraphStyle: paragraphStyle,
+            .blockChrome: chrome.rawValue,
+            .blockID: blockID
+        ]
+        if let groupID {
+            newlineAttrs[.groupID] = groupID
+        }
+        newline.addAttributes(newlineAttrs, range: NSRange(location: 0, length: 1))
+        mutable.append(newline)
+    }
+
+    // MARK: - Inline marks → NSAttributedString attributes
+
+    private static func inlineAttributes(
+        marks: [Mark],
+        baseFont: UIFont,
+        baseColor: UIColor
+    ) -> [NSAttributedString.Key: Any] {
+        var attrs: [NSAttributedString.Key: Any] = [:]
+        var font = baseFont
+        var foreground = baseColor
+
+        var symbolicTraits = font.fontDescriptor.symbolicTraits
+        var underline: NSUnderlineStyle? = nil
+        var strikethrough: NSUnderlineStyle? = nil
+        var backgroundColor: UIColor? = nil
+
+        for mark in marks {
+            switch mark {
+            case .bold:
+                symbolicTraits.insert(.traitBold)
+            case .italic:
+                symbolicTraits.insert(.traitItalic)
+            case .underline:
+                underline = .single
+            case .strikethrough:
+                strikethrough = .single
+            case .code:
+                font = UIFont.monospacedSystemFont(ofSize: baseFont.pointSize, weight: .regular)
+                symbolicTraits = font.fontDescriptor.symbolicTraits
+                backgroundColor = UIColor.label.withAlphaComponent(0.06)
+            case .highlight(let kind):
+                backgroundColor = color(for: kind)
+            case .link(let url):
+                attrs[.link] = url
+                underline = .single
+                foreground = UIColor.systemBlue
+            }
+        }
+
+        if let updatedDescriptor = font.fontDescriptor.withSymbolicTraits(symbolicTraits) {
+            font = UIFont(descriptor: updatedDescriptor, size: 0)
+        }
+        attrs[.font] = font
+        attrs[.foregroundColor] = foreground
+        if let underline { attrs[.underlineStyle] = underline.rawValue }
+        if let strikethrough { attrs[.strikethroughStyle] = strikethrough.rawValue }
+        if let backgroundColor { attrs[.backgroundColor] = backgroundColor }
+        return attrs
+    }
+
+    private static func color(for kind: HighlightKind) -> UIColor {
+        switch kind {
+        case .yellow: return UIColor.systemYellow.withAlphaComponent(0.35)
+        case .red:    return UIColor.systemRed.withAlphaComponent(0.25)
+        case .blue:   return UIColor.systemBlue.withAlphaComponent(0.20)
+        case .green:  return UIColor.systemGreen.withAlphaComponent(0.25)
+        }
+    }
+
+    // MARK: - Per-chrome typography
+
+    private static func font(for chrome: BlockChrome, bodyFont: UIFont) -> UIFont {
+        switch chrome {
+        case .paragraph, .bulletListItem, .orderedListItem, .divider:
+            return bodyFont
+        case .heading1:
+            return makeSerif(size: 28, weight: .semibold, fallback: UIFont.systemFont(ofSize: 28, weight: .semibold))
+        case .heading2:
+            return makeSerif(size: 22, weight: .semibold, fallback: UIFont.systemFont(ofSize: 22, weight: .semibold))
+        case .heading3:
+            return makeSerif(size: 18, weight: .semibold, fallback: UIFont.systemFont(ofSize: 18, weight: .semibold))
+        case .codeBlock:
+            return UIFont.monospacedSystemFont(ofSize: bodyFont.pointSize, weight: .regular)
+        case .blockquoteParagraph:
+            // Italic variant of the body font for the quote feel.
+            if let descriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                return UIFont(descriptor: descriptor, size: 0)
+            }
+            return bodyFont
+        }
+    }
+
+    private static func makeSerif(size: CGFloat, weight: UIFont.Weight, fallback: UIFont) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        if let descriptor = base.fontDescriptor.withDesign(.serif) {
+            return UIFont(descriptor: descriptor, size: 0)
+        }
+        return fallback
+    }
+
+    private static func foregroundColor(for chrome: BlockChrome, bodyColor: UIColor) -> UIColor {
+        switch chrome {
+        case .codeBlock:
+            return bodyColor.withAlphaComponent(0.85)
+        default:
+            return bodyColor
+        }
+    }
+
+    private static func paragraphStyle(for chrome: BlockChrome) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.paragraphSpacing = 4
+        style.paragraphSpacingBefore = 4
+        switch chrome {
+        case .heading1, .heading2, .heading3:
+            style.paragraphSpacingBefore = 10
+            style.paragraphSpacing = 6
+        case .bulletListItem, .orderedListItem:
+            style.firstLineHeadIndent = 28
+            style.headIndent = 28
+        case .blockquoteParagraph:
+            style.firstLineHeadIndent = 20
+            style.headIndent = 20
+        case .codeBlock:
+            style.firstLineHeadIndent = 12
+            style.headIndent = 12
+        default:
+            break
+        }
+        return style
+    }
+
+    // MARK: - Typing attributes
+
+    /// Attribute set for `UITextView.typingAttributes` — what newly
+    /// inserted characters inherit. Must be reset after every block-
+    /// format change so the user's next keystroke keeps the styling.
+    static func typingAttributes(
+        for chrome: BlockChrome,
+        blockID: UUID,
+        groupID: UUID?,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) -> [NSAttributedString.Key: Any] {
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: font(for: chrome, bodyFont: bodyFont),
+            .foregroundColor: foregroundColor(for: chrome, bodyColor: bodyColor),
+            .paragraphStyle: paragraphStyle(for: chrome),
+            .blockChrome: chrome.rawValue,
+            .blockID: blockID
+        ]
+        if let groupID {
+            attrs[.groupID] = groupID
+        }
+        return attrs
+    }
+
+    // MARK: - Parse-back: NSAttributedString → RichTextDocument
+
+    static func parseBack(_ attributed: NSAttributedString) -> RichTextDocument {
+        // Walk paragraphs, emit blocks, group consecutive same-group
+        // paragraphs into containers.
+        let paragraphs = splitParagraphs(attributed)
+
+        var topLevel: [Block] = []
+        var pendingGroupID: UUID? = nil
+        var pendingGroupChrome: BlockChrome? = nil
+        var pendingGroupBlocks: [Block] = []
+
+        func flushPendingGroup() {
+            guard let chrome = pendingGroupChrome, !pendingGroupBlocks.isEmpty else {
+                pendingGroupID = nil
+                pendingGroupChrome = nil
+                pendingGroupBlocks = []
+                return
+            }
+            switch chrome {
+            case .bulletListItem:
+                let items = pendingGroupBlocks.map { ListItem(content: [$0]) }
+                topLevel.append(Block(kind: .bulletList(items: items)))
+            case .orderedListItem:
+                let items = pendingGroupBlocks.map { ListItem(content: [$0]) }
+                topLevel.append(Block(kind: .orderedList(items: items)))
+            case .blockquoteParagraph:
+                topLevel.append(Block(kind: .blockquote(children: pendingGroupBlocks)))
+            default:
+                topLevel.append(contentsOf: pendingGroupBlocks)
+            }
+            pendingGroupID = nil
+            pendingGroupChrome = nil
+            pendingGroupBlocks = []
+        }
+
+        for paragraph in paragraphs {
+            let chrome = paragraph.chrome
+            let groupID = paragraph.groupID
+            let leafBlock = buildLeafBlock(from: paragraph)
+
+            // Group-handling: bullets, ordered, blockquote children.
+            switch chrome {
+            case .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                if pendingGroupID != nil, pendingGroupID == groupID, pendingGroupChrome == chrome {
+                    pendingGroupBlocks.append(leafBlock)
+                } else {
+                    flushPendingGroup()
+                    pendingGroupID = groupID
+                    pendingGroupChrome = chrome
+                    pendingGroupBlocks = [leafBlock]
+                }
+            default:
+                flushPendingGroup()
+                topLevel.append(leafBlock)
+            }
+        }
+        flushPendingGroup()
+
+        return RichTextDocument(blocks: topLevel)
+    }
+
+    private struct ParagraphSlice {
+        let nsRange: NSRange
+        let text: String
+        let chrome: BlockChrome
+        let blockID: UUID
+        let groupID: UUID?
+        let inlineRuns: [Inline]
+    }
+
+    private static func splitParagraphs(_ attributed: NSAttributedString) -> [ParagraphSlice] {
+        let full = attributed.string as NSString
+        var slices: [ParagraphSlice] = []
+        var cursor = 0
+        while cursor < full.length {
+            let nlRange = full.range(of: "\n", options: [], range: NSRange(location: cursor, length: full.length - cursor))
+            let paragraphEnd = nlRange.location != NSNotFound ? nlRange.location : full.length
+            let paragraphRange = NSRange(location: cursor, length: paragraphEnd - cursor)
+            if paragraphRange.length > 0 || cursor == 0 || cursor > 0 {
+                // Read paragraph metadata from the first character.
+                let metaLocation = paragraphRange.length > 0
+                    ? paragraphRange.location
+                    : max(0, paragraphRange.location - 1)
+                let attrs = attributed.attributes(at: metaLocation, effectiveRange: nil)
+                let chromeRaw = (attrs[.blockChrome] as? Int) ?? BlockChrome.paragraph.rawValue
+                let chrome = BlockChrome(rawValue: chromeRaw) ?? .paragraph
+                let blockID = (attrs[.blockID] as? UUID) ?? UUID()
+                let groupID = attrs[.groupID] as? UUID
+                let paragraphText = full.substring(with: paragraphRange)
+                let inlineRuns = parseInlineRuns(
+                    attributed: attributed,
+                    range: paragraphRange,
+                    chrome: chrome
+                )
+                slices.append(ParagraphSlice(
+                    nsRange: paragraphRange,
+                    text: paragraphText,
+                    chrome: chrome,
+                    blockID: blockID,
+                    groupID: groupID,
+                    inlineRuns: inlineRuns
+                ))
+            }
+            if nlRange.location == NSNotFound { break }
+            cursor = paragraphEnd + 1
+        }
+        return slices
+    }
+
+    private static func parseInlineRuns(
+        attributed: NSAttributedString,
+        range: NSRange,
+        chrome: BlockChrome
+    ) -> [Inline] {
+        guard range.length > 0 else { return [] }
+        if chrome == .codeBlock || chrome == .divider {
+            // codeBlock has no marks; divider's anchor character is
+            // discarded by the leaf builder.
+            return [Inline(
+                text: (attributed.string as NSString).substring(with: range),
+                marks: []
+            )]
+        }
+        var runs: [Inline] = []
+        attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
+            let runText = (attributed.string as NSString).substring(with: runRange)
+            let marks = marksFor(attrs: attrs)
+            runs.append(Inline(text: runText, marks: marks))
+        }
+        // Coalesce adjacent runs with equal marks.
+        var coalesced: [Inline] = []
+        for run in runs {
+            if var last = coalesced.last, last.marks == run.marks {
+                last.text.append(run.text)
+                coalesced[coalesced.count - 1] = last
+            } else {
+                coalesced.append(run)
+            }
+        }
+        return coalesced
+    }
+
+    private static func marksFor(attrs: [NSAttributedString.Key: Any]) -> [Mark] {
+        var marks: [Mark] = []
+        if let font = attrs[.font] as? UIFont {
+            let traits = font.fontDescriptor.symbolicTraits
+            if traits.contains(.traitBold) { marks.append(.bold) }
+            if traits.contains(.traitItalic) { marks.append(.italic) }
+        }
+        if (attrs[.underlineStyle] as? Int) ?? 0 != 0 {
+            marks.append(.underline)
+        }
+        if (attrs[.strikethroughStyle] as? Int) ?? 0 != 0 {
+            marks.append(.strikethrough)
+        }
+        if let url = attrs[.link] as? URL {
+            marks.append(.link(url))
+        }
+        // Note: highlight + code marks aren't recovered from
+        // NSAttributedString attributes here — the parse-back can
+        // only see the resulting font/background. v1 limitation.
+        return marks
+    }
+
+    private static func buildLeafBlock(from slice: ParagraphSlice) -> Block {
+        switch slice.chrome {
+        case .paragraph, .bulletListItem, .orderedListItem, .blockquoteParagraph:
+            return Block(id: slice.blockID, kind: .paragraph(inline: slice.inlineRuns))
+        case .heading1:
+            return Block(id: slice.blockID, kind: .heading(level: 1, inline: slice.inlineRuns))
+        case .heading2:
+            return Block(id: slice.blockID, kind: .heading(level: 2, inline: slice.inlineRuns))
+        case .heading3:
+            return Block(id: slice.blockID, kind: .heading(level: 3, inline: slice.inlineRuns))
+        case .codeBlock:
+            return Block(id: slice.blockID, kind: .codeBlock(text: slice.text, languageHint: nil))
+        case .divider:
+            return Block(id: slice.blockID, kind: .divider)
+        }
+    }
+
+    // MARK: - Selection bridge
+
+    /// Find the BlockTreeSelection's NSRange in the flattened
+    /// attributedText by looking up the leaf block's flatten entry.
+    static func nsRange(
+        for selection: BlockTreeSelection,
+        flattenMap: FlattenMap,
+        totalLength: Int
+    ) -> NSRange? {
+        guard let leafID = selection.path.last else { return nil }
+        guard let entry = flattenMap.first(where: { $0.blockPath.last == leafID }) else { return nil }
+        let location = entry.nsRange.location + selection.startUTF16
+        let length = selection.endUTF16 - selection.startUTF16
+        guard location + length <= totalLength else { return nil }
+        return NSRange(location: location, length: length)
+    }
+
+    /// Convert a UITextView NSRange into a BlockTreeSelection by
+    /// finding which paragraph entry the range falls in.
+    static func selection(
+        forNSRange nsRange: NSRange,
+        flattenMap: FlattenMap
+    ) -> BlockTreeSelection {
+        guard let entry = flattenMap.first(where: { entry in
+            let inside = entry.nsRange.location <= nsRange.location
+                && nsRange.location <= entry.nsRange.location + entry.nsRange.length
+            return inside
+        }) else {
+            return BlockTreeSelection()
+        }
+        let startLocal = nsRange.location - entry.nsRange.location
+        let endLocal = startLocal + nsRange.length
+        return BlockTreeSelection(
+            path: entry.blockPath,
+            startUTF16: startLocal,
+            endUTF16: max(startLocal, min(endLocal, entry.nsRange.length))
+        )
+    }
+
+    // MARK: - Coordinator
+
+    @MainActor
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: TextKitEditorView
+        weak var textView: UITextView?
+
+        /// Last document the view rendered. Used as the diff key in
+        /// `updateUIView` so we don't re-flatten on every render.
+        var lastSyncedDocument: RichTextDocument
+
+        /// Latest flatten map — kept in sync with `textView.attributedText`.
+        var flattenMap: FlattenMap = []
+
+        /// Set while we're programmatically applying a binding-driven
+        /// update; suppresses the delegate did-change callbacks so a
+        /// binding write doesn't loop into another binding write.
+        var isApplyingBindingUpdate = false
+
+        init(parent: TextKitEditorView) {
+            self.parent = parent
+            self.lastSyncedDocument = parent.document
+            super.init()
+        }
+
+        // MARK: - UITextViewDelegate
+
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText text: String
+        ) -> Bool {
+            // Slash detection — fire `onSlashTyped` if the user just
+            // typed `/` at a word boundary (start of paragraph or
+            // after whitespace).
+            if text == "/" {
+                let ns = textView.text as NSString
+                let isAtParagraphStart = range.location == 0
+                    || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
+                let isAfterWhitespace = range.location > 0
+                    && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
+                if isAtParagraphStart || isAfterWhitespace {
+                    // The "/" hasn't been inserted yet — its position
+                    // will be `range.location`. Convert to a
+                    // BlockTreeSelection-style location AFTER UITextView
+                    // applies the change.
+                    let slashLocation = range.location
+                    // Wait one runloop tick so UITextView has inserted
+                    // the "/" and updated the flatten map (via
+                    // textViewDidChange below).
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self else { return }
+                        let updatedMap = self.flattenMap
+                        let bridged = TextKitEditorView.selection(
+                            forNSRange: NSRange(location: slashLocation, length: 0),
+                            flattenMap: updatedMap
+                        )
+                        guard !bridged.path.isEmpty else { return }
+                        self.parent.onSlashTyped(bridged.path, bridged.startUTF16)
+                    }
+                }
+            }
+            return true
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isApplyingBindingUpdate else { return }
+            // Parse the entire attributed text back to a
+            // RichTextDocument. v1 simplification — coarse but
+            // correct. A future iteration can swap in a diff-aware
+            // parser to preserve block IDs across structural edits.
+            let parsed = TextKitEditorView.parseBack(textView.attributedText)
+            // Refresh the flatten map so future selection bridges
+            // resolve against the updated text.
+            let reflatten = TextKitEditorView.flatten(
+                document: parsed,
+                bodyFont: parent.bodyFont,
+                bodyColor: parent.bodyColor
+            )
+            self.flattenMap = reflatten.flattenMap
+            self.lastSyncedDocument = parsed
+            if parsed != parent.document {
+                parent.document = parsed
+            }
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isApplyingBindingUpdate else { return }
+            let bridged = TextKitEditorView.selection(
+                forNSRange: textView.selectedRange,
+                flattenMap: flattenMap
+            )
+            parent.selection = bridged
+        }
+    }
+}
+
+// MARK: - BlockChrome — paragraph-level discriminator
+
+/// Discriminator the `BlockDecoratingLayoutManager` reads off each
+/// paragraph's `.blockChrome` attribute. Determines which (if any)
+/// background chrome to draw, and what typography the paragraph
+/// uses.
+enum BlockChrome: Int {
+    case paragraph
+    case heading1
+    case heading2
+    case heading3
+    case bulletListItem
+    case orderedListItem
+    case blockquoteParagraph
+    case codeBlock
+    case divider
+}
+
+extension NSAttributedString.Key {
+    /// `Int` rawValue of `BlockChrome`. Set on every character of a
+    /// flattened paragraph (including its trailing newline). The
+    /// layout manager reads this to decide whether to draw a
+    /// blockquote bar, code tint, divider rule, or list marker.
+    static let blockChrome = NSAttributedString.Key("fromInk.blockChrome")
+
+    /// UUID of the source `Block`. The parse-back path uses this to
+    /// preserve block IDs across edits where possible. New paragraphs
+    /// from Enter get a fresh UUID at parse-back time.
+    static let blockID = NSAttributedString.Key("fromInk.blockID")
+
+    /// Shared identifier for paragraphs that belong to the same
+    /// parent container (bulletList items, orderedList items,
+    /// blockquote children). The parse-back groups consecutive
+    /// paragraphs with the SAME `groupID` AND the same chrome into a
+    /// single container block.
+    static let groupID = NSAttributedString.Key("fromInk.groupID")
+}
+
+// MARK: - BlockDecoratingLayoutManager
+
+/// `NSLayoutManager` subclass that draws block-level chrome via
+/// `drawBackground(forGlyphRange:at:)`. Only TextKit 1 invokes this
+/// override — see the type doc on `TextKitEditorView` for the full
+/// architectural rationale.
+final class BlockDecoratingLayoutManager: NSLayoutManager {
+    var tintColor: UIColor = .label
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        guard let textStorage = textStorage else { return }
+
+        let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+
+        // Track consecutive listItem index for numbering.
+        var orderedRunningNumber: [UUID: Int] = [:]
+
+        textStorage.enumerateAttribute(.blockChrome, in: charRange, options: []) { value, range, _ in
+            guard let raw = value as? Int, let chrome = BlockChrome(rawValue: raw) else { return }
+
+            let glyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+
+            switch chrome {
+            case .blockquoteParagraph:
+                drawBlockquote(glyphRange: glyphRange, origin: origin)
+            case .codeBlock:
+                drawCodeBlock(glyphRange: glyphRange, origin: origin)
+            case .divider:
+                drawDivider(glyphRange: glyphRange, origin: origin)
+            case .bulletListItem:
+                drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: range)
+            case .orderedListItem:
+                let groupID = (textStorage.attribute(.groupID, at: range.location, effectiveRange: nil) as? UUID) ?? UUID()
+                let next = (orderedRunningNumber[groupID] ?? 0) + 1
+                orderedRunningNumber[groupID] = next
+                drawNumber(next, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: range)
+            default:
+                break
+            }
+        }
+    }
+
+    // MARK: - Per-chrome drawing
+
+    private func drawBlockquote(glyphRange: NSRange, origin: CGPoint) {
+        enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, container, _, _ in
+            let frag = usedRect.offsetBy(dx: origin.x, dy: origin.y)
+            let inset = container.lineFragmentPadding
+            let bg = CGRect(
+                x: origin.x + inset,
+                y: frag.minY,
+                width: container.size.width - inset * 2,
+                height: frag.height
+            )
+            UIColor.label.withAlphaComponent(0.04).setFill()
+            UIBezierPath(rect: bg).fill()
+
+            let bar = CGRect(
+                x: origin.x + 6,
+                y: frag.minY + 2,
+                width: 3,
+                height: frag.height - 4
+            )
+            UIColor.label.withAlphaComponent(0.4).setFill()
+            UIBezierPath(rect: bar).fill()
+        }
+    }
+
+    private func drawCodeBlock(glyphRange: NSRange, origin: CGPoint) {
+        enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, container, _, _ in
+            let frag = usedRect.offsetBy(dx: origin.x, dy: origin.y)
+            let inset = container.lineFragmentPadding
+            let bg = CGRect(
+                x: origin.x + inset,
+                y: frag.minY,
+                width: container.size.width - inset * 2,
+                height: frag.height
+            )
+            UIColor.label.withAlphaComponent(0.06).setFill()
+            UIBezierPath(rect: bg).fill()
+        }
+    }
+
+    private func drawDivider(glyphRange: NSRange, origin: CGPoint) {
+        enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, container, _, _ in
+            let frag = usedRect.offsetBy(dx: origin.x, dy: origin.y)
+            let inset = container.lineFragmentPadding
+            // 1pt horizontal rule at the vertical midpoint.
+            let rule = CGRect(
+                x: origin.x + inset,
+                y: frag.midY - 0.5,
+                width: container.size.width - inset * 2,
+                height: 1
+            )
+            UIColor.label.withAlphaComponent(0.25).setFill()
+            UIBezierPath(rect: rule).fill()
+        }
+    }
+
+    private func drawBullet(
+        glyphRange: NSRange,
+        origin: CGPoint,
+        storage: NSTextStorage,
+        charRange: NSRange
+    ) {
+        guard let firstLineFrag = self.firstLineFragmentRect(forGlyphRange: glyphRange) else { return }
+        let frag = firstLineFrag.offsetBy(dx: origin.x, dy: origin.y)
+        let bulletAttrs: [NSAttributedString.Key: Any] = [
+            .font: storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
+                ?? UIFont.preferredFont(forTextStyle: .body),
+            .foregroundColor: tintColor.withAlphaComponent(0.85)
+        ]
+        let bullet = NSAttributedString(string: "•", attributes: bulletAttrs)
+        bullet.draw(at: CGPoint(x: frag.minX + 8, y: frag.minY))
+    }
+
+    private func drawNumber(
+        _ n: Int,
+        glyphRange: NSRange,
+        origin: CGPoint,
+        storage: NSTextStorage,
+        charRange: NSRange
+    ) {
+        guard let firstLineFrag = self.firstLineFragmentRect(forGlyphRange: glyphRange) else { return }
+        let frag = firstLineFrag.offsetBy(dx: origin.x, dy: origin.y)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: storage.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont
+                ?? UIFont.preferredFont(forTextStyle: .body),
+            .foregroundColor: tintColor.withAlphaComponent(0.85)
+        ]
+        let label = NSAttributedString(string: "\(n).", attributes: attrs)
+        label.draw(at: CGPoint(x: frag.minX + 4, y: frag.minY))
+    }
+
+    /// Returns the rect of the FIRST line fragment for the glyph
+    /// range — used to position list markers at the leading edge of
+    /// the first line of each item.
+    private func firstLineFragmentRect(forGlyphRange glyphRange: NSRange) -> CGRect? {
+        var firstFragRect: CGRect? = nil
+        enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, _, stop in
+            firstFragRect = usedRect
+            stop.pointee = true
+        }
+        return firstFragRect
+    }
+}
+#endif
