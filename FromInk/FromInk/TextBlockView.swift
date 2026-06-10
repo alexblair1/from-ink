@@ -248,7 +248,11 @@ extension TextBlockView.Model {
         self.failureState = failureState
         self.document = document
         self.plainText = document.plainText
-        self.isDocumentEmpty = document.blocks.isEmpty || document.plainText.isEmpty
+        // Avoid walking the entire document via `plainText` on every
+        // SwiftUI render (S4). Short-circuit on the first block that
+        // has any visible content; divider counts as content.
+        self.isDocumentEmpty = document.blocks.isEmpty
+            || !document.blocks.contains(where: { Self.hasVisibleContent($0) })
         self.selection = selection
         self.persistFailureTitle = persistFailureTitle
         self.persistFailureSubtitle = AppStrings.TextEditing.persistFailedBannerSubtitle
@@ -276,5 +280,24 @@ extension TextBlockView.Model {
         self.decodeFailureSubhead = AppStrings.TextEditing.bodyDecodeFailedSubhead
         self.editorAccessibilityLabel = AppStrings.TextEditing.editorAccessibilityLabel
         self.accessibilityHint = AppStrings.TextEditing.blockAccessibilityHint
+    }
+
+    /// Short-circuit visible-content check that walks only as far as
+    /// the first non-empty leaf. Used in place of `document.plainText`
+    /// (which walks the entire document) for the `isDocumentEmpty`
+    /// flag that the placeholder overlay reads on every render.
+    private static func hasVisibleContent(_ block: Block) -> Bool {
+        switch block.kind {
+        case .paragraph(let inline), .heading(_, let inline):
+            return inline.contains { !$0.text.isEmpty }
+        case .codeBlock(let text, _):
+            return !text.isEmpty
+        case .bulletList(let items), .orderedList(let items):
+            return items.contains { item in item.content.contains(where: hasVisibleContent) }
+        case .blockquote(let children):
+            return children.contains(where: hasVisibleContent)
+        case .divider:
+            return true
+        }
     }
 }

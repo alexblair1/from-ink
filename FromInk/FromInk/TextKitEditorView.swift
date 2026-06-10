@@ -102,6 +102,7 @@ struct TextKitEditorView: UIViewRepresentable {
         context.coordinator.isApplyingBindingUpdate = true
         textView.attributedText = initial.attributed
         context.coordinator.flattenMap = initial.flattenMap
+        context.coordinator.flattenIDMap = initial.flattenIDMap
         // Default typing attributes for an empty document.
         textView.typingAttributes = Self.typingAttributes(
             for: .paragraph,
@@ -134,17 +135,57 @@ struct TextKitEditorView: UIViewRepresentable {
             let clampedLocation = min(priorSelection.location, flattened.attributed.length)
             textView.selectedRange = NSRange(location: clampedLocation, length: 0)
             context.coordinator.flattenMap = flattened.flattenMap
+            context.coordinator.flattenIDMap = flattened.flattenIDMap
             context.coordinator.lastSyncedDocument = document
+
+            // Fix B3: refresh typingAttributes so the user's NEXT
+            // keystroke inherits the chrome at the new cursor leaf.
+            // Without this, a slash-command-applied heading would
+            // revert to paragraph styling on the next character.
+            Self.refreshTypingAttributes(
+                textView: textView,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+
             context.coordinator.isApplyingBindingUpdate = false
         }
 
         // Selection re-sync.
-        if let nsRange = Self.nsRange(for: selection, flattenMap: context.coordinator.flattenMap, totalLength: textView.attributedText.length),
-           nsRange != textView.selectedRange {
+        if let nsRange = Self.nsRange(
+            for: selection,
+            flattenIDMap: context.coordinator.flattenIDMap,
+            totalLength: textView.attributedText.length
+        ), nsRange != textView.selectedRange {
             context.coordinator.isApplyingBindingUpdate = true
             textView.selectedRange = nsRange
             context.coordinator.isApplyingBindingUpdate = false
         }
+    }
+
+    /// Read the chrome / blockID / groupID at the cursor's position
+    /// in `textView.attributedText` and set `textView.typingAttributes`
+    /// from them. Used after every external-document-driven re-flatten
+    /// (B3) so format changes don't revert on the next keystroke.
+    static func refreshTypingAttributes(
+        textView: UITextView,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) {
+        let loc = textView.selectedRange.location
+        guard loc < textView.attributedText.length else { return }
+        let attrs = textView.attributedText.attributes(at: loc, effectiveRange: nil)
+        guard let chromeRaw = attrs[.blockChrome] as? Int,
+              let chrome = BlockChrome(rawValue: chromeRaw) else { return }
+        let blockID = (attrs[.blockID] as? UUID) ?? UUID()
+        let groupID = attrs[.groupID] as? UUID
+        textView.typingAttributes = Self.typingAttributes(
+            for: chrome,
+            blockID: blockID,
+            groupID: groupID,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
     }
 
     // MARK: - Flatten: RichTextDocument → NSAttributedString
@@ -158,6 +199,10 @@ struct TextKitEditorView: UIViewRepresentable {
     }
 
     typealias FlattenMap = [FlattenEntry]
+    /// O(1) lookup from leaf id to its flatten entry — read by
+    /// `nsRange(for:)` selection bridging so per-keystroke cost stays
+    /// bounded regardless of document size (fix S3).
+    typealias FlattenIDMap = [UUID: FlattenEntry]
 
     /// Build an `NSAttributedString` representation of `document` for
     /// the editor + a map from each emitted paragraph's NSRange to
@@ -167,7 +212,7 @@ struct TextKitEditorView: UIViewRepresentable {
         document: RichTextDocument,
         bodyFont: UIFont,
         bodyColor: UIColor
-    ) -> (attributed: NSAttributedString, flattenMap: FlattenMap) {
+    ) -> (attributed: NSAttributedString, flattenMap: FlattenMap, flattenIDMap: FlattenIDMap) {
         let mutable = NSMutableAttributedString()
         var map: FlattenMap = []
         for block in document.blocks {
@@ -185,7 +230,14 @@ struct TextKitEditorView: UIViewRepresentable {
            mutable.attributedSubstring(from: NSRange(location: mutable.length - 1, length: 1)).string == "\n" {
             mutable.deleteCharacters(in: NSRange(location: mutable.length - 1, length: 1))
         }
-        return (mutable, map)
+        // Build the leaf-id → entry index for O(1) bridging.
+        var idMap: FlattenIDMap = [:]
+        for entry in map {
+            if let leafID = entry.blockPath.last {
+                idMap[leafID] = entry
+            }
+        }
+        return (mutable, map, idMap)
     }
 
     private static func appendBlock(
@@ -195,7 +247,8 @@ struct TextKitEditorView: UIViewRepresentable {
         map: inout FlattenMap,
         bodyFont: UIFont,
         bodyColor: UIColor,
-        groupID: UUID? = nil
+        groupID: UUID? = nil,
+        inBlockquote: Bool = false
     ) {
         let path = pathPrefix + [block.id]
         switch block.kind {
@@ -204,7 +257,12 @@ struct TextKitEditorView: UIViewRepresentable {
                 runs: inline,
                 blockID: block.id,
                 path: path,
-                chrome: .paragraph,
+                // Fix B7: paragraphs inside a blockquote container
+                // emit `.blockquoteParagraph` chrome so parse-back's
+                // grouping switch recognizes them as a blockquote
+                // container's children. Without this, blockquote
+                // round-trips degrade to flat top-level paragraphs.
+                chrome: inBlockquote ? .blockquoteParagraph : .paragraph,
                 groupID: groupID,
                 into: mutable,
                 map: &map,
@@ -231,7 +289,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 bodyColor: bodyColor
             )
 
-        case .codeBlock(let text, _):
+        case .codeBlock(let text, let languageHint):
             // Code blocks are a single inline run of plain text.
             let runs = [Inline(text: text, marks: [])]
             appendLeaf(
@@ -243,7 +301,8 @@ struct TextKitEditorView: UIViewRepresentable {
                 into: mutable,
                 map: &map,
                 bodyFont: bodyFont,
-                bodyColor: bodyColor
+                bodyColor: bodyColor,
+                languageHint: languageHint
             )
 
         case .divider:
@@ -279,7 +338,8 @@ struct TextKitEditorView: UIViewRepresentable {
                             into: mutable,
                             map: &map,
                             bodyFont: bodyFont,
-                            bodyColor: bodyColor
+                            bodyColor: bodyColor,
+                            listItemID: item.id
                         )
                     } else {
                         // Nested content (rare in v1) — flatten with
@@ -312,7 +372,8 @@ struct TextKitEditorView: UIViewRepresentable {
                             into: mutable,
                             map: &map,
                             bodyFont: bodyFont,
-                            bodyColor: bodyColor
+                            bodyColor: bodyColor,
+                            listItemID: item.id
                         )
                     } else {
                         appendBlock(
@@ -338,7 +399,8 @@ struct TextKitEditorView: UIViewRepresentable {
                     map: &map,
                     bodyFont: bodyFont,
                     bodyColor: bodyColor,
-                    groupID: quoteGroupID
+                    groupID: quoteGroupID,
+                    inBlockquote: true
                 )
             }
         }
@@ -353,7 +415,9 @@ struct TextKitEditorView: UIViewRepresentable {
         into mutable: NSMutableAttributedString,
         map: inout FlattenMap,
         bodyFont: UIFont,
-        bodyColor: UIColor
+        bodyColor: UIColor,
+        languageHint: String? = nil,
+        listItemID: UUID? = nil
     ) {
         let startLocation = mutable.length
         let font = font(for: chrome, bodyFont: bodyFont)
@@ -386,6 +450,12 @@ struct TextKitEditorView: UIViewRepresentable {
         ]
         if let groupID {
             paragraphAttrs[.groupID] = groupID
+        }
+        if let languageHint {
+            paragraphAttrs[.fromInkLanguageHint] = languageHint
+        }
+        if let listItemID {
+            paragraphAttrs[.fromInkListItemID] = listItemID
         }
         // Apply paragraph attrs only to characters that DON'T already
         // carry a font (so inline-mark-induced fonts persist).
@@ -422,6 +492,12 @@ struct TextKitEditorView: UIViewRepresentable {
         if let groupID {
             newlineAttrs[.groupID] = groupID
         }
+        if let languageHint {
+            newlineAttrs[.fromInkLanguageHint] = languageHint
+        }
+        if let listItemID {
+            newlineAttrs[.fromInkListItemID] = listItemID
+        }
         newline.addAttributes(newlineAttrs, range: NSRange(location: 0, length: 1))
         mutable.append(newline)
     }
@@ -456,8 +532,16 @@ struct TextKitEditorView: UIViewRepresentable {
                 font = UIFont.monospacedSystemFont(ofSize: baseFont.pointSize, weight: .regular)
                 symbolicTraits = font.fontDescriptor.symbolicTraits
                 backgroundColor = UIColor.label.withAlphaComponent(0.06)
+                // Custom key so parse-back recovers the Mark.code
+                // without inferring from font + background (which is
+                // ambiguous).
+                attrs[.fromInkInlineCode] = true
             case .highlight(let kind):
                 backgroundColor = color(for: kind)
+                // Custom key carries the semantic kind for parse-back;
+                // .backgroundColor alone doesn't uniquely identify the
+                // mark.
+                attrs[.fromInkHighlightKind] = kind.rawValue
             case .link(let url):
                 attrs[.link] = url
                 underline = .single
@@ -581,23 +665,34 @@ struct TextKitEditorView: UIViewRepresentable {
         let paragraphs = splitParagraphs(attributed)
 
         var topLevel: [Block] = []
+        // Track emitted block IDs to detect collisions caused by
+        // Enter inheriting the prior paragraph's .blockID via
+        // typingAttributes (fix B1). A duplicate gets a fresh UUID.
+        var seenBlockIDs: Set<UUID> = []
+
         var pendingGroupID: UUID? = nil
         var pendingGroupChrome: BlockChrome? = nil
         var pendingGroupBlocks: [Block] = []
+        var pendingGroupItemIDs: [UUID?] = []  // listItemID per emitted block (for bullet/ordered lists)
 
         func flushPendingGroup() {
             guard let chrome = pendingGroupChrome, !pendingGroupBlocks.isEmpty else {
                 pendingGroupID = nil
                 pendingGroupChrome = nil
                 pendingGroupBlocks = []
+                pendingGroupItemIDs = []
                 return
             }
             switch chrome {
             case .bulletListItem:
-                let items = pendingGroupBlocks.map { ListItem(content: [$0]) }
+                let items = zip(pendingGroupBlocks, pendingGroupItemIDs).map { block, itemID in
+                    ListItem(id: itemID ?? UUID(), content: [block])
+                }
                 topLevel.append(Block(kind: .bulletList(items: items)))
             case .orderedListItem:
-                let items = pendingGroupBlocks.map { ListItem(content: [$0]) }
+                let items = zip(pendingGroupBlocks, pendingGroupItemIDs).map { block, itemID in
+                    ListItem(id: itemID ?? UUID(), content: [block])
+                }
                 topLevel.append(Block(kind: .orderedList(items: items)))
             case .blockquoteParagraph:
                 topLevel.append(Block(kind: .blockquote(children: pendingGroupBlocks)))
@@ -607,23 +702,34 @@ struct TextKitEditorView: UIViewRepresentable {
             pendingGroupID = nil
             pendingGroupChrome = nil
             pendingGroupBlocks = []
+            pendingGroupItemIDs = []
         }
 
         for paragraph in paragraphs {
             let chrome = paragraph.chrome
             let groupID = paragraph.groupID
-            let leafBlock = buildLeafBlock(from: paragraph)
+
+            // Fix B1: dedupe collisions BEFORE building the leaf so
+            // the resulting Block.id is unique.
+            var effectiveID = paragraph.blockID
+            if seenBlockIDs.contains(effectiveID) {
+                effectiveID = UUID()
+            }
+            seenBlockIDs.insert(effectiveID)
+            let leafBlock = buildLeafBlock(from: paragraph, overrideID: effectiveID)
 
             // Group-handling: bullets, ordered, blockquote children.
             switch chrome {
             case .bulletListItem, .orderedListItem, .blockquoteParagraph:
                 if pendingGroupID != nil, pendingGroupID == groupID, pendingGroupChrome == chrome {
                     pendingGroupBlocks.append(leafBlock)
+                    pendingGroupItemIDs.append(paragraph.listItemID)
                 } else {
                     flushPendingGroup()
                     pendingGroupID = groupID
                     pendingGroupChrome = chrome
                     pendingGroupBlocks = [leafBlock]
+                    pendingGroupItemIDs = [paragraph.listItemID]
                 }
             default:
                 flushPendingGroup()
@@ -641,6 +747,8 @@ struct TextKitEditorView: UIViewRepresentable {
         let chrome: BlockChrome
         let blockID: UUID
         let groupID: UUID?
+        let languageHint: String?
+        let listItemID: UUID?
         let inlineRuns: [Inline]
     }
 
@@ -662,6 +770,8 @@ struct TextKitEditorView: UIViewRepresentable {
                 let chrome = BlockChrome(rawValue: chromeRaw) ?? .paragraph
                 let blockID = (attrs[.blockID] as? UUID) ?? UUID()
                 let groupID = attrs[.groupID] as? UUID
+                let languageHint = attrs[.fromInkLanguageHint] as? String
+                let listItemID = attrs[.fromInkListItemID] as? UUID
                 let paragraphText = full.substring(with: paragraphRange)
                 let inlineRuns = parseInlineRuns(
                     attributed: attributed,
@@ -674,6 +784,8 @@ struct TextKitEditorView: UIViewRepresentable {
                     chrome: chrome,
                     blockID: blockID,
                     groupID: groupID,
+                    languageHint: languageHint,
+                    listItemID: listItemID,
                     inlineRuns: inlineRuns
                 ))
             }
@@ -718,7 +830,13 @@ struct TextKitEditorView: UIViewRepresentable {
 
     private static func marksFor(attrs: [NSAttributedString.Key: Any]) -> [Mark] {
         var marks: [Mark] = []
-        if let font = attrs[.font] as? UIFont {
+        // Code is checked first so the bold/italic traits inferred
+        // from the monospaced font don't accidentally emit bold/italic
+        // marks. A code mark's font is monospaced, not bold/italic.
+        let hasCode = (attrs[.fromInkInlineCode] as? Bool) ?? false
+        if hasCode {
+            marks.append(.code)
+        } else if let font = attrs[.font] as? UIFont {
             let traits = font.fontDescriptor.symbolicTraits
             if traits.contains(.traitBold) { marks.append(.bold) }
             if traits.contains(.traitItalic) { marks.append(.italic) }
@@ -732,56 +850,70 @@ struct TextKitEditorView: UIViewRepresentable {
         if let url = attrs[.link] as? URL {
             marks.append(.link(url))
         }
-        // Note: highlight + code marks aren't recovered from
-        // NSAttributedString attributes here — the parse-back can
-        // only see the resulting font/background. v1 limitation.
+        if let kindRaw = attrs[.fromInkHighlightKind] as? String,
+           let kind = HighlightKind(rawValue: kindRaw) {
+            marks.append(.highlight(kind))
+        }
         return marks
     }
 
-    private static func buildLeafBlock(from slice: ParagraphSlice) -> Block {
+    private static func buildLeafBlock(from slice: ParagraphSlice, overrideID: UUID) -> Block {
         switch slice.chrome {
         case .paragraph, .bulletListItem, .orderedListItem, .blockquoteParagraph:
-            return Block(id: slice.blockID, kind: .paragraph(inline: slice.inlineRuns))
+            return Block(id: overrideID, kind: .paragraph(inline: slice.inlineRuns))
         case .heading1:
-            return Block(id: slice.blockID, kind: .heading(level: 1, inline: slice.inlineRuns))
+            return Block(id: overrideID, kind: .heading(level: 1, inline: slice.inlineRuns))
         case .heading2:
-            return Block(id: slice.blockID, kind: .heading(level: 2, inline: slice.inlineRuns))
+            return Block(id: overrideID, kind: .heading(level: 2, inline: slice.inlineRuns))
         case .heading3:
-            return Block(id: slice.blockID, kind: .heading(level: 3, inline: slice.inlineRuns))
+            return Block(id: overrideID, kind: .heading(level: 3, inline: slice.inlineRuns))
         case .codeBlock:
-            return Block(id: slice.blockID, kind: .codeBlock(text: slice.text, languageHint: nil))
+            return Block(id: overrideID, kind: .codeBlock(text: slice.text, languageHint: slice.languageHint))
         case .divider:
-            return Block(id: slice.blockID, kind: .divider)
+            return Block(id: overrideID, kind: .divider)
         }
     }
 
     // MARK: - Selection bridge
 
     /// Find the BlockTreeSelection's NSRange in the flattened
-    /// attributedText by looking up the leaf block's flatten entry.
+    /// attributedText. Uses the leaf-id dictionary for O(1) lookup.
+    /// Returns nil if the path no longer resolves or the offsets
+    /// exceed the leaf's text length.
     static func nsRange(
         for selection: BlockTreeSelection,
-        flattenMap: FlattenMap,
+        flattenIDMap: FlattenIDMap,
         totalLength: Int
     ) -> NSRange? {
-        guard let leafID = selection.path.last else { return nil }
-        guard let entry = flattenMap.first(where: { $0.blockPath.last == leafID }) else { return nil }
-        let location = entry.nsRange.location + selection.startUTF16
-        let length = selection.endUTF16 - selection.startUTF16
+        guard let leafID = selection.path.last,
+              let entry = flattenIDMap[leafID] else { return nil }
+        // Clamp offsets to the leaf's text length so out-of-range
+        // values from a stale selection don't return invalid NSRange.
+        let start = max(0, min(selection.startUTF16, entry.nsRange.length))
+        let end = max(start, min(selection.endUTF16, entry.nsRange.length))
+        let location = entry.nsRange.location + start
+        let length = end - start
         guard location + length <= totalLength else { return nil }
         return NSRange(location: location, length: length)
     }
 
     /// Convert a UITextView NSRange into a BlockTreeSelection by
     /// finding which paragraph entry the range falls in.
+    ///
+    /// **Multi-paragraph selections (fix S2).** If the NSRange spans
+    /// two or more paragraphs (start in paragraph A, end in paragraph
+    /// B), the returned selection's `path` is paragraph A's path and
+    /// `endUTF16` is clamped to A's text length. This matches the
+    /// "single-leaf selection invariant" the reducer's
+    /// `toggleInlineFormat` assumes; the alternative — multi-leaf
+    /// selection model — is a separate piece of work.
     static func selection(
         forNSRange nsRange: NSRange,
         flattenMap: FlattenMap
     ) -> BlockTreeSelection {
         guard let entry = flattenMap.first(where: { entry in
-            let inside = entry.nsRange.location <= nsRange.location
+            entry.nsRange.location <= nsRange.location
                 && nsRange.location <= entry.nsRange.location + entry.nsRange.length
-            return inside
         }) else {
             return BlockTreeSelection()
         }
@@ -790,6 +922,9 @@ struct TextKitEditorView: UIViewRepresentable {
         return BlockTreeSelection(
             path: entry.blockPath,
             startUTF16: startLocal,
+            // Clamp end to the host leaf's text length so a multi-
+            // paragraph drag doesn't produce a selection that
+            // overruns the leaf — see method doc.
             endUTF16: max(startLocal, min(endLocal, entry.nsRange.length))
         )
     }
@@ -807,6 +942,11 @@ struct TextKitEditorView: UIViewRepresentable {
 
         /// Latest flatten map — kept in sync with `textView.attributedText`.
         var flattenMap: FlattenMap = []
+
+        /// O(1) leaf-id → flatten entry. Updated alongside `flattenMap`;
+        /// `lastSyncedDocument` is the document both were computed from
+        /// (invariant: all three move together).
+        var flattenIDMap: FlattenIDMap = [:]
 
         /// Set while we're programmatically applying a binding-driven
         /// update; suppresses the delegate did-change callbacks so a
@@ -874,6 +1014,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 bodyColor: parent.bodyColor
             )
             self.flattenMap = reflatten.flattenMap
+            self.flattenIDMap = reflatten.flattenIDMap
             self.lastSyncedDocument = parsed
             if parsed != parent.document {
                 parent.document = parsed
@@ -918,7 +1059,10 @@ extension NSAttributedString.Key {
 
     /// UUID of the source `Block`. The parse-back path uses this to
     /// preserve block IDs across edits where possible. New paragraphs
-    /// from Enter get a fresh UUID at parse-back time.
+    /// from Enter get a fresh UUID at parse-back time, and the
+    /// parse-back path dedupes collisions (Enter inherits the prior
+    /// paragraph's blockID via typingAttributes — the duplicate gets
+    /// a fresh UUID).
     static let blockID = NSAttributedString.Key("fromInk.blockID")
 
     /// Shared identifier for paragraphs that belong to the same
@@ -927,6 +1071,33 @@ extension NSAttributedString.Key {
     /// paragraphs with the SAME `groupID` AND the same chrome into a
     /// single container block.
     static let groupID = NSAttributedString.Key("fromInk.groupID")
+
+    /// `HighlightKind.rawValue` (a `String`) for inline runs that
+    /// carry a `Mark.highlight(_)`. Set alongside `.backgroundColor`
+    /// during flatten — the background color produces the visual
+    /// emphasis; this key carries the semantic kind so parse-back
+    /// recovers the exact Mark case instead of inferring from the
+    /// color (which is impossible without bijective color → kind
+    /// mapping). Without this key, parse-back would silently drop the
+    /// highlight on the first edit.
+    static let fromInkHighlightKind = NSAttributedString.Key("fromInk.highlightKind")
+
+    /// `true` for inline runs that carry `Mark.code`. Set alongside
+    /// the monospaced font + tinted background during flatten so the
+    /// parse-back can distinguish "code mark" from "happens to have a
+    /// monospaced font for an unrelated reason."
+    static let fromInkInlineCode = NSAttributedString.Key("fromInk.inlineCode")
+
+    /// Optional `String` language hint for `codeBlock` blocks. Set on
+    /// the paragraph attributes of a code-block leaf during flatten;
+    /// recovered by parse-back into `Block.codeBlock(languageHint:)`.
+    static let fromInkLanguageHint = NSAttributedString.Key("fromInk.languageHint")
+
+    /// `UUID` of the source `ListItem` that this paragraph belongs to,
+    /// for list-item identity preservation across round-trips.
+    /// Currently unused by parse-back (which rebuilds list items with
+    /// fresh ids) but flattened for future use.
+    static let fromInkListItemID = NSAttributedString.Key("fromInk.listItemID")
 }
 
 // MARK: - BlockDecoratingLayoutManager

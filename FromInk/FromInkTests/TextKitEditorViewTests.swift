@@ -87,7 +87,10 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(firstAttrs[.groupID] as? UUID, secondAttrs[.groupID] as? UUID)
     }
 
-    func test_flatten_blockquote_emitsSharedGroupID() {
+    func test_flatten_blockquote_emitsBlockquoteParagraphChrome() {
+        // Fix B7: blockquote children now emit .blockquoteParagraph
+        // chrome (not .paragraph) so parse-back's grouping switch
+        // recognizes them as blockquote-container children.
         let doc = RichTextDocument(blocks: [
             Block(kind: .blockquote(children: [
                 Block(kind: .paragraph(inline: [Inline(text: "Quote")]))
@@ -95,8 +98,7 @@ final class TextKitEditorViewTests: XCTestCase {
         ])
         let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
         let attrs = result.attributed.attributes(at: 0, effectiveRange: nil)
-        XCTAssertEqual(attrs[.blockChrome] as? Int, BlockChrome.paragraph.rawValue,
-                       "Inner block keeps its own chrome (paragraph) — blockquote container info lives in groupID")
+        XCTAssertEqual(attrs[.blockChrome] as? Int, BlockChrome.blockquoteParagraph.rawValue)
         XCTAssertNotNil(attrs[.groupID])
     }
 
@@ -240,7 +242,7 @@ final class TextKitEditorViewTests: XCTestCase {
         let selection = BlockTreeSelection(path: [id2], startUTF16: 0, endUTF16: 6)
         let nsRange = TextKitEditorView.nsRange(
             for: selection,
-            flattenMap: flattened.flattenMap,
+            flattenIDMap: flattened.flattenIDMap,
             totalLength: flattened.attributed.length
         )
         XCTAssertNotNil(nsRange)
@@ -265,6 +267,177 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(bridged.path, [id2])
         XCTAssertEqual(bridged.startUTF16, 2)
         XCTAssertEqual(bridged.endUTF16, 2)
+    }
+
+    // MARK: - B1 — parse-back dedupes colliding block IDs
+
+    func test_parseBack_duplicateBlockIDs_areDeduped() {
+        // Build an NSAttributedString manually with TWO paragraphs
+        // carrying the same .blockID — the shape UITextView produces
+        // after Enter (the new paragraph inherits the prior one's
+        // typingAttributes including blockID).
+        let sharedID = UUID()
+        let mutable = NSMutableAttributedString()
+
+        let paraAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 17),
+            .foregroundColor: UIColor.label,
+            .blockChrome: BlockChrome.paragraph.rawValue,
+            .blockID: sharedID
+        ]
+        mutable.append(NSAttributedString(string: "First", attributes: paraAttrs))
+        mutable.append(NSAttributedString(string: "\n", attributes: paraAttrs))
+        mutable.append(NSAttributedString(string: "Second", attributes: paraAttrs))
+
+        let recovered = TextKitEditorView.parseBack(mutable)
+        XCTAssertEqual(recovered.blocks.count, 2)
+        XCTAssertNotEqual(
+            recovered.blocks[0].id,
+            recovered.blocks[1].id,
+            "Duplicate block IDs must be de-duplicated — the second paragraph gets a fresh UUID"
+        )
+        // The first paragraph keeps the original id.
+        XCTAssertEqual(recovered.blocks[0].id, sharedID)
+    }
+
+    // MARK: - B2 — highlight + code marks round-trip
+
+    func test_highlightMark_roundTrips_viaCustomKey() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Plain "),
+                Inline(text: "yellow", marks: [.highlight(.yellow)]),
+                Inline(text: " end")
+            ]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        guard case .paragraph(let inline) = recovered.blocks[0].kind else {
+            XCTFail("Expected paragraph")
+            return
+        }
+        // Locate the highlighted run.
+        let highlightRun = inline.first { $0.marks.contains(where: { mark in
+            if case .highlight = mark { return true } else { return false }
+        }) }
+        XCTAssertNotNil(highlightRun, "Highlight mark must survive flatten → parse-back")
+        XCTAssertEqual(highlightRun?.text, "yellow")
+        XCTAssertEqual(highlightRun?.marks, [.highlight(.yellow)])
+    }
+
+    func test_codeMark_roundTrips_viaCustomKey_andDoesNotEmitItalicFromMonospaceTraits() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Use "),
+                Inline(text: "let x = 1", marks: [.code])
+            ]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        guard case .paragraph(let inline) = recovered.blocks[0].kind else {
+            XCTFail("Expected paragraph")
+            return
+        }
+        let codeRun = inline.first { $0.marks.contains(.code) }
+        XCTAssertNotNil(codeRun, "Code mark must survive flatten → parse-back")
+        XCTAssertEqual(codeRun?.text, "let x = 1")
+        XCTAssertEqual(codeRun?.marks, [.code], "Code mark only — NOT bold/italic inferred from monospace font")
+    }
+
+    // MARK: - B7 — blockquote container round-trips
+
+    func test_parseBack_blockquote_preservesContainer() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .blockquote(children: [
+                Block(kind: .paragraph(inline: [Inline(text: "Quoted")]))
+            ]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        XCTAssertEqual(recovered.blocks.count, 1)
+        guard case .blockquote(let children) = recovered.blocks[0].kind else {
+            XCTFail("Blockquote container must survive round-trip (B7)")
+            return
+        }
+        XCTAssertEqual(children.count, 1)
+        guard case .paragraph(let inline) = children[0].kind else {
+            XCTFail("Inner paragraph must survive")
+            return
+        }
+        XCTAssertEqual(inline.first?.text, "Quoted")
+    }
+
+    func test_parseBack_blockquoteWithMultipleParagraphs_preservesAllChildren() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .blockquote(children: [
+                Block(kind: .paragraph(inline: [Inline(text: "First")])),
+                Block(kind: .paragraph(inline: [Inline(text: "Second")]))
+            ]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        guard case .blockquote(let children) = recovered.blocks[0].kind else {
+            XCTFail("Expected blockquote")
+            return
+        }
+        XCTAssertEqual(children.count, 2)
+    }
+
+    // MARK: - S1 — codeBlock languageHint round-trips
+
+    func test_codeBlock_languageHint_roundTrips() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .codeBlock(text: "let x = 1", languageHint: "swift"))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        guard case .codeBlock(let text, let hint) = recovered.blocks[0].kind else {
+            XCTFail("Expected codeBlock")
+            return
+        }
+        XCTAssertEqual(text, "let x = 1")
+        XCTAssertEqual(hint, "swift", "Language hint must survive flatten → parse-back")
+    }
+
+    // MARK: - S2 — selection bridge clamps multi-paragraph end
+
+    func test_selection_forNSRange_spanningTwoParagraphs_clampsToFirstParagraph() {
+        let id1 = UUID()
+        let id2 = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: id1, kind: .paragraph(inline: [Inline(text: "First")])),
+            Block(id: id2, kind: .paragraph(inline: [Inline(text: "Second")]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // Selection from offset 2 through 9 ("rst\nSec") — spans paragraphs.
+        let nsRange = NSRange(location: 2, length: 7)
+        let bridged = TextKitEditorView.selection(
+            forNSRange: nsRange,
+            flattenMap: flattened.flattenMap
+        )
+        XCTAssertEqual(bridged.path, [id1], "Selection's path is the FIRST paragraph it intersects")
+        XCTAssertEqual(bridged.startUTF16, 2)
+        XCTAssertEqual(bridged.endUTF16, 5, "endUTF16 clamps to first paragraph's text length (5)")
+    }
+
+    // MARK: - S2 — nsRange clamps stale-offset overruns
+
+    func test_nsRange_forSelection_outOfRangeOffsets_areClamped() {
+        let id = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: id, kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // Stale selection with offsets way past leaf length.
+        let selection = BlockTreeSelection(path: [id], startUTF16: 99, endUTF16: 200)
+        let nsRange = TextKitEditorView.nsRange(
+            for: selection,
+            flattenIDMap: flattened.flattenIDMap,
+            totalLength: flattened.attributed.length
+        )
+        XCTAssertNotNil(nsRange)
+        XCTAssertEqual(nsRange?.location, 5, "Start clamps to leaf's text length")
+        XCTAssertEqual(nsRange?.length, 0, "End clamps to leaf's text length too")
     }
 }
 #endif
