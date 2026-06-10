@@ -47,13 +47,20 @@ struct SlashCommandPaletteFeature: Reducer {
         /// doesn't re-filter on every render.
         var matchedCommands: [SlashCommandDescriptor] = []
 
-        /// Character offset (from start of the editing body) of the
-        /// triggering `/`. The editor uses this to compute the
-        /// current filter as the slice from this offset+1 to the
-        /// body's end without re-scanning the body for `lastIndex(
-        /// of: "/")` on every keystroke. Nil while the palette is
-        /// closed.
+        /// UTF-16 offset of the triggering `/` inside the leaf block's
+        /// joined inline text. The parent feature uses this to compute
+        /// the current filter as the slice from this offset+1 to the
+        /// leaf's end without re-scanning the document on every
+        /// keystroke. Nil while the palette is closed.
         var triggerOffset: Int? = nil
+
+        /// Block-ID path to the leaf the user was typing in when the
+        /// `/` was detected. Empty path means "not tracking" — the
+        /// parent treats this as palette-closed for filter
+        /// computation. The path is consulted alongside `triggerOffset`
+        /// after every `documentEdited` to refresh the filter from
+        /// the current leaf's text.
+        var triggerBlockPath: [UUID] = []
 
         /// True when no commands match the current filter. View
         /// renders the "no matches" empty state.
@@ -70,11 +77,12 @@ struct SlashCommandPaletteFeature: Reducer {
 
     @CasePathable
     enum Action: Equatable {
-        /// Open the palette. `triggerOffset` is the character offset
-        /// of the just-typed `/` from the start of the editing body;
-        /// the editor uses it to compute filter slices on subsequent
-        /// keystrokes.
-        case openRequested(triggerOffset: Int)
+        /// Open the palette. `triggerOffset` is the UTF-16 offset of
+        /// the just-typed `/` within the leaf block's joined inline
+        /// text; `triggerBlockPath` is the path to that leaf. The
+        /// parent feature uses both to compute filter slices on
+        /// subsequent keystrokes.
+        case openRequested(triggerOffset: Int, triggerBlockPath: [UUID])
 
         /// User typed more (or backspaced). The reducer recomputes
         /// `matchedCommands` and resets `selectedIndex` to 0 so the
@@ -110,9 +118,10 @@ struct SlashCommandPaletteFeature: Reducer {
     var body: some Reducer<State, Action> {
         Reduce { state, action in
             switch action {
-            case .openRequested(let triggerOffset):
+            case .openRequested(let triggerOffset, let triggerBlockPath):
                 state.isOpen = true
                 state.triggerOffset = triggerOffset
+                state.triggerBlockPath = triggerBlockPath
                 state.filterText = ""
                 state.matchedCommands = registry.filtered(by: "")
                 state.selectedIndex = 0
@@ -156,6 +165,7 @@ struct SlashCommandPaletteFeature: Reducer {
                 state.filterText = ""
                 state.selectedIndex = 0
                 state.triggerOffset = nil
+                state.triggerBlockPath = []
                 return .none
 
             case .dismissed:
@@ -163,6 +173,7 @@ struct SlashCommandPaletteFeature: Reducer {
                 state.filterText = ""
                 state.selectedIndex = 0
                 state.triggerOffset = nil
+                state.triggerBlockPath = []
                 return .none
             }
         }

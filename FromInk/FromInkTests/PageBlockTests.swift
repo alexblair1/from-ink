@@ -152,21 +152,19 @@ final class PageBlockTests: XCTestCase {
     // MARK: - Snapshot projection per kind
 
     @MainActor
-    func test_snapshot_textBlock_projectsBodyAndPlainText() throws {
+    func test_snapshot_textBlock_projectsDocumentAndPlainText() throws {
         let ctx = try makeContext()
         let page = NotePage()
         ctx.insert(page)
 
         let block = PageBlock(page: page, sortIndex: 0, kind: .text)
         block.plainText = "Hello world"
-        // Archive a real AttributedString so decodeBody exercises the
-        // NSKeyedArchiver path end-to-end.
-        let original = AttributedString("Hello world")
-        let ns = NSAttributedString(original)
-        block.bodyData = try NSKeyedArchiver.archivedData(
-            withRootObject: ns,
-            requiringSecureCoding: true
-        )
+        // Archive a real RichTextDocument so decodeBody exercises the
+        // JSON path end-to-end.
+        let original = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        block.bodyData = try PageBlockSnapshot.encodeBody(original)
         ctx.insert(block)
         try ctx.save()
 
@@ -175,7 +173,8 @@ final class PageBlockTests: XCTestCase {
         XCTAssertEqual(snap.pageID, page.id)
         XCTAssertEqual(snap.kind, .text)
         XCTAssertEqual(snap.plainText, "Hello world")
-        XCTAssertNotNil(snap.body)
+        XCTAssertNotNil(snap.document)
+        XCTAssertEqual(snap.document?.plainText, "Hello world")
         XCTAssertFalse(snap.bodyDecodeFailed)
         XCTAssertNil(snap.drawingData)
         XCTAssertNil(snap.voice)
@@ -223,7 +222,7 @@ final class PageBlockTests: XCTestCase {
         XCTAssertEqual(voice.transcriptConfidence, 0.92)
         XCTAssertEqual(voice.durationSeconds, 32)
         XCTAssertEqual(voice.language, "en-US")
-        XCTAssertNil(snap.body)
+        XCTAssertNil(snap.document)
         XCTAssertNil(snap.drawingData)
     }
 
@@ -240,23 +239,23 @@ final class PageBlockTests: XCTestCase {
     // MARK: - Body decode failure
 
     @MainActor
-    func test_decodeBody_emptyData_returnsEmptyBody_notFailed() {
+    func test_decodeBody_emptyData_returnsEmptyDocument_notFailed() {
         let result = PageBlockSnapshot.decodeBody(nil, blockID: UUID())
-        XCTAssertEqual(String(result.body.characters), "")
+        XCTAssertEqual(result.document, .empty)
         XCTAssertFalse(result.failed, "Empty/nil bodyData is a normal empty-block state, not a decode failure")
 
         let result2 = PageBlockSnapshot.decodeBody(Data(), blockID: UUID())
-        XCTAssertEqual(String(result2.body.characters), "")
+        XCTAssertEqual(result2.document, .empty)
         XCTAssertFalse(result2.failed)
     }
 
     @MainActor
     func test_decodeBody_garbageBytes_reportsFailedTrue() {
-        // 16 bytes of nonsense — not a valid NSKeyedArchiver payload.
+        // 16 bytes of nonsense — not a valid JSON document.
         let garbage = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04,
                             0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C])
         let result = PageBlockSnapshot.decodeBody(garbage, blockID: UUID())
         XCTAssertTrue(result.failed, "Corrupted bodyData must surface as bodyDecodeFailed for the view layer to render a placeholder")
-        XCTAssertEqual(String(result.body.characters), "", "On failure the body is empty so the editor opens cleanly")
+        XCTAssertEqual(result.document, .empty, "On failure the document is empty so the editor opens cleanly")
     }
 }

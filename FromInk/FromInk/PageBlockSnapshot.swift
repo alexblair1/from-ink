@@ -7,16 +7,17 @@ private let snapshotLog = Logger(subsystem: "com.fromink.app", category: "PageBl
 /// TCA dependency boundary and lives in reducer state.
 ///
 /// **At most one payload field is non-nil**, gated by `kind`:
-///   • `.text`  → `body` is non-nil (may be an empty `AttributedString`)
+///   • `.text`  → `document` is non-nil (may be an empty
+///     `RichTextDocument` with `blocks: []`)
 ///   • `.ink`   → `drawingData` is non-nil for the active editing block;
 ///     other ink blocks hold `drawingData == nil` and resolve lazily via
 ///     the per-block lifecycle (placeholder / thumbnail / live). See
 ///     text experience EDD §6.4.1.
 ///   • `.voice` → `voice` is non-nil (audio data + transcript)
 ///
-/// `body: AttributedString?` is `Equatable` in O(n) over runs and
-/// characters — fine for typical block sizes (<10KB). Above 50KB,
-/// switch to a hash-based equality wrapper (EDD §5.3 threshold).
+/// `document: RichTextDocument?` is `Equatable` in O(n) over blocks +
+/// inline runs — fine for typical block sizes (<10KB). Above 50KB,
+/// switch to a hash-based equality wrapper (EDD §5.4 threshold).
 ///
 /// **`pageID: UUID?`** — `nil` signals an orphan block (the back-pointer
 /// was dropped, typically a persistence inconsistency). The reducer
@@ -29,11 +30,11 @@ struct PageBlockSnapshot: Equatable, Identifiable, Sendable {
     let kind: PageBlockKind
     let heightPoints: Double
 
-    /// `.text` payload — archived body decoded into `AttributedString`.
-    /// `nil` for non-text blocks. May be an empty `AttributedString`
-    /// for an empty text block; check `bodyDecodeFailed` to distinguish
+    /// `.text` payload — JSON-decoded body as a block-tree document.
+    /// `nil` for non-text blocks. May be `RichTextDocument.empty` for
+    /// an empty text block; check `bodyDecodeFailed` to distinguish
     /// "empty by content" from "decode failed."
-    let body: AttributedString?
+    let document: RichTextDocument?
 
     /// True when the text block had a non-empty `bodyData` payload but
     /// decoding it failed. The view layer renders a load-failure
@@ -63,6 +64,13 @@ struct PageBlockSnapshot: Equatable, Identifiable, Sendable {
     /// this against a freshly fetched snapshot to detect drift (e.g.
     /// an OCR update that landed while the user was scrolled away).
     let contentHash: String
+
+    /// For `.text` blocks created via the voice → transcript flow
+    /// (text_experience_edd §18 Scenario C), holds the source voice
+    /// block's id so the editor can surface a "play original"
+    /// affordance. Nil for all other blocks — including text blocks
+    /// the user typed directly.
+    let sourceVoiceBlockID: UUID?
 
     let createdAt: Date
     let modifiedAt: Date
@@ -104,23 +112,24 @@ extension PageBlockSnapshot {
         self.plainText = model.plainText
         self.ocrText = model.ocrText
         self.contentHash = model.contentHash
+        self.sourceVoiceBlockID = model.sourceVoiceBlockID
 
         switch model.kind {
         case .text:
             let decode = PageBlockSnapshot.decodeBody(model.bodyData, blockID: model.id)
-            self.body = decode.body
+            self.document = decode.document
             self.bodyDecodeFailed = decode.failed
             self.drawingData = nil
             self.voice = nil
 
         case .ink:
-            self.body = nil
+            self.document = nil
             self.bodyDecodeFailed = false
             self.drawingData = loadDrawingData ? model.drawingData : nil
             self.voice = nil
 
         case .voice:
-            self.body = nil
+            self.document = nil
             self.bodyDecodeFailed = false
             self.drawingData = nil
             self.voice = VoiceSnapshot(
@@ -133,80 +142,50 @@ extension PageBlockSnapshot {
         }
     }
 
-    /// Decode an archived `bodyData` blob into an `AttributedString`.
+    /// Decode an archived `bodyData` blob into a `RichTextDocument`.
     ///
-    /// **Path B first, Path A fallback.** Per EDD §7.3 the preferred
-    /// serialization is `AttributedString.Codable` with the
-    /// `FromInkAttributes` scope configuration — that's the native
-    /// Swift path through the iOS 26 rich-text `TextEditor` APIs and
-    /// our custom attribute keys (region anchor / highlight / slash
-    /// insertion) survive the round-trip cleanly. If a payload doesn't
-    /// decode as Codable (e.g. an older block archived through the
-    /// `NSKeyedArchiver` path before this flipped), we try the
-    /// archiver bridge before giving up.
+    /// **JSON of RichTextDocument** is the only persistence shape per
+    /// text_experience_edd §7.3. Per the 2026-06-09 block-tree pivot
+    /// (commit `e2851f4`), the prior AttributedString + Path A/B story
+    /// is fully retired. A `nil` or empty data payload yields the
+    /// empty document — the editor opens cleanly to its placeholder.
     ///
-    /// On total decode failure the helper logs (so a corruption never
-    /// goes silent in TestFlight) and reports `failed: true` so the
-    /// snapshot can carry the state up to the view layer. Returns an
-    /// empty `AttributedString` so the editor opens cleanly to the
-    /// failure placeholder rather than crashing.
+    /// On decode failure the helper logs (so a corruption never goes
+    /// silent in TestFlight) and reports `failed: true` so the snapshot
+    /// can carry the state up to the view layer. Returns the empty
+    /// document so the editor opens cleanly to the failure placeholder
+    /// rather than crashing.
     static func decodeBody(
         _ data: Data?,
         blockID: UUID
-    ) -> (body: AttributedString, failed: Bool) {
+    ) -> (document: RichTextDocument, failed: Bool) {
         guard let data, !data.isEmpty else {
-            return (AttributedString(), false)
+            return (.empty, false)
         }
-        // Path B — Codable with FromInkAttributes scope.
-        var pathBError: Error?
         do {
-            let body = try JSONDecoder().decode(
-                AttributedString.self,
-                from: data,
-                configuration: AttributeScopes.FromInkAttributes.self
-            )
-            return (body, false)
-        } catch {
-            // Don't bail yet — older blocks may carry Path A bytes
-            // that aren't valid JSON. Capture and try Path A; only
-            // surface the Path B error if Path A also fails (so a
-            // genuine corruption diagnostic isn't lost).
-            pathBError = error
-        }
-        // Path A — NSKeyedArchiver bridge.
-        do {
-            if let ns = try NSKeyedUnarchiver.unarchivedObject(
-                ofClass: NSAttributedString.self, from: data
-            ) {
-                return (AttributedString(ns), false)
-            }
-            snapshotLog.error(
-                "Block \(blockID.uuidString, privacy: .public) bodyData decoded as nil under both Path B and Path A. Path B error: \(pathBError?.localizedDescription ?? "nil", privacy: .public)"
-            )
-            return (AttributedString(), true)
+            let document = try JSONDecoder().decode(RichTextDocument.self, from: data)
+            return (document, false)
         } catch {
             snapshotLog.error(
-                "Block \(blockID.uuidString, privacy: .public) body decode failed. Path B: \(pathBError?.localizedDescription ?? "nil", privacy: .public). Path A: \(error.localizedDescription, privacy: .public)"
+                "Block \(blockID.uuidString, privacy: .public) bodyData failed to decode as RichTextDocument: \(error.localizedDescription, privacy: .public)"
             )
-            return (AttributedString(), true)
+            return (.empty, true)
         }
     }
 
-    /// Encode an `AttributedString` into the form that `decodeBody`
-    /// expects. Uses Path B (Codable + `FromInkAttributes` scope). The
-    /// `NotebookClient.updateBlockBody` callers (the text editor's
-    /// debounced commit path) reach for this helper rather than
-    /// duplicating the encoder configuration at the call site.
+    /// Encode a `RichTextDocument` into the form that `decodeBody`
+    /// expects. The `NotebookClient.updateBlockBody` callers (the text
+    /// editor's debounced commit path) reach for this helper rather
+    /// than duplicating the encoder configuration at the call site.
     ///
-    /// Errors: encoding can fail if a custom attribute value isn't
-    /// `Codable`-conformant. All v1 attribute values (`UUID`,
-    /// `HighlightKind`, `SlashCommandID`) are `Codable`, so a thrown
-    /// error here indicates a future attribute key was added to the
-    /// scope without a `CodableAttributedStringKey` conformance.
-    static func encodeBody(_ body: AttributedString) throws -> Data {
-        try JSONEncoder().encode(
-            body,
-            configuration: AttributeScopes.FromInkAttributes.self
-        )
+    /// **Sorted-keys encoding.** The encoder uses `.sortedKeys` so
+    /// every save produces byte-stable output for a given document.
+    /// `PageBlock.contentHash` reads off this stable form; without it
+    /// an idempotent save-no-edits-save round-trip would shuffle the
+    /// JSON dictionary order and trip the ML cache invalidation.
+    static func encodeBody(_ document: RichTextDocument) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try encoder.encode(document)
     }
 }

@@ -1,25 +1,33 @@
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 import XCTest
 @testable import FromInk
 
-/// Pins the `TextEditingFeature` reducer's contract:
+/// Pins the `TextEditingFeature` reducer's contract on the block-tree
+/// content model (2026-06-09 pivot — see `text_experience_edd.md`
+/// §5.3 + §22.4).
 ///
-///   - `activeBlockChanged` seeds the in-flight body from the
-///     snapshot, clears `isDirty`, and cancels any in-flight persist.
-///   - `activeBlockChanged` with a decode-failed snapshot surfaces
-///     the `bodyDecodeFailed` load failure state.
-///   - `activeBlockChanged` with an orphan (`pageID == nil`)
-///     snapshot surfaces the `orphan` load failure state.
-///   - `bodyEdited` marks dirty and schedules a debounced persist.
-///   - Persist debounce: a rapid burst of edits coalesces to one
-///     `NotebookClient.updateBlockBody` call after the window elapses.
-///   - `flush` cancels the pending debounce and forces an immediate
-///     persist when dirty.
-///   - `flush` is a no-op when nothing is dirty.
-///   - Edits made while in a failure state are silently dropped
-///     (no body mutation, no persist).
+/// The behavioral claims:
+///
+///   - `activeBlockChanged` seeds the document from the snapshot,
+///     clears `isDirty`, and cancels any in-flight persist. Same-
+///     block echoes preserve live editor state.
+///   - `documentEdited` mirrors the document, marks dirty, schedules
+///     a debounced persist; refreshes the slash filter if open.
+///   - `selectionChanged` mirrors selection without scheduling
+///     persist.
+///   - `slashTyped` opens the palette with the trigger location.
+///   - `applyBlockFormat` rewrites the target leaf into the requested
+///     kind. Heading replaces; blockQuote wraps; lists wrap;
+///     divider INSERTS a new block after the target. Unset selection
+///     targets the document's last leaf.
+///   - `toggleInlineFormat` applies / removes a Mark across the
+///     selection's UTF-16 range. Insertion-point-only selections
+///     no-op. Toggle removes the mark when every covered run already
+///     carries it; otherwise it adds.
+///   - `slashPaletteCommandSelected` strips the trigger + filter
+///     characters and dispatches the appropriate block-format action.
+///   - `flush` forces an immediate persist when dirty.
 final class TextEditingFeatureTests: XCTestCase {
 
     private let blockID = UUID()
@@ -30,7 +38,7 @@ final class TextEditingFeatureTests: XCTestCase {
 
     private func snapshot(
         kind: PageBlockKind = .text,
-        body: AttributedString = AttributedString(),
+        document: RichTextDocument = .empty,
         pageID: UUID? = nil,
         bodyDecodeFailed: Bool = false
     ) -> PageBlockSnapshot {
@@ -40,38 +48,43 @@ final class TextEditingFeatureTests: XCTestCase {
             sortIndex: 0,
             kind: kind,
             heightPoints: 44,
-            body: body,
+            document: document,
             bodyDecodeFailed: bodyDecodeFailed,
             drawingData: nil,
             voice: nil,
             ocrText: nil,
-            plainText: String(body.characters),
-            contentHash: PageBlock.sha256(String(body.characters)),
+            plainText: document.plainText,
+            contentHash: PageBlock.sha256(document.plainText),
+            sourceVoiceBlockID: nil,
             createdAt: earlier,
             modifiedAt: earlier
         )
     }
 
+    /// Single-paragraph document for tests that don't care about
+    /// multi-block structure.
+    private func paragraphDoc(_ text: String) -> RichTextDocument {
+        RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: text)]))
+        ])
+    }
+
     // MARK: - activeBlockChanged
 
     @MainActor
-    func test_activeBlockChanged_seedsBodyFromSnapshot() async {
+    func test_activeBlockChanged_seedsDocumentFromSnapshot() async {
         let store = TestStore(
             initialState: TextEditingFeature.State(),
             reducer: { TextEditingFeature() },
-            // Pin every test's continuousClock to an immediate clock
-            // so a prior test's effect Task that's still resolving
-            // its TaskLocal dependency context can't bleed an
-            // `Unimplemented: ContinuousClock.*` failure into this
-            // test under suite-level ordering.
             withDependencies: { $0.continuousClock = ImmediateClock() }
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        let snap = snapshot(body: AttributedString("Hello"))
+        let doc = paragraphDoc("Hello")
+        let snap = snapshot(document: doc)
         await store.send(.activeBlockChanged(snap)) {
             $0.activeBlock = snap
-            $0.editingBody = AttributedString("Hello")
+            $0.document = doc
             $0.isDirty = false
             $0.loadFailure = nil
         }
@@ -82,11 +95,6 @@ final class TextEditingFeatureTests: XCTestCase {
         let store = TestStore(
             initialState: TextEditingFeature.State(),
             reducer: { TextEditingFeature() },
-            // Pin every test's continuousClock to an immediate clock
-            // so a prior test's effect Task that's still resolving
-            // its TaskLocal dependency context can't bleed an
-            // `Unimplemented: ContinuousClock.*` failure into this
-            // test under suite-level ordering.
             withDependencies: { $0.continuousClock = ImmediateClock() }
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
@@ -102,33 +110,27 @@ final class TextEditingFeatureTests: XCTestCase {
         let store = TestStore(
             initialState: TextEditingFeature.State(),
             reducer: { TextEditingFeature() },
-            // Pin every test's continuousClock to an immediate clock
-            // so a prior test's effect Task that's still resolving
-            // its TaskLocal dependency context can't bleed an
-            // `Unimplemented: ContinuousClock.*` failure into this
-            // test under suite-level ordering.
             withDependencies: { $0.continuousClock = ImmediateClock() }
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        // An orphan block has no back-pointer to its page.
         let orphan = PageBlockSnapshot(
             id: blockID,
             pageID: nil,
             sortIndex: 0,
             kind: .text,
             heightPoints: 44,
-            body: AttributedString(),
+            document: .empty,
             bodyDecodeFailed: false,
             drawingData: nil,
             voice: nil,
             ocrText: nil,
             plainText: nil,
             contentHash: "",
+            sourceVoiceBlockID: nil,
             createdAt: earlier,
             modifiedAt: earlier
         )
-
         await store.send(.activeBlockChanged(orphan)) {
             $0.loadFailure = .orphan
         }
@@ -136,28 +138,18 @@ final class TextEditingFeatureTests: XCTestCase {
 
     @MainActor
     func test_activeBlockChanged_sameBlockEcho_preservesEditorState() async {
-        // Regression: SwiftData echoes our own persist back through
-        // NotebookFeature.storeDidChange → loadTextBlocks →
-        // activeBlockChanged(sameSnapshot). The editor's editingBody,
-        // selection, and (critically) the open slash palette MUST NOT
-        // be reset by that echo — doing so dismisses the palette
-        // ~600ms after the user types `/`, jumps the caret to
-        // endIndex, and clears the dirty flag on edits queued since
-        // the persist started.
-        let initialBody = AttributedString("Meeting notes")
-        let initialSnap = snapshot(body: initialBody)
+        // SwiftData echoes our own persist back through the
+        // NotebookFeature observer. Live editor state (document,
+        // selection, palette, dirty) MUST be preserved.
+        let initialDoc = paragraphDoc("Meeting notes")
+        let initialSnap = snapshot(document: initialDoc)
 
         var initial = TextEditingFeature.State(activeBlock: initialSnap)
-        initial.editingBody = initialBody
-        // Simulate live editor state: open palette, mid-edit dirty
-        // flag, custom selection — exactly what's on State the
-        // moment the SwiftData echo lands.
+        initial.document = initialDoc
         initial.slashPalette.isOpen = true
-        initial.slashPalette.triggerOffset = 13
-        initial.slashPalette.filterText = ""
+        initial.slashPalette.triggerOffset = 5
+        initial.slashPalette.triggerBlockPath = [initialDoc.blocks[0].id]
         initial.isDirty = true
-        let liveSelection = AttributedTextSelection(range: initialBody.endIndex..<initialBody.endIndex)
-        initial.selection = liveSelection
 
         let store = TestStore(
             initialState: initial,
@@ -166,137 +158,23 @@ final class TextEditingFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        // Echo: same block id, same body, same pageID. Failure-state
-        // refresh is the only allowed mutation.
         await store.send(.activeBlockChanged(initialSnap)) {
             $0.activeBlock = initialSnap
         }
 
         XCTAssertTrue(store.state.slashPalette.isOpen, "Palette must stay open on same-block echo")
-        XCTAssertEqual(store.state.slashPalette.triggerOffset, 13, "Trigger offset must survive echo")
-        XCTAssertTrue(store.state.isDirty, "Dirty flag must survive echo — user may have edits queued")
-        XCTAssertEqual(store.state.editingBody, initialBody, "editingBody must not be reseated")
+        XCTAssertEqual(store.state.slashPalette.triggerOffset, 5)
+        XCTAssertTrue(store.state.isDirty, "Dirty flag must survive echo")
+        XCTAssertEqual(store.state.document, initialDoc)
     }
 
-    // MARK: - bodyEdited + debounced persist
+    // MARK: - documentEdited
 
     @MainActor
-    func test_bodyEdited_marksDirty_andUpdatesBody() async {
-        // Verifies the synchronous state mutation only — body and
-        // isDirty flip on bodyEdited. The follow-on debounced
-        // persist effect is exercised by `test_flush_whenDirty_
-        // persistsImmediately` which forces the persist via flush
-        // and doesn't leave a `.cancellable(cancelInFlight: true)`
-        // registration that would otherwise leak across the test
-        // boundary into subsequent ContinuousClock-sensitive tests.
-        let store = TestStore(
-            initialState: TextEditingFeature.State(activeBlock: snapshot()),
-            reducer: { TextEditingFeature() },
-            withDependencies: { $0.continuousClock = ImmediateClock() }
-        )
-        store.exhaustivity = .off(showSkippedAssertions: false)
-
-        let newBody = AttributedString("Hello world")
-        await store.send(.bodyEdited(newBody)) {
-            $0.editingBody = newBody
-            $0.isDirty = true
-        }
-
-        // Cancel the debounced effect synchronously to avoid
-        // leaving a cancellable registration alive across the
-        // test boundary.
-        await store.send(.activeBlockChanged(nil)) {
-            $0.activeBlock = nil
-            $0.editingBody = AttributedString()
-            $0.isDirty = false
-        }
-    }
-
-    // Note: rapid-burst coalescing is provided by TCA's documented
-    // `.cancellable(cancelInFlight: true)` semantics (a new effect with
-    // the same cancellation ID cancels the prior in-flight one). The
-    // single-edit `test_bodyEdited_marksDirtyAndDebouncesPersist` test
-    // exercises the debounce path; re-testing TCA's own cancel-in-flight
-    // behaviour adds churn (and hits a cross-test cancellation-registry
-    // interaction under suite-level ordering that surfaces as
-    // `Unimplemented: ContinuousClock.*` from prior-test Task contexts).
-
-    // MARK: - flush
-
-    @MainActor
-    func test_flush_whenDirty_persistsImmediately() async {
-        let updateCalls = LockIsolated<Int>(0)
-
-        let store = TestStore(
-            initialState: TextEditingFeature.State(activeBlock: snapshot()),
-            reducer: { TextEditingFeature() },
-            withDependencies: {
-                $0.notebookClient.updateBlockBody = { _, _, _ in
-                    updateCalls.withValue { $0 += 1 }
-                }
-                $0.continuousClock = ImmediateClock()
-            }
-        )
-        store.exhaustivity = .off(showSkippedAssertions: false)
-
-        await store.send(.bodyEdited(AttributedString("draft"))) {
-            $0.isDirty = true
-        }
-        // Flush before debounce window elapses — must persist anyway.
-        await store.send(.flush)
-        await store.receive(.persistCompleted) {
-            $0.isDirty = false
-        }
-
-        XCTAssertEqual(updateCalls.value, 1)
-    }
-
-    @MainActor
-    func test_flush_whenClean_isNoOp() async {
-        let updateCalls = LockIsolated<Int>(0)
-
-        let store = TestStore(
-            initialState: TextEditingFeature.State(activeBlock: snapshot()),
-            reducer: { TextEditingFeature() },
-            withDependencies: {
-                $0.notebookClient.updateBlockBody = { _, _, _ in
-                    updateCalls.withValue { $0 += 1 }
-                }
-                $0.continuousClock = ImmediateClock()
-            }
-        )
-        store.exhaustivity = .off(showSkippedAssertions: false)
-
-        // No prior edit — flush is a no-op.
-        await store.send(.flush)
-        XCTAssertEqual(updateCalls.value, 0, "Flush without dirty state must not persist")
-    }
-
-    // MARK: - Load failure suppresses edits
-
-    // MARK: - Trigger strip preserves AttributedString attributes
-
-    @MainActor
-    func test_slashPaletteCommandSelected_preservesAttributesOutsideTriggerSlice() async {
-        // Regression test for the data-loss bug where the prior
-        // implementation round-tripped through String when stripping
-        // the trigger, destroying every region anchor / highlight /
-        // slash-insertion attribute on the surviving text.
-        let regionID = UUID()
-        var body = AttributedString("Notes from Sarah /h1")
-        let range = body.range(of: "Sarah")!
-        body[range].fromInk.regionAnchor = regionID
-        body[range].fromInk.highlight = .yellow
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.slashPalette.isOpen = true
-        initial.slashPalette.filterText = "h1"
-        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard
-            .filtered(by: "heading")
-        initial.slashPalette.selectedIndex = 0
-        // `/` sits at character offset 17 in "Notes from Sarah /h1".
-        initial.slashPalette.triggerOffset = 17
+    func test_documentEdited_marksDirty_andUpdatesDocument() async {
+        let initialDoc = paragraphDoc("a")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: initialDoc))
+        initial.document = initialDoc
 
         let store = TestStore(
             initialState: initial,
@@ -305,31 +183,76 @@ final class TextEditingFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.slashPalette(.commandSelected(.heading1)))
+        let next = paragraphDoc("abc")
+        await store.send(.documentEdited(next)) {
+            $0.document = next
+            $0.isDirty = true
+        }
+    }
 
-        let surviving = store.state.editingBody
-        let recoveredRange = try? XCTUnwrap(surviving.range(of: "Sarah"))
-        guard let recoveredRange else { return }
-        XCTAssertEqual(
-            surviving[recoveredRange].fromInk.regionAnchor,
-            regionID,
-            "Region anchor on 'Sarah' must survive the trigger strip"
+    @MainActor
+    func test_documentEdited_whileLoadFailure_isDropped() async {
+        var initial = TextEditingFeature.State()
+        initial.loadFailure = .bodyDecodeFailed
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
         )
-        XCTAssertEqual(
-            surviving[recoveredRange].fromInk.highlight,
-            .yellow,
-            "Highlight on 'Sarah' must survive the trigger strip"
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // No state change expected.
+        await store.send(.documentEdited(paragraphDoc("x")))
+    }
+
+    // MARK: - selectionChanged
+
+    @MainActor
+    func test_selectionChanged_mirrors() async {
+        let store = TestStore(
+            initialState: TextEditingFeature.State(),
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
         )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        let newSel = BlockTreeSelection.insertion(at: [UUID()], offset: 2)
+        await store.send(.selectionChanged(newSel)) {
+            $0.selection = newSel
+        }
+    }
+
+    // MARK: - slashTyped
+
+    @MainActor
+    func test_slashTyped_opensPaletteWithLocation() async {
+        let store = TestStore(
+            initialState: TextEditingFeature.State(),
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        let leafID = UUID()
+        await store.send(.slashTyped(blockPath: [leafID], offsetUTF16: 7))
+        await store.receive(.slashPalette(.openRequested(triggerOffset: 7, triggerBlockPath: [leafID]))) {
+            $0.slashPalette.isOpen = true
+            $0.slashPalette.triggerOffset = 7
+            $0.slashPalette.triggerBlockPath = [leafID]
+            $0.slashPalette.matchedCommands = SlashCommandRegistry.standard.filtered(by: "")
+        }
     }
 
     // MARK: - applyBlockFormat
 
     @MainActor
-    func test_applyBlockFormat_heading1_setsPresentationIntent() async {
-        var initial = TextEditingFeature.State(activeBlock: snapshot(
-            body: AttributedString("Meeting agenda")
-        ))
-        initial.editingBody = AttributedString("Meeting agenda")
+    func test_applyBlockFormat_heading1_replacesLeafKind() async {
+        let doc = paragraphDoc("Meeting agenda")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -340,28 +263,22 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.applyBlockFormat(.heading(level: 1)))
 
-        let body = store.state.editingBody
-        let range = body.startIndex..<body.endIndex
-        let intent = body[range].presentationIntent
-        XCTAssertNotNil(intent, "Body must carry a PresentationIntent after block format application")
-        XCTAssertTrue(store.state.isDirty, "Block format application must mark the body dirty for persist")
+        guard case .heading(let level, let inline) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected heading after applyBlockFormat")
+            return
+        }
+        XCTAssertEqual(level, 1)
+        XCTAssertEqual(inline.first?.text, "Meeting agenda", "Inline text must survive the kind change")
+        XCTAssertTrue(store.state.isDirty)
     }
 
-    // MARK: - Selection-aware block format
-
     @MainActor
-    func test_applyBlockFormat_withSelectionInMiddleParagraph_targetsThatParagraphOnly() async {
-        // Three paragraphs separated by newlines. Selection lives
-        // in the SECOND paragraph; applying Heading 2 must affect
-        // only that paragraph's PresentationIntent.
-        let plain = "Intro paragraph.\nMiddle paragraph.\nClosing paragraph."
-        let body = AttributedString(plain)
-        let middleRange = body.range(of: "Middle paragraph.")!
-        let selection = AttributedTextSelection(range: middleRange)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.selection = selection
+    func test_applyBlockFormat_blockQuote_wrapsLeafInBlockquote() async {
+        let doc = paragraphDoc("Quote me on this")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -370,61 +287,26 @@ final class TextEditingFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.applyBlockFormat(.heading(level: 2)))
+        await store.send(.applyBlockFormat(.blockQuote))
 
-        // The middle paragraph has the heading intent applied.
-        let resultBody = store.state.editingBody
-        let resultMiddleRange = resultBody.range(of: "Middle paragraph.")!
-        XCTAssertNotNil(resultBody[resultMiddleRange].presentationIntent)
-
-        // The intro paragraph does NOT.
-        let introRange = resultBody.range(of: "Intro paragraph.")!
-        XCTAssertNil(resultBody[introRange].presentationIntent)
-
-        // Neither does the closing paragraph.
-        let closingRange = resultBody.range(of: "Closing paragraph.")!
-        XCTAssertNil(resultBody[closingRange].presentationIntent)
+        guard case .blockquote(let children) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected blockquote")
+            return
+        }
+        guard case .paragraph(let innerInline) = children.first?.kind else {
+            XCTFail("Expected paragraph inside blockquote")
+            return
+        }
+        XCTAssertEqual(innerInline.first?.text, "Quote me on this", "Original paragraph wrapped, content preserved")
     }
 
     @MainActor
-    func test_applyBlockFormat_blockQuote_setsBlockQuoteIntent() async {
-        await assertParagraphIntent(
-            applying: .blockQuote,
-            paragraphText: "Quote me on this.",
-            expectedKindSubstring: "blockQuote"
-        )
-    }
-
-    @MainActor
-    func test_applyBlockFormat_codeBlock_setsCodeBlockIntent() async {
-        await assertParagraphIntent(
-            applying: .codeBlock,
-            paragraphText: "let x = 1",
-            expectedKindSubstring: "codeBlock"
-        )
-    }
-
-    @MainActor
-    func test_applyBlockFormat_bulletedList_setsListItemWithUnorderedParent() async {
-        await assertParagraphIntent(
-            applying: .bulletedList,
-            paragraphText: "First item",
-            expectedKindSubstring: "listItem"
-        )
-    }
-
-    @MainActor
-    func test_applyBlockFormat_bulletedList_parentIsUnorderedList() async {
-        // Drill into PresentationIntent.components and assert the
-        // parent kind is unorderedList (not orderedList). This is
-        // what distinguishes bulleted from numbered visually.
-        let paragraphText = "First item"
-        let body = AttributedString(paragraphText)
-        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.selection = selection
+    func test_applyBlockFormat_bulletedList_wrapsLeafInListWithOneItem() async {
+        let doc = paragraphDoc("First")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -435,23 +317,25 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.applyBlockFormat(.bulletedList))
 
-        let result = store.state.editingBody
-        let resultRange = result.range(of: paragraphText)!
-        let intent = result[resultRange].presentationIntent
-        XCTAssertNotNil(intent)
-        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
-        XCTAssertTrue(kinds.contains("unorderedList"), "Expected unorderedList in components, got: \(kinds)")
+        guard case .bulletList(let items) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected bulletList")
+            return
+        }
+        XCTAssertEqual(items.count, 1)
+        guard case .paragraph(let innerInline) = items.first?.content.first?.kind else {
+            XCTFail("Expected paragraph inside list item")
+            return
+        }
+        XCTAssertEqual(innerInline.first?.text, "First")
     }
 
     @MainActor
-    func test_applyBlockFormat_numberedList_parentIsOrderedList() async {
-        let paragraphText = "First item"
-        let body = AttributedString(paragraphText)
-        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.selection = selection
+    func test_applyBlockFormat_numberedList_wrapsLeafInOrderedList() async {
+        let doc = paragraphDoc("Step")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -462,39 +346,25 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.applyBlockFormat(.numberedList))
 
-        let result = store.state.editingBody
-        let resultRange = result.range(of: paragraphText)!
-        let intent = result[resultRange].presentationIntent
-        XCTAssertNotNil(intent)
-        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
-        XCTAssertTrue(kinds.contains("orderedList"), "Expected orderedList in components, got: \(kinds)")
+        guard case .orderedList = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected orderedList")
+            return
+        }
     }
 
     @MainActor
-    func test_applyBlockFormat_divider_setsThematicBreakIntent() async {
-        await assertParagraphIntent(
-            applying: .divider,
-            paragraphText: "anything",
-            expectedKindSubstring: "thematicBreak"
-        )
-    }
-
-    /// Helper for the "apply format X, assert paragraph intent kind"
-    /// pattern. Keeps the matrix tests above to one assertion line.
-    @MainActor
-    private func assertParagraphIntent(
-        applying format: TextEditingFeature.BlockFormat,
-        paragraphText: String,
-        expectedKindSubstring: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async {
-        let body = AttributedString(paragraphText)
-        let selection = AttributedTextSelection(range: body.range(of: paragraphText)!)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.selection = selection
+    func test_applyBlockFormat_codeBlock_replacesAsCodeBlockWithJoinedText() async {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "let "),
+                Inline(text: "x", marks: [.bold]),
+                Inline(text: " = 1")
+            ]))
+        ])
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -503,35 +373,22 @@ final class TextEditingFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.applyBlockFormat(format))
+        await store.send(.applyBlockFormat(.codeBlock))
 
-        let result = store.state.editingBody
-        let resultRange = result.range(of: paragraphText)!
-        let intent = result[resultRange].presentationIntent
-        XCTAssertNotNil(intent, file: file, line: line)
-        let kinds = intent?.components.map { String(describing: $0.kind) }.joined(separator: ",") ?? ""
-        XCTAssertTrue(
-            kinds.contains(expectedKindSubstring),
-            "Expected '\(expectedKindSubstring)' in components, got: \(kinds)",
-            file: file,
-            line: line
-        )
+        guard case .codeBlock(let text, _) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected codeBlock")
+            return
+        }
+        XCTAssertEqual(text, "let x = 1", "Inline marks flatten away; plain text preserved")
     }
 
     @MainActor
-    func test_applyBlockFormat_withUnsetSelection_targetsLastParagraph() async {
-        // Pins the documented "AttributedTextSelection() projects as
-        // .insertionPoint(endIndex)" contract. On a brand-new block
-        // where the user hasn't tapped to position the caret yet, a
-        // block format applies to the LAST paragraph — matching the
-        // pre-selection-aware behavior. Regression for any future
-        // change to the unset-selection projection.
-        let plain = "First paragraph.\nMiddle paragraph.\nLast paragraph."
-        let body = AttributedString(plain)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        // selection intentionally left at default — empty.
+    func test_applyBlockFormat_divider_insertsAfterTargetLeaf() async {
+        let doc = paragraphDoc("Above")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 0)
 
         let store = TestStore(
             initialState: initial,
@@ -540,33 +397,62 @@ final class TextEditingFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.applyBlockFormat(.heading(level: 1)))
+        await store.send(.applyBlockFormat(.divider))
 
-        let resultBody = store.state.editingBody
-        let lastRange = resultBody.range(of: "Last paragraph.")!
-        XCTAssertNotNil(
-            resultBody[lastRange].presentationIntent,
-            "Heading must target the last paragraph when selection is unset"
-        )
-        let firstRange = resultBody.range(of: "First paragraph.")!
-        XCTAssertNil(
-            resultBody[firstRange].presentationIntent,
-            "First paragraph must be unaffected when selection is unset"
-        )
+        let blocks = store.state.document.blocks
+        XCTAssertEqual(blocks.count, 3, "Original paragraph + divider + fresh paragraph after")
+        XCTAssertEqual(blocks[0].id, leafID, "Original paragraph stays at index 0 by id")
+        // After insertion: target stays, fresh paragraph inserted first, then divider after target.
+        // The reducer inserts a paragraph after the divider so the caret has somewhere to land —
+        // but inserts in reverse order (paragraph, then divider) so the divider ends up right
+        // after the target leaf.
+        let kinds = blocks.map { String(describing: $0.kind).prefix(10) }
+        let hasDivider = blocks.contains { if case .divider = $0.kind { return true } else { return false } }
+        XCTAssertTrue(hasDivider, "Document must now contain a divider — found kinds: \(kinds)")
     }
 
-    // MARK: - toggleInlineFormat — selection-required
+    @MainActor
+    func test_applyBlockFormat_withUnsetSelection_targetsLastLeaf() async {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "First")])),
+            Block(kind: .paragraph(inline: [Inline(text: "Last")]))
+        ])
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        // selection left as default (unset)
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.applyBlockFormat(.heading(level: 2)))
+
+        guard case .heading = store.state.document.blocks[1].kind else {
+            XCTFail("Last leaf should have become a heading")
+            return
+        }
+        guard case .paragraph = store.state.document.blocks[0].kind else {
+            XCTFail("First paragraph should remain unchanged")
+            return
+        }
+    }
+
+    // MARK: - toggleInlineFormat
 
     @MainActor
     func test_toggleInlineFormat_bold_appliesToSelectedRangeOnly() async {
-        let plain = "The quick brown fox"
-        let body = AttributedString(plain)
-        let quickRange = body.range(of: "quick")!
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "The quick brown fox")]))
+        ])
+        let leafID = doc.blocks[0].id
+        // Select "quick" — UTF-16 offsets 4..9.
+        let selection = BlockTreeSelection.range(at: [leafID], start: 4, end: 9)
 
-        let selection = AttributedTextSelection(range: quickRange)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
         initial.selection = selection
 
         let store = TestStore(
@@ -578,40 +464,35 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.toggleInlineFormat(.bold))
 
-        let resultBody = store.state.editingBody
-        let resultQuickRange = resultBody.range(of: "quick")!
-        let quickIntent = resultBody[resultQuickRange].inlinePresentationIntent ?? []
-        XCTAssertTrue(
-            quickIntent.contains(.stronglyEmphasized),
-            "Bold must apply across the selected range"
-        )
-
-        // "brown" wasn't selected — must NOT be bold.
-        let brownRange = resultBody.range(of: "brown")!
-        let brownIntent = resultBody[brownRange].inlinePresentationIntent ?? []
-        XCTAssertFalse(
-            brownIntent.contains(.stronglyEmphasized),
-            "Bold must not bleed into unselected text"
-        )
+        guard case .paragraph(let inline) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected paragraph")
+            return
+        }
+        // Expect three runs: "The ", "quick" (bold), " brown fox"
+        XCTAssertEqual(inline.count, 3)
+        XCTAssertEqual(inline[0].text, "The ")
+        XCTAssertEqual(inline[0].marks, [])
+        XCTAssertEqual(inline[1].text, "quick")
+        XCTAssertEqual(inline[1].marks, [.bold])
+        XCTAssertEqual(inline[2].text, " brown fox")
+        XCTAssertEqual(inline[2].marks, [])
     }
 
     @MainActor
-    func test_toggleInlineFormat_bold_secondInvocationRemovesBold() async {
-        let plain = "Important word"
-        var body = AttributedString(plain)
-        // Apply bold BEFORE computing the range used by selection —
-        // AttributedString.Index is invalidated by mutations, and a
-        // pre-mutation range projects as `.insertionPoint(endIndex)`
-        // when later asked for its indices in the mutated body. Always
-        // compute selection ranges from the body AFTER mutations.
-        let setupRange = body.range(of: "Important")!
-        body[setupRange].inlinePresentationIntent = .stronglyEmphasized
+    func test_toggleInlineFormat_secondInvocation_removesBold() async {
+        // Pre-seed an already-bold span; toggle should remove.
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "The "),
+                Inline(text: "quick", marks: [.bold]),
+                Inline(text: " brown fox")
+            ]))
+        ])
+        let leafID = doc.blocks[0].id
+        let selection = BlockTreeSelection.range(at: [leafID], start: 4, end: 9)
 
-        let importantRange = body.range(of: "Important")!
-        let selection = AttributedTextSelection(range: importantRange)
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
         initial.selection = selection
 
         let store = TestStore(
@@ -623,25 +504,50 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.toggleInlineFormat(.bold))
 
-        let resultBody = store.state.editingBody
-        let resultRange = resultBody.range(of: "Important")!
-        let intent = resultBody[resultRange].inlinePresentationIntent ?? []
-        XCTAssertFalse(
-            intent.contains(.stronglyEmphasized),
-            "Toggle must remove bold when the selection's first character was already bold"
-        )
+        guard case .paragraph(let inline) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected paragraph")
+            return
+        }
+        // After toggle-off the runs should coalesce back into a
+        // single plain run.
+        XCTAssertEqual(inline.count, 1)
+        XCTAssertEqual(inline[0].text, "The quick brown fox")
+        XCTAssertEqual(inline[0].marks, [])
     }
 
     @MainActor
-    func test_toggleInlineFormat_underline_appliesUnderlineStyle() async {
-        let plain = "Underline me"
-        let body = AttributedString(plain)
-        let meRange = body.range(of: "me")!
+    func test_toggleInlineFormat_insertionPointOnly_isNoOp() async {
+        let doc = paragraphDoc("hello")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 2)
 
-        let selection = AttributedTextSelection(range: meRange)
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
 
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
+        await store.send(.toggleInlineFormat(.bold))
+
+        // No mark added.
+        guard case .paragraph(let inline) = store.state.document.blocks[0].kind else {
+            XCTFail()
+            return
+        }
+        XCTAssertEqual(inline.first?.marks, [])
+    }
+
+    @MainActor
+    func test_toggleInlineFormat_underline_appliesUnderlineMark() async {
+        let doc = paragraphDoc("link text")
+        let leafID = doc.blocks[0].id
+        let selection = BlockTreeSelection.range(at: [leafID], start: 0, end: 4)
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
         initial.selection = selection
 
         let store = TestStore(
@@ -653,57 +559,29 @@ final class TextEditingFeatureTests: XCTestCase {
 
         await store.send(.toggleInlineFormat(.underline))
 
-        let resultBody = store.state.editingBody
-        let resultRange = resultBody.range(of: "me")!
-        XCTAssertNotNil(
-            resultBody[resultRange].underlineStyle,
-            "Underline routes through `underlineStyle`, not `InlinePresentationIntent`"
-        )
+        guard case .paragraph(let inline) = store.state.document.blocks[0].kind else {
+            XCTFail()
+            return
+        }
+        XCTAssertEqual(inline[0].text, "link")
+        XCTAssertEqual(inline[0].marks, [.underline])
     }
 
-    @MainActor
-    func test_toggleInlineFormat_insertionPointOnly_isNoOp() async {
-        let plain = "No selection"
-        let body = AttributedString(plain)
-        let selection = AttributedTextSelection()  // no range set, just default
-
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
-        initial.selection = selection
-
-        let store = TestStore(
-            initialState: initial,
-            reducer: { TextEditingFeature() },
-            withDependencies: { $0.continuousClock = ImmediateClock() }
-        )
-        store.exhaustivity = .off(showSkippedAssertions: false)
-
-        await store.send(.toggleInlineFormat(.bold))
-
-        // Body must be unchanged — insertion-point selections
-        // have no range to apply the toggle to.
-        let resultBody = store.state.editingBody
-        XCTAssertEqual(
-            String(resultBody.characters),
-            plain,
-            "No-range selection must leave the body untouched"
-        )
-    }
+    // MARK: - slashPaletteCommandSelected
 
     @MainActor
     func test_slashPaletteCommandSelected_heading2_stripsTriggerAndAppliesFormat() async {
-        let body = AttributedString("My heading /h2")
-        var initial = TextEditingFeature.State(activeBlock: snapshot(body: body))
-        initial.editingBody = body
+        let doc = paragraphDoc("Hello /h")
+        let leafID = doc.blocks[0].id
+
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
         initial.slashPalette.isOpen = true
-        initial.slashPalette.filterText = "h2"
-        initial.slashPalette.matchedCommands = SlashCommandRegistry.standard
-            .filtered(by: "heading")
-        initial.slashPalette.selectedIndex = 0
-        // The `/` in "My heading /h2" sits at character offset 11
-        // (0-indexed). stripTriggerSlice needs this anchor to slice
-        // the AttributedString while preserving attributes outside.
-        initial.slashPalette.triggerOffset = 11
+        initial.slashPalette.triggerOffset = 6  // index of "/"
+        initial.slashPalette.triggerBlockPath = [leafID]
+        // Selection points after "/h" — the trigger location is the
+        // slash itself.
+        initial.selection = .insertion(at: [leafID], offset: 8)
 
         let store = TestStore(
             initialState: initial,
@@ -713,42 +591,121 @@ final class TextEditingFeatureTests: XCTestCase {
         store.exhaustivity = .off(showSkippedAssertions: false)
 
         await store.send(.slashPalette(.commandSelected(.heading2)))
+        // The reducer sends `.applyBlockFormat(.heading(level: 2))`
+        // as a follow-up effect — wait for it before asserting on
+        // the final state.
+        await store.receive(.applyBlockFormat(.heading(level: 2)))
 
-        // The "/h2" trigger slice should be removed from the body.
-        let plain = String(store.state.editingBody.characters)
-        XCTAssertFalse(
-            plain.contains("/h2"),
-            "Slash trigger slice must be stripped before format application"
-        )
-        XCTAssertFalse(
-            plain.contains("/"),
-            "All trigger characters from the last `/` onward should be removed"
-        )
+        guard case .heading(let level, let inline) = store.state.document.blocks[0].kind else {
+            XCTFail("Expected heading after slash command")
+            return
+        }
+        XCTAssertEqual(level, 2)
+        XCTAssertEqual(inline.first?.text, "Hello ", "Trigger slice '/h' stripped, surviving text preserved")
     }
 
-    @MainActor
-    func test_bodyEdited_whileLoadFailure_isDropped() async {
-        // State seeded directly into the failure surface — no
-        // activeBlockChanged action and no client mock, so no effects
-        // are scheduled. The reducer's bodyEdited handler returns
-        // .none under load failure (the persist effect is never
-        // reached); we only need to verify the body doesn't mutate.
-        var initial = TextEditingFeature.State(activeBlock: snapshot())
-        initial.loadFailure = .bodyDecodeFailed
+    // MARK: - flush
 
+    @MainActor
+    func test_flush_whenClean_isNoOp() async {
         let store = TestStore(
-            initialState: initial,
+            initialState: TextEditingFeature.State(),
             reducer: { TextEditingFeature() },
             withDependencies: { $0.continuousClock = ImmediateClock() }
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        let preEditBody = String(store.state.editingBody.characters)
-        await store.send(.bodyEdited(AttributedString("oops")))
-        XCTAssertEqual(
-            String(store.state.editingBody.characters),
-            preEditBody,
-            "Body must not mutate while loadFailure is set"
-        )
+        // No state change.
+        await store.send(.flush)
     }
+
+    @MainActor
+    func test_flush_whenDirty_persistsImmediately() async {
+        let doc = paragraphDoc("Hello")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.isDirty = true
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: {
+                $0.continuousClock = ImmediateClock()
+                // Replace the whole dependency (memory rule on
+                // MainActor isolation). The only path we care about is
+                // `updateBlockBody` succeeding.
+                $0.notebookClient = Self.successUpdateBlockBodyClient
+            }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // flush bypasses the debounce and calls persistEffect
+        // directly — persistRequested is for the SCHEDULED path.
+        await store.send(.flush)
+        await store.receive(.persistCompleted) {
+            $0.isDirty = false
+        }
+    }
+
+    /// All fields throw cancellation EXCEPT `updateBlockBody` which
+    /// succeeds. Used to test the persist path without standing up a
+    /// real SwiftData container.
+    private static let successUpdateBlockBodyClient: NotebookClient = NotebookClient(
+        fetchAllNotebooks: { throw CancellationError() },
+        fetchNotebook: { _ in throw CancellationError() },
+        fetchPage: { _ in throw CancellationError() },
+        fetchPagesForNotebook: { _ in throw CancellationError() },
+        fetchAllFolders: { throw CancellationError() },
+        fetchHistoryForPage: { _ in throw CancellationError() },
+        fetchHistoryForNotebook: { _ in throw CancellationError() },
+        fetchAllTags: { throw CancellationError() },
+        createNotebook: { _, _, _ in throw CancellationError() },
+        renameNotebook: { _, _ in throw CancellationError() },
+        deleteNotebook: { _ in throw CancellationError() },
+        touchNotebookModified: { _ in throw CancellationError() },
+        fetchAllPDFs: { throw CancellationError() },
+        fetchRecentPDFs: { _ in throw CancellationError() },
+        fetchPDF: { _ in throw CancellationError() },
+        fetchPDFData: { _ in throw CancellationError() },
+        findPDFByContentHash: { _ in throw CancellationError() },
+        importPDF: { _, _ in throw CancellationError() },
+        touchPDFOpened: { _ in throw CancellationError() },
+        createPage: { _, _ in throw CancellationError() },
+        deletePage: { _ in throw CancellationError() },
+        reindexPages: { _, _ in throw CancellationError() },
+        transferPage: { _, _, _ in throw CancellationError() },
+        setPageTemplate: { _, _ in throw CancellationError() },
+        saveDrawing: { _, _, _ in throw CancellationError() },
+        updateOCR: { _, _ in throw CancellationError() },
+        updateTypedText: { _, _ in throw CancellationError() },
+        addHeader: { _, _, _ in throw CancellationError() },
+        updateHeaderOCR: { _, _ in throw CancellationError() },
+        deleteHeader: { _ in throw CancellationError() },
+        addLink: { _, _, _, _ in throw CancellationError() },
+        updateLink: { _, _ in throw CancellationError() },
+        deleteLink: { _ in throw CancellationError() },
+        recordHistory: { _, _ in throw CancellationError() },
+        updateHistoryStatus: { _, _ in throw CancellationError() },
+        addRegion: { _, _, _, _, _, _ in throw CancellationError() },
+        updateRegionHeader: { _, _ in throw CancellationError() },
+        updateRegionLink: { _, _ in throw CancellationError() },
+        deleteRegion: { _ in throw CancellationError() },
+        fetchBlocksForPage: { _ in throw CancellationError() },
+        loadBlockDrawing: { _ in throw CancellationError() },
+        insertBlock: { _, _, _ in throw CancellationError() },
+        updateBlockBody: { _, _, _ in /* success */ },
+        updateBlockDrawing: { _, _, _ in throw CancellationError() },
+        updateBlockOCR: { _, _ in throw CancellationError() },
+        updateBlockVoice: { _, _, _, _, _, _ in throw CancellationError() },
+        updateBlockHeight: { _, _ in throw CancellationError() },
+        deleteBlock: { _ in throw CancellationError() },
+        reorderBlocks: { _, _ in throw CancellationError() },
+        bindCanonicalCanvasWidth: { _, _ in throw CancellationError() },
+        createFolder: { _, _ in throw CancellationError() },
+        deleteFolder: { _ in throw CancellationError() },
+        moveNotebookToFolder: { _, _ in throw CancellationError() },
+        createTag: { _, _ in throw CancellationError() },
+        addTagToNotebook: { _, _ in throw CancellationError() },
+        removeTagFromNotebook: { _, _ in throw CancellationError() }
+    )
 }

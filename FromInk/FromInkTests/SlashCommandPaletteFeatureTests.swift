@@ -30,9 +30,11 @@ final class SlashCommandPaletteFeatureTests: XCTestCase {
         )
         store.exhaustivity = .off(showSkippedAssertions: false)
 
-        await store.send(.openRequested(triggerOffset: 12)) {
+        let leafID = UUID()
+        await store.send(.openRequested(triggerOffset: 12, triggerBlockPath: [leafID])) {
             $0.isOpen = true
             $0.triggerOffset = 12
+            $0.triggerBlockPath = [leafID]
             $0.filterText = ""
             $0.matchedCommands = SlashCommandRegistry.standard.descriptors
             $0.selectedIndex = 0

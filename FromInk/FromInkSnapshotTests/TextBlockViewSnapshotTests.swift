@@ -6,10 +6,10 @@ import XCTest
 /// Snapshot coverage for `TextBlockView`'s four visual states + the
 /// persist-failure banner overlay.
 ///
-/// Each fixture pins a frame width so SwiftUI Text doesn't collapse
-/// to zero width inside an HStack-less surface — same memory rule
-/// the project's other snapshot tests honor for HStack-based
-/// components.
+/// 2026-06-09 — the view's editor region currently renders a read-only
+/// preview of the document's `plainText` while the TextKit 1 editor is
+/// rebuilt (text_experience_edd.md §22.4 commit 4). These snapshots
+/// will be re-recorded against the real editor once commit 4 lands.
 ///
 /// States covered:
 ///   1. Editor with body content — happy path.
@@ -17,31 +17,35 @@ import XCTest
 ///   3. Empty-note placeholder (`isPresented = false`) — taps wire
 ///      to the recovery action.
 ///   4. Decode-failed placeholder — taps trigger retry.
-///   5. Persist-failed banner above the editor — editor remains usable.
+///   5. Persist-failed banner above the editor.
 final class TextBlockViewSnapshotTests: XCTestCase {
 
     private static let frameWidth: CGFloat = 600
     private static let frameHeight: CGFloat = 400
 
-    // MARK: - Editor — populated body
+    // MARK: - Editor — populated document
 
-    func test_editor_withPopulatedBody_rendersText() {
+    func test_editor_withPopulatedDocument_rendersText() {
+        let document = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 2, inline: [Inline(text: "Meeting notes")])),
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Follow up with Sarah on Q3 budget by Friday.")
+            ]))
+        ])
         assertSnapshot(
-            of: makeView(model: editorModel(
-                body: AttributedString("Meeting notes:\n\nFollow up with Sarah on Q3 budget by Friday.")
-            )),
+            of: makeView(model: editorModel(document: document)),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
-    // MARK: - Editor — empty body shows placeholder
+    // MARK: - Editor — empty document shows placeholder
 
-    func test_editor_withEmptyBody_showsPlaceholder() {
+    func test_editor_withEmptyDocument_showsPlaceholder() {
         assertSnapshot(
-            of: makeView(model: editorModel(body: AttributedString())),
+            of: makeView(model: editorModel(document: .empty)),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
@@ -52,13 +56,12 @@ final class TextBlockViewSnapshotTests: XCTestCase {
             of: makeView(model: TextBlockView.Model(
                 isPresented: false,
                 failureState: nil,
-                body: AttributedString(),
-                onBodyEdited: { _ in },
+                document: .empty,
                 onCreateRequested: {},
                 onRetryRequested: {}
             )),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
@@ -69,13 +72,12 @@ final class TextBlockViewSnapshotTests: XCTestCase {
             of: makeView(model: TextBlockView.Model(
                 isPresented: true,
                 failureState: .bodyDecodeFailed,
-                body: AttributedString(),
-                onBodyEdited: { _ in },
+                document: .empty,
                 onCreateRequested: {},
                 onRetryRequested: {}
             )),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
@@ -86,42 +88,42 @@ final class TextBlockViewSnapshotTests: XCTestCase {
             of: makeView(model: TextBlockView.Model(
                 isPresented: true,
                 failureState: .orphan,
-                body: AttributedString(),
-                onBodyEdited: { _ in },
+                document: .empty,
                 onCreateRequested: {},
                 onRetryRequested: {}
             )),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
     // MARK: - Persist-failure banner above the editor
 
     func test_persistFailureBanner_rendersAboveEditor() {
+        let document = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "In-progress edit")]))
+        ])
         assertSnapshot(
             of: makeView(model: TextBlockView.Model(
                 isPresented: true,
                 failureState: nil,
-                body: AttributedString("In-progress edit"),
+                document: document,
                 persistFailureTitle: AppStrings.TextEditing.persistFailedBannerTitle,
-                onBodyEdited: { _ in },
                 onCreateRequested: {},
                 onRetryRequested: {}
             )),
             as: .image(layout: .fixed(width: Self.frameWidth, height: Self.frameHeight)),
-            record: false
+            record: true
         )
     }
 
     // MARK: - Helpers
 
-    private func editorModel(body: AttributedString) -> TextBlockView.Model {
+    private func editorModel(document: RichTextDocument) -> TextBlockView.Model {
         TextBlockView.Model(
             isPresented: true,
             failureState: nil,
-            body: body,
-            onBodyEdited: { _ in },
+            document: document,
             onCreateRequested: {},
             onRetryRequested: {}
         )

@@ -87,6 +87,14 @@ import SwiftData
     /// language change doesn't auto-replace authoritative transcript text.
     var transcriptLanguage: String? = nil
 
+    // MARK: Voice → transcript provenance
+    /// For `.text` blocks created via the "transcribe this voice block"
+    /// flow (text_experience_edd §18 Scenario C), holds the source
+    /// voice block's id so the editor can surface a "play original"
+    /// affordance next to the transcribed text. Nil for all other
+    /// blocks — including text blocks the user typed directly.
+    var sourceVoiceBlockID: UUID? = nil
+
     // MARK: Cache fingerprint
     /// SHA256 of the block's authoritative content (kind-aware):
     /// `.text` → `plainText`, `.ink` → `ocrText`, `.voice` → `transcript`.

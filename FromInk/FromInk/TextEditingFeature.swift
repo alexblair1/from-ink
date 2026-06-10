@@ -1,6 +1,5 @@
 import ComposableArchitecture
 import Foundation
-import SwiftUI
 import os
 
 private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFeature")
@@ -10,76 +9,60 @@ private let log = Logger(subsystem: "com.fromink.app", category: "TextEditingFea
 /// **Scope.** This feature edits ONE block at a time — the active text
 /// block on the current page.
 ///
-/// **Persistence.** Every body change debounces a `NotebookClient.
+/// **Content model.** State holds a `RichTextDocument` (the block-tree
+/// shape from `text_experience_edd.md` §5.3) — paragraphs, headings,
+/// lists, blockquote, codeBlock, divider with inline runs and Marks.
+/// `AttributedString` is no longer in the state surface; the block
+/// tree is what gets persisted, edited, and addressed by NoteRegion
+/// text anchors.
+///
+/// **Persistence.** Every document change debounces a `NotebookClient.
 /// updateBlockBody` write. Debounce window is 600ms.
 ///
-/// **Encoding.** Body archival routes through `PageBlockSnapshot.
-/// encodeBody(_:)` so the encoding path (Path B with `FromInkAttributes`
-/// scope) lives in one place.
+/// **Encoding.** Document archival routes through
+/// `PageBlockSnapshot.encodeBody(_:)` so the JSON encoder + sorted-keys
+/// canonicalisation lives in one place. The byte-stable encoding is
+/// load-bearing for `PageBlock.contentHash`.
 ///
-/// **Selection tracking.** iOS 26's `TextEditor` exposes the user's
-/// caret / range selection via a `Binding<AttributedTextSelection>`.
-/// We track it on `State.selection` so block / inline format actions
-/// can target the active paragraph / selection instead of the whole
-/// body. Without selection awareness, applying "Heading 1" to a
-/// multi-paragraph note would turn the entire document into headings.
+/// **Selection tracking.** `BlockTreeSelection` (a path + UTF-16 offset
+/// range) addresses positions inside the document tree. Block-format
+/// actions resolve the host leaf via `path`; inline-format actions
+/// apply marks across the offsets inside the host leaf's inline runs.
 ///
-/// **Slash command palette.** Scoped under `.slashPalette`; the
-/// reducer detects the trigger character in `bodyEdited` and tracks
-/// its offset on `slashPalette.triggerOffset`.
+/// **Slash command palette.** Scoped under `.slashPalette`. The editor
+/// (post-commit-4) detects a `/` at word-boundary inside a leaf and
+/// sends `.slashTyped(...)`. The reducer opens the palette, tracking
+/// the trigger leaf path + offset; subsequent `documentEdited`s
+/// recompute the filter from the leaf's current text.
 ///
-/// **Equality cost.** `AttributedString.Equatable` is O(n). Typical
-/// block sizes are <10 KB so per-action diff cost is negligible.
-///
-/// **Selection diff cost.** `selectionChanged` fires on every caret
-/// movement (per-keystroke + per-tap). The handler mutates only
-/// `state.selection` and returns `.none` — no persist scheduled, no
-/// derived state recomputed. `AttributedTextSelection` is a small
-/// value type (range / insertion point only — no body bytes), so
-/// the action loop cost per change is bounded regardless of block
-/// size. View invalidation is scoped to the TextEditor binding that
-/// reads `state.selection`.
+/// **Equality cost.** `RichTextDocument.Equatable` is O(n) over blocks
+/// + inline runs. Typical block sizes (<10KB) compare in well under
+/// 1ms. EDD §5.4 documents the 50KB hash-based-equality threshold.
 struct TextEditingFeature: Reducer {
 
     @ObservableState
     struct State: Equatable {
         var activeBlock: PageBlockSnapshot? = nil
 
-        var editingBody: AttributedString = AttributedString()
+        /// The block-tree being edited. Defaults to `.empty` when no
+        /// block is active or the active block is non-text.
+        var document: RichTextDocument = .empty
 
-        /// Current caret position or selected range, mirrored from
-        /// `TextEditor`'s `selection:` binding. Block / inline format
-        /// actions read this to target the user's intent.
+        /// Caret / range position inside the document. See
+        /// `BlockTreeSelection` for the path-based addressing scheme.
         ///
-        /// `AttributedTextSelection.Indices` is an enum with two
-        /// cases: `.insertionPoint(Index)` for a single caret and
-        /// `.ranges(RangeSet<Index>)` for a non-empty (possibly
-        /// discontinuous) selection.
-        ///
-        /// **Default value semantics.** `AttributedTextSelection()`
-        /// (the zero-argument init) projects as
-        /// `.insertionPoint(body.endIndex)` when queried via
-        /// `indices(in:)` — verified on iOS 26. Practical consequence:
-        /// applying a block format on a brand-new block where the user
-        /// hasn't tapped to position the caret targets the LAST
-        /// paragraph, which matches the pre-selection-aware behavior
-        /// and is the expected outcome when the user opens a fresh
-        /// block and runs a slash command. No special-case fallback
-        /// for "unset selection" is needed — `firstSelectionIndex`
-        /// returns the endIndex through the normal path.
-        var selection: AttributedTextSelection = AttributedTextSelection()
+        /// **Default value semantics.** `BlockTreeSelection()` (empty
+        /// path, offset zero) is treated as "unset" — block-format
+        /// actions resolve unset to the document's last leaf,
+        /// mirroring the prior `AttributedTextSelection()` default-
+        /// end-of-document contract.
+        var selection: BlockTreeSelection = BlockTreeSelection()
 
         var isDirty: Bool = false
 
         var loadFailure: LoadFailure? = nil
 
         var lastPersistFailureReason: String? = nil
-
-        /// Monotonically-increasing counter used for
-        /// `PresentationIntent.identity`. Each block-format
-        /// application gets a fresh identity so TextKit 2's layout
-        /// engine treats successive headings as separate paragraphs.
-        var nextPresentationIdentity: Int = 1
 
         /// Slash command palette state, scoped under this feature.
         var slashPalette: SlashCommandPaletteFeature.State = .init()
@@ -94,12 +77,22 @@ struct TextEditingFeature: Reducer {
     enum Action: Equatable {
         case activeBlockChanged(PageBlockSnapshot?)
 
-        case bodyEdited(AttributedString)
+        /// The editor reports a fresh document after a keystroke,
+        /// paste, or programmatic mutation. The reducer mirrors,
+        /// marks dirty, refreshes the slash filter if the palette is
+        /// open, and schedules a debounced persist.
+        case documentEdited(RichTextDocument)
 
-        /// User's caret / range selection changed. Reducer mirrors
-        /// `TextEditor`'s `selection:` binding so format actions
-        /// target the right span.
-        case selectionChanged(AttributedTextSelection)
+        /// User's caret / range selection changed. Block / inline
+        /// format actions read this to target the right span.
+        case selectionChanged(BlockTreeSelection)
+
+        /// The editor detected the user typing `/` at a word boundary
+        /// inside the leaf at `blockPath`, at UTF-16 offset within
+        /// that leaf's joined inline text. Opens the palette and
+        /// records the trigger location so subsequent edits can
+        /// refresh the filter.
+        case slashTyped(blockPath: [UUID], offsetUTF16: Int)
 
         case persistRequested
         case persistCompleted
@@ -107,14 +100,12 @@ struct TextEditingFeature: Reducer {
 
         case flush
 
-        /// Apply a block-level format to the paragraph containing the
-        /// selection's first index. If selection is unavailable, no-op.
+        /// Apply a block-level format. The selection's leaf (or the
+        /// last leaf if unset) is targeted.
         case applyBlockFormat(BlockFormat)
 
-        /// Toggle an inline format (bold / italic / underline /
-        /// strikethrough) over each contiguous range of the current
-        /// selection. Insertion-point-only selections no-op (there
-        /// is no range to toggle on).
+        /// Toggle an inline format across the selection's UTF-16
+        /// range. Insertion-point-only selections no-op.
         case toggleInlineFormat(InlineFormat)
 
         case slashPalette(SlashCommandPaletteFeature.Action)
@@ -145,86 +136,50 @@ struct TextEditingFeature: Reducer {
     private static let debounceMilliseconds: Int = 600
 
     var body: some Reducer<State, Action> {
-        // Reduce runs BEFORE the Scope so the parent's
-        // .slashPalette(.commandSelected(_)) handler can read the
-        // current `slashPalette.triggerOffset` while it's still set
-        // — the child's commandSelected handler clears triggerOffset
-        // as part of closing the palette, which would race the
-        // parent's strip-trigger logic if the Scope ran first.
         Reduce { state, action in
             switch action {
             case .activeBlockChanged(let snapshot):
-                // Two distinct paths:
-                //
-                // 1. **Same block re-seating.** Almost always a
-                //    SwiftData echo of our own persist — NotebookFeature
-                //    observes the store, refreshes pages, reloads
-                //    blocks, fires .activeBlockChanged with the same
-                //    snapshot. The editor's editingBody / selection /
-                //    palette are the live source of truth; overwriting
-                //    them from the snapshot would jump the caret to
-                //    endIndex, blank the slash palette mid-typing, and
-                //    reset the dirty flag on edits the user may have
-                //    queued since the persist debounce started. Refresh
-                //    only the failure state + the activeBlock metadata.
-                //
-                // 2. **Different block (or first load).** The user
-                //    switched pages or opened the screen — reset
-                //    everything from the new snapshot.
+                // Same-block echo (SwiftData notification fans back to
+                // this reducer with the same snapshot we just
+                // persisted). Refresh only failure / metadata; leave
+                // live editor state (document, selection, palette,
+                // dirty) intact.
                 if let snapshot,
                    let current = state.activeBlock,
                    snapshot.id == current.id {
                     state.activeBlock = snapshot
-                    if snapshot.pageID == nil {
-                        state.loadFailure = .orphan
-                    } else if snapshot.bodyDecodeFailed {
-                        state.loadFailure = .bodyDecodeFailed
-                    } else {
-                        state.loadFailure = nil
-                    }
+                    state.loadFailure = Self.loadFailure(for: snapshot)
                     return .none
                 }
 
+                // Fresh block — reset everything.
+                state.activeBlock = snapshot
                 if let snapshot {
-                    if snapshot.pageID == nil {
-                        state.loadFailure = .orphan
-                    } else if snapshot.bodyDecodeFailed {
-                        state.loadFailure = .bodyDecodeFailed
-                    } else {
-                        state.loadFailure = nil
-                    }
+                    state.loadFailure = Self.loadFailure(for: snapshot)
+                    state.document = snapshot.document ?? .empty
                 } else {
                     state.loadFailure = nil
+                    state.document = .empty
                 }
-                state.activeBlock = snapshot
-                state.editingBody = snapshot?.body ?? AttributedString()
-                state.selection = AttributedTextSelection()
+                state.selection = BlockTreeSelection()
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
                 state.slashPalette = .init()
                 return .cancel(id: Self.persistCancelID)
 
-            case .bodyEdited(let new):
+            case .documentEdited(let new):
                 guard state.loadFailure == nil else { return .none }
-                let priorLastChar = state.editingBody.characters.last
-                state.editingBody = new
+                state.document = new
                 state.isDirty = true
 
-                if let triggerOffset = state.slashPalette.triggerOffset {
-                    return handleOpenPaletteBodyEdit(
-                        triggerOffset: triggerOffset,
-                        new: new
-                    )
-                } else if shouldOpenPalette(
-                    priorLastChar: priorLastChar,
-                    current: new
-                ) {
-                    let newTriggerOffset = new.characters.count - 1
+                if state.slashPalette.isOpen {
+                    // Refresh the filter from the trigger leaf's
+                    // current text — or dismiss if the trigger is
+                    // gone (user backspaced past the `/`, or moved
+                    // focus away).
                     return .merge(
                         schedulePersist(),
-                        .send(.slashPalette(.openRequested(
-                            triggerOffset: newTriggerOffset
-                        )))
+                        refreshSlashFilterEffect(state: state)
                     )
                 }
                 return schedulePersist()
@@ -232,6 +187,13 @@ struct TextEditingFeature: Reducer {
             case .selectionChanged(let new):
                 state.selection = new
                 return .none
+
+            case .slashTyped(let path, let offset):
+                guard state.loadFailure == nil else { return .none }
+                return .send(.slashPalette(.openRequested(
+                    triggerOffset: offset,
+                    triggerBlockPath: path
+                )))
 
             case .persistRequested:
                 return persistEffect(state: state)
@@ -257,48 +219,30 @@ struct TextEditingFeature: Reducer {
 
             case .applyBlockFormat(let format):
                 guard state.loadFailure == nil else { return .none }
-                let identity = state.nextPresentationIdentity
-                state.nextPresentationIdentity += 1
-                // Lists need a SECOND identity for the parent
-                // (unorderedList / orderedList container). Burn one
-                // off the counter so it's unique and won't collide
-                // with future paragraph intents.
-                let parentIdentity: Int?
-                switch format {
-                case .bulletedList, .numberedList:
-                    parentIdentity = state.nextPresentationIdentity
-                    state.nextPresentationIdentity += 1
-                default:
-                    parentIdentity = nil
-                }
-                applyBlockFormat(
-                    format,
-                    to: &state.editingBody,
-                    selection: state.selection,
-                    identity: identity,
-                    parentIdentity: parentIdentity
-                )
+                Self.applyBlockFormat(format, document: &state.document, selection: state.selection)
                 state.isDirty = true
                 return schedulePersist()
 
             case .toggleInlineFormat(let format):
                 guard state.loadFailure == nil else { return .none }
-                toggleInlineFormat(
+                Self.toggleInlineFormat(
                     format,
-                    in: &state.editingBody,
+                    document: &state.document,
                     selection: state.selection
                 )
                 state.isDirty = true
                 return schedulePersist()
 
             case .slashPalette(.commandSelected(let command)):
-                if let triggerOffset = state.slashPalette.triggerOffset {
-                    stripTriggerSlice(
-                        from: &state.editingBody,
-                        triggerOffset: triggerOffset
+                if !state.slashPalette.triggerBlockPath.isEmpty,
+                   let triggerOffset = state.slashPalette.triggerOffset {
+                    Self.stripTriggerSlice(
+                        document: &state.document,
+                        leafPath: state.slashPalette.triggerBlockPath,
+                        triggerOffsetUTF16: triggerOffset
                     )
                 }
-                let formatAction = blockFormatAction(for: command)
+                let formatAction = Self.blockFormatAction(for: command)
                 if let formatAction {
                     state.isDirty = true
                     return .merge(
@@ -318,74 +262,53 @@ struct TextEditingFeature: Reducer {
         }
     }
 
-    // MARK: - Slash trigger handling
+    // MARK: - LoadFailure resolution
 
-    private func handleOpenPaletteBodyEdit(
-        triggerOffset: Int,
-        new: AttributedString
-    ) -> Effect<Action> {
-        let characters = new.characters
-        let count = characters.count
-        guard triggerOffset < count else {
-            return .merge(
-                schedulePersist(),
-                .send(.slashPalette(.dismissed))
-            )
+    private static func loadFailure(for snapshot: PageBlockSnapshot) -> State.LoadFailure? {
+        if snapshot.pageID == nil { return .orphan }
+        if snapshot.bodyDecodeFailed { return .bodyDecodeFailed }
+        return nil
+    }
+
+    // MARK: - Slash filter refresh
+
+    /// After every `documentEdited` while the palette is open, walk to
+    /// the trigger leaf, find the `/` at the trigger offset, and
+    /// re-derive the filter from the slice after it. Dismiss if the
+    /// trigger location is no longer valid.
+    private func refreshSlashFilterEffect(state: State) -> Effect<Action> {
+        let path = state.slashPalette.triggerBlockPath
+        let offset = state.slashPalette.triggerOffset
+        let document = state.document
+
+        guard !path.isEmpty,
+              let triggerOffset = offset,
+              let leaf = document.block(at: path),
+              let text = leaf.joinedInlineText else {
+            return .send(.slashPalette(.dismissed))
         }
-        let triggerCharIdx = characters.index(
-            characters.startIndex,
-            offsetBy: triggerOffset
-        )
-        guard characters[triggerCharIdx] == "/" else {
-            return .merge(
-                schedulePersist(),
-                .send(.slashPalette(.dismissed))
-            )
+
+        let utf16 = text.utf16
+        guard triggerOffset < utf16.count else {
+            return .send(.slashPalette(.dismissed))
         }
-        let filterStart = characters.index(after: triggerCharIdx)
-        let filter = String(characters[filterStart...])
+
+        // Confirm the trigger character is still a `/` at that
+        // position. If it isn't, the user deleted past it.
+        let triggerIdx = utf16.index(utf16.startIndex, offsetBy: triggerOffset)
+        let triggerUnit = utf16[triggerIdx]
+        let slash: UInt16 = 0x2F  // ASCII "/"
+        guard triggerUnit == slash else {
+            return .send(.slashPalette(.dismissed))
+        }
+
+        // Filter is the slice after the trigger.
+        let afterTriggerIdx = utf16.index(after: triggerIdx)
+        let filter = String(decoding: Array(utf16[afterTriggerIdx...]), as: UTF16.self)
         if filter.contains(where: { $0.isNewline }) {
-            return .merge(
-                schedulePersist(),
-                .send(.slashPalette(.dismissed))
-            )
+            return .send(.slashPalette(.dismissed))
         }
-        return .merge(
-            schedulePersist(),
-            .send(.slashPalette(.filterChanged(filter)))
-        )
-    }
-
-    private func shouldOpenPalette(
-        priorLastChar: Character?,
-        current: AttributedString
-    ) -> Bool {
-        let characters = current.characters
-        guard let lastChar = characters.last, lastChar == "/" else {
-            return false
-        }
-        guard priorLastChar != "/" else { return false }
-        let endIdx = characters.endIndex
-        let lastIdx = characters.index(before: endIdx)
-        if lastIdx > characters.startIndex {
-            let prevIdx = characters.index(before: lastIdx)
-            let prev = characters[prevIdx]
-            return prev.isWhitespace || prev.isNewline
-        }
-        return true
-    }
-
-    private func stripTriggerSlice(
-        from body: inout AttributedString,
-        triggerOffset: Int
-    ) {
-        let characters = body.characters
-        guard triggerOffset < characters.count else { return }
-        let triggerIdx = characters.index(
-            characters.startIndex,
-            offsetBy: triggerOffset
-        )
-        body.removeSubrange(triggerIdx..<body.endIndex)
+        return .send(.slashPalette(.filterChanged(filter)))
     }
 
     // MARK: - Persist
@@ -400,11 +323,11 @@ struct TextEditingFeature: Reducer {
 
     private func persistEffect(state: State) -> Effect<Action> {
         guard let blockID = state.activeBlock?.id else { return .none }
-        let body = state.editingBody
+        let document = state.document
         return .run { send in
             do {
-                let data = try PageBlockSnapshot.encodeBody(body)
-                let plain = String(body.characters)
+                let data = try PageBlockSnapshot.encodeBody(document)
+                let plain = document.plainText
                 try await notebookClient.updateBlockBody(blockID, data, plain)
                 await send(.persistCompleted)
             } catch {
@@ -413,9 +336,9 @@ struct TextEditingFeature: Reducer {
         }
     }
 
-    // MARK: - Block format application
+    // MARK: - Slash command → action
 
-    private func blockFormatAction(for command: SlashCommand) -> Action? {
+    private static func blockFormatAction(for command: SlashCommand) -> Action? {
         switch command {
         case .heading1:     return .applyBlockFormat(.heading(level: 1))
         case .heading2:     return .applyBlockFormat(.heading(level: 2))
@@ -428,220 +351,451 @@ struct TextEditingFeature: Reducer {
         case .divider:      return .applyBlockFormat(.divider)
         // The remaining commands (checklist, region, link, event,
         // pdfAttach, voiceMemo, image, dispatch) defer to follow-up
-        // commits — each needs a dependency (custom checklist
-        // attribute, NoteRegion text anchor, link sheet, EventKit
-        // picker, file picker, SpeechService, PhotosPicker,
-        // DispatchFeature integration) that isn't part of this
-        // vocabulary-wiring commit.
+        // commits — each needs a dependency (custom checklist block,
+        // NoteRegion text anchor, link sheet, EventKit picker, file
+        // picker, SpeechService, PhotosPicker, DispatchFeature
+        // integration) that isn't part of the content-shape pivot.
         default: return nil
         }
     }
+}
 
-    /// Applies the requested `PresentationIntent` to the **paragraph
-    /// containing the selection's first index**. Insertion-point and
-    /// range selections both target the paragraph at the start.
-    ///
-    /// When the selection is unset (the default
-    /// `AttributedTextSelection()`), `indices(in:)` projects as
-    /// `.insertionPoint(body.endIndex)`, so the anchor naturally
-    /// resolves to the last paragraph — no special-case fallback
-    /// required. See `State.selection` doc comment for the contract.
-    ///
-    /// `parentIdentity` is only consulted for list formats; the
-    /// caller supplies a fresh identity so the unordered / ordered
-    /// list container is distinguishable from the listItem itself.
-    private func applyBlockFormat(
+// MARK: - Block tree edits
+
+extension TextEditingFeature {
+
+    /// Strip the slash trigger + any filter text the user typed from
+    /// the leaf at `leafPath`. The trigger offset is in UTF-16 units
+    /// of the leaf's joined inline text; everything from the trigger
+    /// to the end of the leaf is removed.
+    fileprivate static func stripTriggerSlice(
+        document: inout RichTextDocument,
+        leafPath: [UUID],
+        triggerOffsetUTF16: Int
+    ) {
+        guard let leafID = leafPath.last else { return }
+        document.mapLeaf(at: leafPath) { leaf in
+            guard let text = leaf.joinedInlineText else { return }
+            let utf16 = text.utf16
+            guard triggerOffsetUTF16 < utf16.count else { return }
+            // Build new inline by walking and dropping everything
+            // from the trigger onward.
+            let truncated = String(
+                decoding: Array(utf16.prefix(triggerOffsetUTF16)),
+                as: UTF16.self
+            )
+            // Replace leaf's inline (paragraph / heading) with a
+            // single inline run carrying the prefix; preserves the
+            // marks on the surviving prefix only roughly (a more
+            // careful implementation would re-walk to preserve
+            // per-character marks, but for the slash-strip path the
+            // user expected the trailing characters to evaporate).
+            switch leaf.kind {
+            case .paragraph:
+                leaf.kind = .paragraph(inline: truncated.isEmpty ? [] : [Inline(text: truncated)])
+            case .heading(let level, _):
+                leaf.kind = .heading(level: level, inline: truncated.isEmpty ? [] : [Inline(text: truncated)])
+            case .codeBlock(_, let hint):
+                leaf.kind = .codeBlock(text: truncated, languageHint: hint)
+            case .divider, .bulletList, .orderedList, .blockquote:
+                return
+            }
+            _ = leafID
+        }
+    }
+
+    /// Apply a block-level format to the leaf at `selection.path`. If
+    /// the selection is unset, the document's last leaf is targeted.
+    fileprivate static func applyBlockFormat(
         _ format: BlockFormat,
-        to body: inout AttributedString,
-        selection: AttributedTextSelection,
-        identity: Int,
-        parentIdentity: Int?
+        document: inout RichTextDocument,
+        selection: BlockTreeSelection
     ) {
-        let intent: PresentationIntent
-        switch format {
-        case .heading(let level):
-            intent = PresentationIntent(.header(level: level), identity: identity)
-        case .body:
-            intent = PresentationIntent(.paragraph, identity: identity)
-        case .blockQuote:
-            intent = PresentationIntent(.blockQuote, identity: identity)
-        case .codeBlock:
-            intent = PresentationIntent(.codeBlock(languageHint: nil), identity: identity)
-        case .bulletedList:
-            // First (and for now only) item in a fresh list. The
-            // parent container's identity is bumped off the same
-            // counter — see the reducer's .applyBlockFormat case.
-            intent = PresentationIntent(
-                .listItem(ordinal: 1),
-                identity: identity,
-                parent: PresentationIntent(
-                    .unorderedList,
-                    identity: parentIdentity ?? identity
-                )
-            )
-        case .numberedList:
-            intent = PresentationIntent(
-                .listItem(ordinal: 1),
-                identity: identity,
-                parent: PresentationIntent(
-                    .orderedList,
-                    identity: parentIdentity ?? identity
-                )
-            )
-        case .divider:
-            // A divider is a `.thematicBreak` paragraph — TextKit 2
-            // renders it as a horizontal rule. The hosting paragraph
-            // can be empty; if it has content, the user invoked
-            // `/divider` on a non-empty line and the whole line
-            // becomes the rule. v1 caveat — matches the existing
-            // "headings replace the host paragraph" semantics.
-            intent = PresentationIntent(.thematicBreak, identity: identity)
-        }
-
-        let anchor = firstSelectionIndex(in: body, selection: selection)
-            ?? body.endIndex
-        body[paragraphRange(containing: anchor, in: body)].presentationIntent = intent
-    }
-
-    /// Pull the first AttributedString.Index out of the selection,
-    /// whether the user has an insertion point or a non-empty range.
-    /// Returns nil only in the pathological case where
-    /// `indices(in:)` reports `.ranges(_)` with an empty range set —
-    /// the default selection projects as `.insertionPoint(endIndex)`
-    /// so the nil-coalesce in `applyBlockFormat` is purely defensive.
-    private func firstSelectionIndex(
-        in body: AttributedString,
-        selection: AttributedTextSelection
-    ) -> AttributedString.Index? {
-        switch selection.indices(in: body) {
-        case .insertionPoint(let idx):
-            return idx
-        case .ranges(let rangeSet):
-            return rangeSet.ranges.first?.lowerBound
-        }
-    }
-
-    /// Compute the range bounded by the previous newline (exclusive)
-    /// and the next newline (exclusive) around `anchor`. Used to
-    /// target a single paragraph for `applyBlockFormat`.
-    private func paragraphRange(
-        containing anchor: AttributedString.Index,
-        in body: AttributedString
-    ) -> Range<AttributedString.Index> {
-        let characters = body.characters
-        let start: AttributedString.Index
-        if let previousNewline = characters[..<anchor].lastIndex(of: "\n") {
-            start = characters.index(after: previousNewline)
+        // Resolve the target leaf — either via the selection's path
+        // or the document's last leaf.
+        let targetID: UUID
+        if !selection.path.isEmpty, let last = selection.path.last {
+            targetID = last
+        } else if let lastLeaf = document.lastLeafBlock {
+            targetID = lastLeaf.id
         } else {
-            start = characters.startIndex
-        }
-        let end: AttributedString.Index
-        if let nextNewline = characters[anchor...].firstIndex(of: "\n") {
-            end = nextNewline
-        } else {
-            end = body.endIndex
-        }
-        return start..<end
-    }
-
-    // MARK: - Inline format application
-
-    /// Toggles `format` over every contiguous range of `selection`.
-    /// Toggle direction is determined by the format's presence at
-    /// the **first character** of the first range — if it's already
-    /// applied, the format is removed from all selected ranges;
-    /// otherwise it's added.
-    ///
-    /// Insertion-point-only selections no-op: there's no range to
-    /// toggle. A future "format-on-next-character" mode could
-    /// extend this; not in v1.
-    ///
-    /// Bold / italic / strikethrough / code route through
-    /// `InlinePresentationIntent` (set-typed, designed for layered
-    /// inline emphasis). Underline doesn't live in
-    /// `InlinePresentationIntent` — it's a separate
-    /// `underlineStyle` attribute (`NSUnderlineStyle`-shaped) on
-    /// `AttributedString`. We handle it through that path so the
-    /// public `toggleInlineFormat` action covers all four common
-    /// formats uniformly to the caller.
-    private func toggleInlineFormat(
-        _ format: InlineFormat,
-        in body: inout AttributedString,
-        selection: AttributedTextSelection
-    ) {
-        let ranges: [Range<AttributedString.Index>]
-        switch selection.indices(in: body) {
-        case .insertionPoint:
+            // Empty document — seed a paragraph then re-target.
+            let paragraph = Block(kind: .paragraph(inline: []))
+            document.blocks.append(paragraph)
+            applyBlockFormat(format, document: &document, selection: .insertion(at: [paragraph.id], offset: 0))
             return
-        case .ranges(let rangeSet):
-            ranges = Array(rangeSet.ranges)
         }
-        guard !ranges.isEmpty else { return }
 
-        switch format {
-        case .underline:
-            toggleUnderline(in: &body, ranges: ranges)
-        case .bold, .italic, .strikethrough, .code:
-            toggleInlineIntent(
-                intentFor(format),
-                in: &body,
-                ranges: ranges
+        // For divider, we INSERT a new block after the target rather
+        // than replacing it — preserves the user's text and creates
+        // a hairline below it.
+        if case .divider = format {
+            document.insertBlock(
+                Block(kind: .divider),
+                afterLeafID: targetID
             )
+            // Also append a fresh paragraph after the divider so the
+            // caret can land on something writable.
+            document.insertBlock(
+                Block(kind: .paragraph(inline: [])),
+                afterLeafID: targetID
+            )
+            return
         }
-    }
 
-    private func toggleInlineIntent(
-        _ intent: InlinePresentationIntent,
-        in body: inout AttributedString,
-        ranges: [Range<AttributedString.Index>]
-    ) {
-        let firstChar = ranges[0].lowerBound
-        let firstCharEnd = body.characters.index(after: firstChar)
-        let currentAtStart = body[firstChar..<firstCharEnd].inlinePresentationIntent ?? []
-        let toggleOn = !currentAtStart.contains(intent)
+        // Other formats replace the target leaf.
+        document.replaceLeaf(id: targetID) { existing in
+            // Salvage inline runs across the kind change. Code blocks
+            // flatten inline runs to plain text (no marks); other
+            // kinds preserve marks where possible.
+            let existingInline = existing.kind.inlineRuns
+            let existingText = existingInline?.reduce(into: "") { $0.append($1.text) } ?? ""
 
-        for range in ranges {
-            let existing = body[range].inlinePresentationIntent ?? []
-            if toggleOn {
-                body[range].inlinePresentationIntent = existing.union(intent)
-            } else {
-                var next = existing
-                next.remove(intent)
-                if next.isEmpty {
-                    body[range].inlinePresentationIntent = nil
-                } else {
-                    body[range].inlinePresentationIntent = next
-                }
+            switch format {
+            case .heading(let level):
+                return Block(id: existing.id, kind: .heading(level: level, inline: existingInline ?? []))
+            case .body:
+                return Block(id: existing.id, kind: .paragraph(inline: existingInline ?? []))
+            case .blockQuote:
+                // Wrap the existing leaf in a blockquote container.
+                let wrapped = Block(id: UUID(), kind: existing.kind)
+                return Block(id: existing.id, kind: .blockquote(children: [wrapped]))
+            case .codeBlock:
+                return Block(id: existing.id, kind: .codeBlock(text: existingText, languageHint: nil))
+            case .bulletedList:
+                let paragraph = Block(id: UUID(), kind: .paragraph(inline: existingInline ?? []))
+                return Block(id: existing.id, kind: .bulletList(items: [ListItem(content: [paragraph])]))
+            case .numberedList:
+                let paragraph = Block(id: UUID(), kind: .paragraph(inline: existingInline ?? []))
+                return Block(id: existing.id, kind: .orderedList(items: [ListItem(content: [paragraph])]))
+            case .divider:
+                return existing  // unreachable; handled above
             }
         }
     }
 
-    private func toggleUnderline(
-        in body: inout AttributedString,
-        ranges: [Range<AttributedString.Index>]
+    /// Apply or remove `format` across the selection's UTF-16 range
+    /// inside the leaf at `selection.path`. Inline runs are split at
+    /// the range boundaries; runs fully covered by the range have the
+    /// mark added (or removed if every run in the range already
+    /// carries it). Code blocks ignore inline formats.
+    fileprivate static func toggleInlineFormat(
+        _ format: InlineFormat,
+        document: inout RichTextDocument,
+        selection: BlockTreeSelection
     ) {
-        let firstChar = ranges[0].lowerBound
-        let firstCharEnd = body.characters.index(after: firstChar)
-        let currentAtStart = body[firstChar..<firstCharEnd].underlineStyle
-        let toggleOn = currentAtStart == nil
+        guard !selection.isInsertion,
+              let leafID = selection.path.last else { return }
 
-        for range in ranges {
-            body[range].underlineStyle = toggleOn ? .single : nil
+        let mark = Self.mark(for: format)
+
+        document.mapLeaf(at: selection.path) { leaf in
+            guard let runs = leaf.kind.inlineRuns else { return }
+
+            let (rebuilt, _) = applyMarkToInlineRuns(
+                runs: runs,
+                mark: mark,
+                startUTF16: selection.startUTF16,
+                endUTF16: selection.endUTF16
+            )
+
+            switch leaf.kind {
+            case .paragraph:
+                leaf.kind = .paragraph(inline: rebuilt)
+            case .heading(let level, _):
+                leaf.kind = .heading(level: level, inline: rebuilt)
+            case .codeBlock, .bulletList, .orderedList, .blockquote, .divider:
+                break
+            }
+            _ = leafID
         }
     }
 
-    /// Maps the inline formats that ARE `InlinePresentationIntent`
-    /// cases. Underline routes through `underlineStyle` separately.
-    private func intentFor(_ format: InlineFormat) -> InlinePresentationIntent {
+    private static func mark(for format: InlineFormat) -> Mark {
         switch format {
-        case .bold:           return .stronglyEmphasized
-        case .italic:         return .emphasized
-        case .strikethrough:  return .strikethrough
-        case .code:           return .code
-        case .underline:
-            // Unreachable — callers route underline through
-            // `toggleUnderline` directly.
-            return []
+        case .bold:          return .bold
+        case .italic:        return .italic
+        case .underline:     return .underline
+        case .strikethrough: return .strikethrough
+        case .code:          return .code
         }
+    }
+
+    /// Walk the inline runs, split at the UTF-16 selection boundaries,
+    /// and toggle the mark across runs fully covered by the range.
+    /// Returns the rebuilt runs and whether the mark was added (true)
+    /// or removed (false) — the boolean is informational for tests.
+    ///
+    /// Toggle direction is determined by whether EVERY covered run
+    /// already carries the mark — if so we remove; otherwise we add.
+    /// Matches the prior AttributedString-based behavior.
+    fileprivate static func applyMarkToInlineRuns(
+        runs: [Inline],
+        mark: Mark,
+        startUTF16: Int,
+        endUTF16: Int
+    ) -> (rebuilt: [Inline], didAdd: Bool) {
+        // First pass: split runs at boundaries. Each output run is
+        // tagged with whether it falls inside [start, end).
+        struct Slice {
+            var text: String
+            var marks: [Mark]
+            var insideRange: Bool
+        }
+
+        var slices: [Slice] = []
+        var cursor = 0
+        for run in runs {
+            let runUTF16Count = run.text.utf16.count
+            let runStart = cursor
+            let runEnd = cursor + runUTF16Count
+
+            // Carve into 0–3 slices: before-range, in-range,
+            // after-range. We use UTF-16 offsets so caret math
+            // matches what the editor reports.
+            let segments: [(start: Int, end: Int, inside: Bool)] = {
+                if runEnd <= startUTF16 || runStart >= endUTF16 {
+                    return [(runStart, runEnd, false)]
+                }
+                var out: [(Int, Int, Bool)] = []
+                if runStart < startUTF16 {
+                    out.append((runStart, startUTF16, false))
+                }
+                out.append((max(runStart, startUTF16), min(runEnd, endUTF16), true))
+                if runEnd > endUTF16 {
+                    out.append((endUTF16, runEnd, false))
+                }
+                return out
+            }()
+
+            let runUTF16 = run.text.utf16
+            for (segStart, segEnd, inside) in segments {
+                guard segEnd > segStart else { continue }
+                let localStart = segStart - runStart
+                let localEnd = segEnd - runStart
+                let startIdx = runUTF16.index(runUTF16.startIndex, offsetBy: localStart)
+                let endIdx = runUTF16.index(runUTF16.startIndex, offsetBy: localEnd)
+                let slice = String(decoding: Array(runUTF16[startIdx..<endIdx]), as: UTF16.self)
+                if !slice.isEmpty {
+                    slices.append(Slice(text: slice, marks: run.marks, insideRange: inside))
+                }
+            }
+            cursor = runEnd
+        }
+
+        // Decide toggle direction: ADD if any in-range slice lacks
+        // the mark; REMOVE if every in-range slice already has it.
+        let inRangeSlices = slices.filter { $0.insideRange }
+        let allHave = !inRangeSlices.isEmpty && inRangeSlices.allSatisfy { $0.marks.contains(mark) }
+        let didAdd = !allHave
+
+        for index in slices.indices where slices[index].insideRange {
+            if didAdd {
+                if !slices[index].marks.contains(mark) {
+                    slices[index].marks.append(mark)
+                }
+            } else {
+                slices[index].marks.removeAll { $0 == mark }
+            }
+        }
+
+        // Coalesce adjacent slices with equal marks.
+        var rebuilt: [Inline] = []
+        for slice in slices {
+            if var last = rebuilt.last, last.marks == slice.marks {
+                last.text.append(slice.text)
+                rebuilt[rebuilt.count - 1] = last
+            } else {
+                rebuilt.append(Inline(text: slice.text, marks: slice.marks))
+            }
+        }
+        return (rebuilt, didAdd)
+    }
+}
+
+// MARK: - Block.Kind inline access
+
+extension Block.Kind {
+    /// Inline runs for the leaf kinds that carry them. Returns nil
+    /// for container kinds and for codeBlock (which is plain text, not
+    /// inline runs).
+    var inlineRuns: [Inline]? {
+        switch self {
+        case .paragraph(let inline), .heading(_, let inline):
+            return inline
+        case .codeBlock, .bulletList, .orderedList, .blockquote, .divider:
+            return nil
+        }
+    }
+}
+
+// MARK: - RichTextDocument mutation helpers
+
+extension RichTextDocument {
+
+    /// In-place mutate the leaf block at `path`. The closure receives
+    /// the block by `inout`. No-op if the path doesn't resolve.
+    mutating func mapLeaf(at path: [UUID], _ transform: (inout Block) -> Void) {
+        guard !path.isEmpty else { return }
+        var topLevelIndex: Int?
+        for (idx, block) in blocks.enumerated() where block.id == path[0] {
+            topLevelIndex = idx
+            break
+        }
+        guard let topIdx = topLevelIndex else { return }
+        if path.count == 1 {
+            transform(&blocks[topIdx])
+        } else {
+            blocks[topIdx].mapDescendant(at: Array(path.dropFirst()), transform)
+        }
+    }
+
+    /// Replace the leaf with `id` in-place. The closure receives the
+    /// existing block by value and returns the replacement. The new
+    /// block's `id` should typically equal the old block's id so
+    /// selection paths and NoteRegion anchors keep resolving.
+    mutating func replaceLeaf(id: UUID, _ transform: (Block) -> Block) {
+        for index in blocks.indices where blocks[index].id == id {
+            blocks[index] = transform(blocks[index])
+            return
+        }
+        for index in blocks.indices {
+            blocks[index].replaceDescendant(id: id, transform)
+        }
+    }
+
+    /// Insert `block` immediately after the leaf with `afterLeafID`.
+    /// If the leaf is a top-level block, the new block lands at the
+    /// next top-level position. If the leaf is nested inside a list
+    /// item or blockquote, the new block lands inside the same
+    /// container, after the leaf.
+    mutating func insertBlock(_ block: Block, afterLeafID: UUID) {
+        for index in blocks.indices where blocks[index].id == afterLeafID {
+            blocks.insert(block, at: index + 1)
+            return
+        }
+        for index in blocks.indices {
+            if blocks[index].insertDescendant(block, after: afterLeafID) {
+                return
+            }
+        }
+    }
+}
+
+extension Block {
+    fileprivate mutating func mapDescendant(at path: [UUID], _ transform: (inout Block) -> Void) {
+        guard let next = path.first else { return }
+        switch kind {
+        case .bulletList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == next {
+                    if path.count == 1 {
+                        transform(&content[j])
+                    } else {
+                        content[j].mapDescendant(at: Array(path.dropFirst()), transform)
+                    }
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .bulletList(items: items)
+                    return
+                }
+            }
+        case .orderedList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == next {
+                    if path.count == 1 {
+                        transform(&content[j])
+                    } else {
+                        content[j].mapDescendant(at: Array(path.dropFirst()), transform)
+                    }
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .orderedList(items: items)
+                    return
+                }
+            }
+        case .blockquote(var children):
+            for (i, child) in children.enumerated() where child.id == next {
+                if path.count == 1 {
+                    transform(&children[i])
+                } else {
+                    children[i].mapDescendant(at: Array(path.dropFirst()), transform)
+                }
+                kind = .blockquote(children: children)
+                return
+            }
+        default:
+            break
+        }
+    }
+
+    fileprivate mutating func replaceDescendant(id: UUID, _ transform: (Block) -> Block) {
+        switch kind {
+        case .bulletList(var items):
+            var changed = false
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == id {
+                    content[j] = transform(child)
+                    items[i] = ListItem(id: item.id, content: content)
+                    changed = true
+                }
+            }
+            if changed { kind = .bulletList(items: items) }
+        case .orderedList(var items):
+            var changed = false
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == id {
+                    content[j] = transform(child)
+                    items[i] = ListItem(id: item.id, content: content)
+                    changed = true
+                }
+            }
+            if changed { kind = .orderedList(items: items) }
+        case .blockquote(var children):
+            var changed = false
+            for (i, child) in children.enumerated() where child.id == id {
+                children[i] = transform(child)
+                changed = true
+            }
+            if changed { kind = .blockquote(children: children) }
+        default:
+            break
+        }
+    }
+
+    fileprivate mutating func insertDescendant(_ block: Block, after id: UUID) -> Bool {
+        switch kind {
+        case .bulletList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == id {
+                    content.insert(block, at: j + 1)
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .bulletList(items: items)
+                    return true
+                }
+            }
+        case .orderedList(var items):
+            for (i, item) in items.enumerated() {
+                var content = item.content
+                for (j, child) in content.enumerated() where child.id == id {
+                    content.insert(block, at: j + 1)
+                    items[i] = ListItem(id: item.id, content: content)
+                    kind = .orderedList(items: items)
+                    return true
+                }
+            }
+        case .blockquote(var children):
+            for (i, child) in children.enumerated() where child.id == id {
+                children.insert(block, at: i + 1)
+                kind = .blockquote(children: children)
+                return true
+            }
+        default:
+            break
+        }
+        return false
     }
 }

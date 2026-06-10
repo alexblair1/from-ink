@@ -6,18 +6,16 @@ import XCTest
 
 /// End-to-end integration coverage for the text-block persistence path:
 ///
-///     AttributedString (with custom attributes)
-///     ↓ PageBlockSnapshot.encodeBody (Path B + FromInkAttributes scope)
+///     RichTextDocument (block tree with marks)
+///     ↓ PageBlockSnapshot.encodeBody (JSON, sorted keys)
 ///     ↓ NotebookClient.updateBlockBody → SwiftData write
 ///     ↓ NotebookClient.fetchBlocksForPage → snapshot projection
-///     ↓ PageBlockSnapshot.decodeBody (Path B fallback to Path A)
-///     → AttributedString with attributes preserved
+///     ↓ PageBlockSnapshot.decodeBody (JSON decode)
+///     → RichTextDocument with structure preserved
 ///
 /// The unit tests cover each leg in isolation; this test catches the
-/// encoding-side regressions they miss (e.g. a future change to the
-/// AttributedString custom-attribute scope, the NotebookClient.live
-/// write path, or the snapshot projection that subtly drops attribute
-/// values).
+/// encoding-side regressions they miss (the NotebookClient.live write
+/// path, the snapshot projection, the page-level aggregate refresh).
 final class TextBlockIntegrationTests: XCTestCase {
 
     private let now = Date(timeIntervalSince1970: 1_780_000_000)
@@ -50,78 +48,87 @@ final class TextBlockIntegrationTests: XCTestCase {
         return (notebook.id, page.id)
     }
 
-    // MARK: - Plain-text round-trip
+    // MARK: - Plain document round-trip
 
     @MainActor
-    func test_writeAndReadBlockBody_plainText_preservesContent() async throws {
+    func test_writeAndReadBlockBody_singleParagraph_preservesContent() async throws {
         let (client, ctx) = makeClient()
         let (_, pageID) = try seedNotebookPage(context: ctx)
 
         let block = try await client.insertBlock(pageID, .text, nil)
 
-        let original = AttributedString("Meeting notes:\nQ3 budget review on Friday.")
+        let original = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Meeting notes:\nQ3 budget review on Friday.")
+            ]))
+        ])
         let data = try PageBlockSnapshot.encodeBody(original)
-        try await client.updateBlockBody(block.id, data, String(original.characters))
+        try await client.updateBlockBody(block.id, data, original.plainText)
 
         let blocks = try await client.fetchBlocksForPage(pageID)
         let textBlock = try XCTUnwrap(blocks.first(where: { $0.kind == .text }))
         XCTAssertEqual(textBlock.plainText, "Meeting notes:\nQ3 budget review on Friday.")
-        let recovered = try XCTUnwrap(textBlock.body)
-        XCTAssertEqual(
-            String(recovered.characters),
-            "Meeting notes:\nQ3 budget review on Friday."
-        )
+        let recovered = try XCTUnwrap(textBlock.document)
+        XCTAssertEqual(recovered, original)
     }
 
-    // MARK: - Region anchor round-trip
+    // MARK: - Multi-block round-trip with marks
 
     @MainActor
-    func test_writeAndReadBlockBody_preservesRegionAnchorAttribute() async throws {
+    func test_writeAndReadBlockBody_headingPlusParagraphWithBold_preservesStructure() async throws {
         let (client, ctx) = makeClient()
         let (_, pageID) = try seedNotebookPage(context: ctx)
 
         let block = try await client.insertBlock(pageID, .text, nil)
 
-        let regionID = UUID()
-        var original = AttributedString("Follow up with Sarah about Q3 budget by Friday")
-        let range = original.range(of: "Q3 budget")!
-        original[range].fromInk.regionAnchor = regionID
-
+        let original = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [
+                Inline(text: "Plain "),
+                Inline(text: "bold", marks: [.bold]),
+                Inline(text: " and "),
+                Inline(text: "italic", marks: [.italic])
+            ]))
+        ])
         let data = try PageBlockSnapshot.encodeBody(original)
-        try await client.updateBlockBody(block.id, data, String(original.characters))
+        try await client.updateBlockBody(block.id, data, original.plainText)
 
         let blocks = try await client.fetchBlocksForPage(pageID)
         let textBlock = try XCTUnwrap(blocks.first(where: { $0.kind == .text }))
-        let recovered = try XCTUnwrap(textBlock.body)
-        let recoveredRange = try XCTUnwrap(recovered.range(of: "Q3 budget"))
+        let recovered = try XCTUnwrap(textBlock.document)
         XCTAssertEqual(
-            recovered[recoveredRange].fromInk.regionAnchor,
-            regionID,
-            "Region anchor UUID must survive the full encode → SwiftData write → fetch → decode pipeline"
+            recovered, original,
+            "Block structure + inline marks must survive the full encode → SwiftData write → fetch → decode pipeline"
         )
     }
 
     // MARK: - Highlight round-trip
 
     @MainActor
-    func test_writeAndReadBlockBody_preservesHighlightAttribute() async throws {
+    func test_writeAndReadBlockBody_preservesHighlightMark() async throws {
         let (client, ctx) = makeClient()
         let (_, pageID) = try seedNotebookPage(context: ctx)
 
         let block = try await client.insertBlock(pageID, .text, nil)
 
-        var original = AttributedString("This is important context.")
-        let range = original.range(of: "important")!
-        original[range].fromInk.highlight = .yellow
-
+        let original = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [
+                Inline(text: "This is "),
+                Inline(text: "important", marks: [.highlight(.yellow)]),
+                Inline(text: " context.")
+            ]))
+        ])
         let data = try PageBlockSnapshot.encodeBody(original)
-        try await client.updateBlockBody(block.id, data, String(original.characters))
+        try await client.updateBlockBody(block.id, data, original.plainText)
 
         let blocks = try await client.fetchBlocksForPage(pageID)
         let textBlock = try XCTUnwrap(blocks.first(where: { $0.kind == .text }))
-        let recovered = try XCTUnwrap(textBlock.body)
-        let recoveredRange = try XCTUnwrap(recovered.range(of: "important"))
-        XCTAssertEqual(recovered[recoveredRange].fromInk.highlight, .yellow)
+        let recovered = try XCTUnwrap(textBlock.document)
+        guard case .paragraph(let inline) = recovered.blocks.first?.kind else {
+            XCTFail("Expected paragraph")
+            return
+        }
+        XCTAssertEqual(inline[1].marks, [.highlight(.yellow)])
     }
 
     // MARK: - contentHash + page-level aggregate
@@ -133,15 +140,12 @@ final class TextBlockIntegrationTests: XCTestCase {
 
         let block = try await client.insertBlock(pageID, .text, nil)
 
-        let original = AttributedString("Sample paragraph.")
+        let original = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Sample paragraph.")]))
+        ])
         let data = try PageBlockSnapshot.encodeBody(original)
-        try await client.updateBlockBody(block.id, data, String(original.characters))
+        try await client.updateBlockBody(block.id, data, original.plainText)
 
-        // Reach into the model context to verify the page-level
-        // aggregate refresh (extractedText + extractedTextHash) ran
-        // as part of updateBlockBody. The aggregate is recomputed
-        // from the per-block manifest, so the page's hash must be
-        // non-nil and the extractedText must contain the typed value.
         let modelCtx = ctx.context()
         let page = try XCTUnwrap(
             try modelCtx.fetch(
@@ -152,8 +156,6 @@ final class TextBlockIntegrationTests: XCTestCase {
         XCTAssertNotNil(page.extractedTextHash)
         XCTAssertFalse(page.extractedTextHash?.isEmpty ?? true)
 
-        // Bumping discipline: page.modifiedAt advanced to the fixed
-        // now (the seed step left it at `now`; updateBlockBody bumps).
         XCTAssertEqual(page.modifiedAt, now)
         _ = notebookID
     }

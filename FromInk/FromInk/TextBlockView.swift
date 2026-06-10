@@ -1,18 +1,19 @@
 import SwiftUI
 
-/// SwiftUI `TextEditor`-backed view for a single text block in a note.
+/// Text block view for a single text block in a note.
 ///
 /// Component view — no TCA imports. Reads a `Model` of flat resolved
-/// fields, emits user edits via the `onBodyEdited` closure, and stays
-/// pure: every visible state (editing, empty, decode-failed, orphan,
-/// persist-failed) is a fully described field on the Model.
+/// fields, emits user edits via the closure callbacks on the Model,
+/// and stays pure: every visible state (editing, empty, decode-failed,
+/// orphan, persist-failed) is a fully described field on the Model.
 ///
-/// **Engine.** iOS 26's `TextEditor` accepts an `AttributedString`
-/// binding and natively handles rich text — bold / italic / underline /
-/// strikethrough, custom fonts, colors, paragraph styling, and (the
-/// load-bearing bit for From Ink) custom `AttributeScopes` like
-/// `FromInkAttributes`. The component view is thin precisely because
-/// the framework does the heavy lifting.
+/// **2026-06-09 — Editor refactor in progress.** This view's editor
+/// region currently renders a READ-ONLY view of the document's
+/// `plainText`. The previous SwiftUI `TextEditor` / TextKit 2
+/// UITextView paths are deleted; the production editor — a TextKit 1
+/// `UITextView` with a `BlockDecoratingLayoutManager` per
+/// `text_experience_edd.md` §22.4 commit 4 — lands in the next commit.
+/// Until then, the user can view but not edit text notes.
 ///
 /// **Failure states.**
 ///   - `.bodyDecodeFailed` — corrupted bytes on disk. Tap to retry
@@ -52,85 +53,32 @@ struct TextBlockView: View {
         }
     }
 
-    // MARK: - Editor
+    // MARK: - Editor (transitional placeholder)
 
     private var editor: some View {
-        ZStack(alignment: .topLeading) {
-            editorEngine
-                .accessibilityLabel(model.editorAccessibilityLabel)
-                .accessibilityHint(model.accessibilityHint)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(model.editorPlaceholderHeadline)
+                .font(model.subheadFont)
+                .foregroundStyle(model.secondaryColor)
 
-            // Inline placeholder — neither TextEditor nor UITextView
-            // surfaces a usable prompt for AttributedString content,
-            // so we overlay one. Fades to clear as soon as any
-            // character lands. `.allowsHitTesting(false)` keeps taps
-            // reaching the editor underneath.
-            if model.isBodyEmpty {
+            // Read-only plain-text preview of the document. Survives
+            // empty + populated states. Commit 4 replaces this with
+            // the real TextKit 1 editor.
+            if model.isDocumentEmpty {
                 Text(model.emptyBlockPlaceholder)
                     .font(model.bodyFont)
                     .foregroundStyle(model.placeholderColor)
-                    .padding(.top, model.placeholderTopOffset)
-                    .padding(.leading, model.placeholderLeadingOffset)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+            } else {
+                Text(model.plainText)
+                    .font(model.bodyFont)
+                    .foregroundStyle(model.bodyColor)
+                    .textSelection(.enabled)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityLabel(model.editorAccessibilityLabel)
+        .accessibilityHint(model.accessibilityHint)
     }
-
-    /// Per-platform editor engine. On iOS / visionOS we use a
-    /// TextKit 2-backed UITextView wrapper so block-level
-    /// `PresentationIntent` (headings, lists, blockQuote, codeBlock,
-    /// thematicBreak) actually renders — SwiftUI's TextEditor honors
-    /// inline attributes only and silently drops block-level intents
-    /// at the visual layer. macOS still uses TextEditor until the
-    /// NSTextView equivalent ships in a follow-up commit (gap on the
-    /// text-experience plan).
-    @ViewBuilder
-    private var editorEngine: some View {
-        #if os(iOS) || os(visionOS)
-        TextKitEditorView(
-            body: Binding(
-                get: { model.body },
-                set: { model.onBodyEdited($0) }
-            ),
-            selection: Binding(
-                get: { model.selection },
-                set: { model.onSelectionChanged($0) }
-            ),
-            font: Self.serifBodyFont(),
-            foregroundColor: UIColor(model.bodyColor)
-        )
-        #else
-        TextEditor(
-            text: Binding(
-                get: { model.body },
-                set: { model.onBodyEdited($0) }
-            ),
-            selection: Binding(
-                get: { model.selection },
-                set: { model.onSelectionChanged($0) }
-            )
-        )
-        .font(model.bodyFont)
-        .foregroundStyle(model.bodyColor)
-        .scrollContentBackground(.hidden)
-        .background(Color.clear)
-        #endif
-    }
-
-    #if os(iOS) || os(visionOS)
-    /// Serif body font for the UITextView engine — matches the
-    /// `.system(.body, design: .serif)` token used by the SwiftUI
-    /// fallback and the "Notebook content: New York serif" rule
-    /// in CLAUDE.md. Built off the system body preferred font so
-    /// Dynamic Type scaling continues to work.
-    private static func serifBodyFont() -> UIFont {
-        let base = UIFont.preferredFont(forTextStyle: .body)
-        let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
-        return UIFont(descriptor: descriptor, size: 0)
-    }
-    #endif
 
     // MARK: - Empty / failure placeholders
 
@@ -163,10 +111,6 @@ struct TextBlockView: View {
     }
 
     private var orphan: some View {
-        // Same surface as decode failure, different copy. Orphan
-        // blocks are a persistence inconsistency, not a per-block
-        // corruption — but the user-visible outcome is the same:
-        // tap to surface a recovery affordance.
         VStack(alignment: .leading, spacing: 8) {
             Text(model.decodeFailureHeadline)
                 .font(model.headlineFont)
@@ -212,14 +156,14 @@ extension TextBlockView {
         let isPresented: Bool
         let failureState: TextEditingFeature.State.LoadFailure?
 
-        let body: AttributedString
-        let isBodyEmpty: Bool
+        let document: RichTextDocument
+        let plainText: String
+        let isDocumentEmpty: Bool
 
         /// Mirrors `TextEditingFeature.State.selection`. The editor
-        /// binds the iOS 26 `selection:` parameter through this
-        /// field so format actions (block / inline) target the
-        /// user's caret / range instead of the whole body.
-        let selection: AttributedTextSelection
+        /// will bind through this once it lands in commit 4; the
+        /// transitional placeholder ignores it.
+        let selection: BlockTreeSelection
 
         /// Non-nil when the most recent persist attempt failed; the
         /// banner renders above the editor. The editor itself remains
@@ -228,16 +172,17 @@ extension TextBlockView {
         let persistFailureTitle: String?
         let persistFailureSubtitle: String
 
-        let onBodyEdited: (AttributedString) -> Void
-        let onSelectionChanged: (AttributedTextSelection) -> Void
+        /// Callbacks the real editor (commit 4) will invoke. The
+        /// transitional placeholder doesn't call any of them.
+        let onDocumentEdited: (RichTextDocument) -> Void
+        let onSelectionChanged: (BlockTreeSelection) -> Void
+        let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
 
         let bodyFont: Font
         let bodyColor: Color
         let placeholderColor: Color
-        let placeholderTopOffset: CGFloat
-        let placeholderLeadingOffset: CGFloat
         let headlineFont: Font
         let subheadFont: Font
         let bannerTitleFont: Font
@@ -248,6 +193,7 @@ extension TextBlockView {
         let bannerVerticalPadding: CGFloat
 
         let emptyBlockPlaceholder: String
+        let editorPlaceholderHeadline: String
         let emptyNoteHeadline: String
         let emptyNoteSubhead: String
         let decodeFailureHeadline: String
@@ -263,37 +209,32 @@ extension TextBlockView.Model {
     init(
         isPresented: Bool,
         failureState: TextEditingFeature.State.LoadFailure?,
-        body: AttributedString,
-        selection: AttributedTextSelection = AttributedTextSelection(),
+        document: RichTextDocument,
+        selection: BlockTreeSelection = BlockTreeSelection(),
         persistFailureTitle: String? = nil,
-        onBodyEdited: @escaping (AttributedString) -> Void,
-        onSelectionChanged: @escaping (AttributedTextSelection) -> Void = { _ in },
+        onDocumentEdited: @escaping (RichTextDocument) -> Void = { _ in },
+        onSelectionChanged: @escaping (BlockTreeSelection) -> Void = { _ in },
+        onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void = { _, _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
         ds: DesignSystem = .standard
     ) {
         self.isPresented = isPresented
         self.failureState = failureState
-        self.body = body
+        self.document = document
+        self.plainText = document.plainText
+        self.isDocumentEmpty = document.blocks.isEmpty || document.plainText.isEmpty
         self.selection = selection
-        self.isBodyEmpty = body.characters.isEmpty
         self.persistFailureTitle = persistFailureTitle
         self.persistFailureSubtitle = AppStrings.TextEditing.persistFailedBannerSubtitle
-        self.onBodyEdited = onBodyEdited
+        self.onDocumentEdited = onDocumentEdited
         self.onSelectionChanged = onSelectionChanged
+        self.onSlashTyped = onSlashTyped
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
-        // Body uses the serif notebook stack — content typography per
-        // CLAUDE.md ("Notebook content: New York serif").
         self.bodyFont = .system(.body, design: .serif)
         self.bodyColor = ds.colors.ink
         self.placeholderColor = ds.colors.ink3
-        // Match SwiftUI's TextEditor default content insets so the
-        // placeholder text aligns with the caret. iOS 26's TextEditor
-        // insets the text content roughly 8pt top / 5pt leading from
-        // the editor frame; ds.spacing.sm covers both.
-        self.placeholderTopOffset = ds.spacing.sm
-        self.placeholderLeadingOffset = ds.spacing.xs
         self.headlineFont = .system(.title2, design: .serif)
         self.subheadFont = .system(.subheadline, design: .default)
         self.bannerTitleFont = .system(.footnote, design: .default).weight(.medium)
@@ -303,6 +244,7 @@ extension TextBlockView.Model {
         self.bannerHorizontalPadding = ds.spacing.md
         self.bannerVerticalPadding = ds.spacing.sm
         self.emptyBlockPlaceholder = AppStrings.TextEditing.emptyBlockPlaceholder
+        self.editorPlaceholderHeadline = "Editor refactor in progress — commit 4 will restore live typing."
         self.emptyNoteHeadline = AppStrings.TextEditing.emptyNoteHeadline
         self.emptyNoteSubhead = AppStrings.TextEditing.emptyNoteSubhead
         self.decodeFailureHeadline = AppStrings.TextEditing.bodyDecodeFailedHeadline

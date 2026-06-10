@@ -59,15 +59,18 @@ struct TextNoteWiringView: View {
         TextBlockView(model: .init(
             isPresented: store.textEditing.activeBlock != nil,
             failureState: store.textEditing.loadFailure,
-            body: store.textEditing.editingBody,
+            document: store.textEditing.document,
             selection: store.textEditing.selection,
             persistFailureTitle: store.textEditing.lastPersistFailureReason
                 .map { _ in AppStrings.TextEditing.persistFailedBannerTitle },
-            onBodyEdited: { body in
-                store.send(.textEditing(.bodyEdited(body)))
+            onDocumentEdited: { document in
+                store.send(.textEditing(.documentEdited(document)))
             },
             onSelectionChanged: { selection in
                 store.send(.textEditing(.selectionChanged(selection)))
+            },
+            onSlashTyped: { path, offset in
+                store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
             },
             onCreateRequested: {
                 // Tap on the empty-state placeholder asks the
