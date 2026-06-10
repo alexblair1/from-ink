@@ -965,6 +965,19 @@ struct TextKitEditorView: UIViewRepresentable {
         /// binding write doesn't loop into another binding write.
         var isApplyingBindingUpdate = false
 
+        /// NSRange location of a `/` typed at a word boundary. Set in
+        /// `shouldChangeTextIn` and consumed in `textViewDidChange`
+        /// AFTER the flatten map is freshly rebuilt from the parsed
+        /// document. iOS 26's UITextView fires `textViewDidChange`
+        /// after the next runloop iteration (not synchronously after
+        /// insertion), so the original `DispatchQueue.main.async`
+        /// approach read a stale flatten map or produced a block path
+        /// whose id didn't match the freshly-parsed document — both
+        /// caused `refreshSlashFilterEffect` to dismiss the palette
+        /// immediately. Detecting in `textViewDidChange` after the
+        /// parse-back guarantees consistency.
+        var pendingSlashLocation: Int? = nil
+
         init(parent: TextKitEditorView) {
             self.parent = parent
             self.lastSyncedDocument = parent.document
@@ -978,40 +991,21 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            // TEMPORARY — log every shouldChangeTextIn call. The
-            // wiring view's debug strip shows the latest event so we
-            // can see which check fails for the slash menu.
-            parent.onSlashDebug?("should text='\(text)' loc=\(range.location) len=\(range.length)")
+            parent.onSlashDebug?("should text='\(text)' loc=\(range.location)")
 
             if text == "/" {
-                parent.onSlashDebug?("slash matched at loc=\(range.location)")
                 let ns = textView.text as NSString
                 let isAtParagraphStart = range.location == 0
                     || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
                 let isAfterWhitespace = range.location > 0
                     && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
-                parent.onSlashDebug?("boundary atStart=\(isAtParagraphStart) afterWS=\(isAfterWhitespace)")
                 if isAtParagraphStart || isAfterWhitespace {
-                    parent.onSlashDebug?("boundary PASS — scheduling async")
-                    let slashLocation = range.location
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else {
-                            return
-                        }
-                        self.parent.onSlashDebug?("async ran, mapCount=\(self.flattenMap.count)")
-                        let updatedMap = self.flattenMap
-                        let bridged = TextKitEditorView.selection(
-                            forNSRange: NSRange(location: slashLocation, length: 0),
-                            flattenMap: updatedMap
-                        )
-                        self.parent.onSlashDebug?("bridged pathCount=\(bridged.path.count) startUTF16=\(bridged.startUTF16)")
-                        guard !bridged.path.isEmpty else {
-                            self.parent.onSlashDebug?("ABORT path empty")
-                            return
-                        }
-                        self.parent.onSlashDebug?("calling onSlashTyped")
-                        self.parent.onSlashTyped(bridged.path, bridged.startUTF16)
-                    }
+                    // Set a pending flag; textViewDidChange will pick
+                    // this up AFTER the parse-back has fresh data.
+                    // This avoids the iOS-26 ordering quirk where the
+                    // async block ran before textViewDidChange.
+                    pendingSlashLocation = range.location
+                    parent.onSlashDebug?("PENDING slash at loc=\(range.location)")
                 } else {
                     parent.onSlashDebug?("boundary FAIL")
                 }
@@ -1021,7 +1015,7 @@ struct TextKitEditorView: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) {
             guard !isApplyingBindingUpdate else {
-                parent.onSlashDebug?("didChange SKIPPED (isApplyingBindingUpdate=true)")
+                parent.onSlashDebug?("didChange SKIPPED (binding update)")
                 return
             }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
@@ -1036,6 +1030,25 @@ struct TextKitEditorView: UIViewRepresentable {
             parent.onSlashDebug?("didChange mapCount=\(reflatten.flattenMap.count) blocks=\(parsed.blocks.count)")
             if parsed != parent.document {
                 parent.document = parsed
+            }
+
+            // Now consume any pending slash trigger from
+            // shouldChangeTextIn. The flatten map + parent.document
+            // are both freshly updated; the path we bridge will
+            // match the block id in the new document.
+            if let slashLocation = pendingSlashLocation {
+                pendingSlashLocation = nil
+                let bridged = TextKitEditorView.selection(
+                    forNSRange: NSRange(location: slashLocation, length: 0),
+                    flattenMap: reflatten.flattenMap
+                )
+                parent.onSlashDebug?("slash bridge pathCount=\(bridged.path.count) startUTF16=\(bridged.startUTF16)")
+                if !bridged.path.isEmpty {
+                    parent.onSlashDebug?("calling onSlashTyped")
+                    parent.onSlashTyped(bridged.path, bridged.startUTF16)
+                } else {
+                    parent.onSlashDebug?("slash ABORT path empty")
+                }
             }
         }
 
