@@ -28,6 +28,7 @@ struct TextNoteWiringView: View {
     @State private var slashTypedCount: Int = 0
     @State private var documentEditedCount: Int = 0
     @State private var selectionChangedCount: Int = 0
+    @State private var slashDebugLog: String = ""
 
     private let ds = DesignSystem.standard
 
@@ -71,6 +72,10 @@ struct TextNoteWiringView: View {
                 Text("slashTyped fires=\(slashTypedCount)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(slashTypedCount > 0 ? Color.green : Color.yellow)
+                Text("LAST: \(slashDebugLog)")
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.cyan)
+                    .lineLimit(3)
             }
             .padding(6)
             .background(Color.black.opacity(0.7))
@@ -104,6 +109,9 @@ struct TextNoteWiringView: View {
             onSlashTyped: { path, offset in
                 slashTypedCount += 1
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
+            },
+            onSlashDebug: { event in
+                slashDebugLog = event
             },
             onEditorCommand: { command in
                 Self.handle(command: command, store: store)

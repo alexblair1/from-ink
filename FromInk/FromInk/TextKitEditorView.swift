@@ -56,6 +56,10 @@ struct TextKitEditorView: UIViewRepresentable {
     @Binding var document: RichTextDocument
     @Binding var selection: BlockTreeSelection
     let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+    /// TEMPORARY — debug callback that fires at each stage of the
+    /// slash detection so the wiring view's debug strip can show
+    /// which check is failing.
+    var onSlashDebug: ((String) -> Void)? = nil
     /// Routed from the custom UITextView subclass's `keyCommands` to
     /// the wiring view, which maps each `EditorCommand` onto a TCA
     /// action. The editor view stays feature-agnostic — it doesn't
@@ -974,32 +978,42 @@ struct TextKitEditorView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText text: String
         ) -> Bool {
-            // Slash detection — fire `onSlashTyped` if the user just
-            // typed `/` at a word boundary (start of paragraph or
-            // after whitespace).
+            // TEMPORARY — log every shouldChangeTextIn call. The
+            // wiring view's debug strip shows the latest event so we
+            // can see which check fails for the slash menu.
+            parent.onSlashDebug?("should text='\(text)' loc=\(range.location) len=\(range.length)")
+
             if text == "/" {
+                parent.onSlashDebug?("slash matched at loc=\(range.location)")
                 let ns = textView.text as NSString
                 let isAtParagraphStart = range.location == 0
                     || (range.location > 0 && ["\n"].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1))))
                 let isAfterWhitespace = range.location > 0
                     && [" "].contains(ns.substring(with: NSRange(location: range.location - 1, length: 1)))
+                parent.onSlashDebug?("boundary atStart=\(isAtParagraphStart) afterWS=\(isAfterWhitespace)")
                 if isAtParagraphStart || isAfterWhitespace {
-                    // The "/" hasn't been inserted yet — its position
-                    // will be `range.location`. Convert to a
-                    // BlockTreeSelection-style location AFTER UITextView
-                    // applies the change (one runloop tick later, so the
-                    // flatten map below reflects the inserted "/").
+                    parent.onSlashDebug?("boundary PASS — scheduling async")
                     let slashLocation = range.location
                     DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
+                        guard let self = self else {
+                            return
+                        }
+                        self.parent.onSlashDebug?("async ran, mapCount=\(self.flattenMap.count)")
                         let updatedMap = self.flattenMap
                         let bridged = TextKitEditorView.selection(
                             forNSRange: NSRange(location: slashLocation, length: 0),
                             flattenMap: updatedMap
                         )
-                        guard !bridged.path.isEmpty else { return }
+                        self.parent.onSlashDebug?("bridged pathCount=\(bridged.path.count) startUTF16=\(bridged.startUTF16)")
+                        guard !bridged.path.isEmpty else {
+                            self.parent.onSlashDebug?("ABORT path empty")
+                            return
+                        }
+                        self.parent.onSlashDebug?("calling onSlashTyped")
                         self.parent.onSlashTyped(bridged.path, bridged.startUTF16)
                     }
+                } else {
+                    parent.onSlashDebug?("boundary FAIL")
                 }
             }
             return true

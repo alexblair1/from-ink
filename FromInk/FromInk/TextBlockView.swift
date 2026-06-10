@@ -58,24 +58,30 @@ struct TextBlockView: View {
     private var editor: some View {
         ZStack(alignment: .topLeading) {
             #if os(iOS) || os(visionOS)
-            TextKitEditorView(
-                document: Binding(
-                    get: { model.document },
-                    set: { model.onDocumentEdited($0) }
-                ),
-                selection: Binding(
-                    get: { model.selection },
-                    set: { model.onSelectionChanged($0) }
-                ),
-                onSlashTyped: { path, offset in
-                    model.onSlashTyped(path, offset)
-                },
-                onCommand: { command in
-                    model.onEditorCommand(command)
-                },
-                bodyFont: Self.serifBodyFont(),
-                bodyColor: UIColor(model.bodyColor)
-            )
+            {
+                var editor = TextKitEditorView(
+                    document: Binding(
+                        get: { model.document },
+                        set: { model.onDocumentEdited($0) }
+                    ),
+                    selection: Binding(
+                        get: { model.selection },
+                        set: { model.onSelectionChanged($0) }
+                    ),
+                    onSlashTyped: { path, offset in
+                        model.onSlashTyped(path, offset)
+                    },
+                    onCommand: { command in
+                        model.onEditorCommand(command)
+                    },
+                    bodyFont: Self.serifBodyFont(),
+                    bodyColor: UIColor(model.bodyColor)
+                )
+                editor.onSlashDebug = { event in
+                    model.onSlashDebug(event)
+                }
+                return editor
+            }()
             #else
             // macOS placeholder until the NSTextView wrapper lands.
             Text(model.plainText)
@@ -205,6 +211,7 @@ extension TextBlockView {
         let onDocumentEdited: (RichTextDocument) -> Void
         let onSelectionChanged: (BlockTreeSelection) -> Void
         let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+        let onSlashDebug: (String) -> Void
         let onEditorCommand: (EditorCommand) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
@@ -244,6 +251,7 @@ extension TextBlockView.Model {
         onDocumentEdited: @escaping (RichTextDocument) -> Void = { _ in },
         onSelectionChanged: @escaping (BlockTreeSelection) -> Void = { _ in },
         onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void = { _, _ in },
+        onSlashDebug: @escaping (String) -> Void = { _ in },
         onEditorCommand: @escaping (EditorCommand) -> Void = { _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
@@ -264,6 +272,7 @@ extension TextBlockView.Model {
         self.onDocumentEdited = onDocumentEdited
         self.onSelectionChanged = onSelectionChanged
         self.onSlashTyped = onSlashTyped
+        self.onSlashDebug = onSlashDebug
         self.onEditorCommand = onEditorCommand
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
