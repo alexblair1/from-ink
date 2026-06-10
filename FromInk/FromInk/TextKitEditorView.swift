@@ -181,8 +181,15 @@ struct TextKitEditorView: UIViewRepresentable {
             // keystroke inherits the chrome at the new cursor leaf.
             // Without this, a slash-command-applied heading would
             // revert to paragraph styling on the next character.
+            // Fix L1 (folded into the same call): when the
+            // re-flatten produced empty attributedText — typical
+            // of wrapping an empty paragraph into a list — fall
+            // back to the document at `selection.path` for chrome
+            // resolution.
             Self.refreshTypingAttributes(
                 textView: textView,
+                document: document,
+                selection: selection,
                 bodyFont: bodyFont,
                 bodyColor: bodyColor
             )
@@ -216,25 +223,127 @@ struct TextKitEditorView: UIViewRepresentable {
     /// in `textView.attributedText` and set `textView.typingAttributes`
     /// from them. Used after every external-document-driven re-flatten
     /// (B3) so format changes don't revert on the next keystroke.
+    ///
+    /// **Empty-attributedText fallback (fix L1).** When the document
+    /// re-flatten produces a zero-length `attributedText` (e.g.
+    /// `applyBlockFormat(.bulletedList)` on an empty paragraph
+    /// wraps it to `[bulletList(items: [item(paragraph(empty))])]`
+    /// — flatten emits the paragraph's trailing newline then trims
+    /// it, leaving zero characters), the textView has no attrs to
+    /// read. Without this fallback, `typingAttributes` keeps the
+    /// pre-wrap chrome (paragraph), the next keystroke inherits
+    /// paragraph chrome, and parse-back silently dissolves the
+    /// list back to body text. Resolve from the document at
+    /// `selection.path` instead — same chrome the flatten would
+    /// have written, with a fresh `groupID` so the next-typed
+    /// paragraph groups into this list (parse-back keys list
+    /// grouping on chrome+groupID, and a single-item list with a
+    /// fresh group id is correct).
     static func refreshTypingAttributes(
         textView: UITextView,
+        document: RichTextDocument,
+        selection: BlockTreeSelection,
         bodyFont: UIFont,
         bodyColor: UIColor
     ) {
+        // Prefer the document-derived path when the attributedText
+        // can't supply attrs at the cursor — see fix L1 in the doc
+        // comment. The document is also the source of truth for
+        // chrome regardless of attributedText state.
         let loc = textView.selectedRange.location
-        guard loc < textView.attributedText.length else { return }
-        let attrs = textView.attributedText.attributes(at: loc, effectiveRange: nil)
-        guard let chromeRaw = attrs[.blockChrome] as? Int,
-              let chrome = BlockChrome(rawValue: chromeRaw) else { return }
-        let blockID = (attrs[.blockID] as? UUID) ?? UUID()
-        let groupID = attrs[.groupID] as? UUID
-        textView.typingAttributes = Self.typingAttributes(
+        if loc < textView.attributedText.length {
+            let attrs = textView.attributedText.attributes(at: loc, effectiveRange: nil)
+            if let chromeRaw = attrs[.blockChrome] as? Int,
+               let chrome = BlockChrome(rawValue: chromeRaw) {
+                let blockID = (attrs[.blockID] as? UUID) ?? UUID()
+                let groupID = attrs[.groupID] as? UUID
+                textView.typingAttributes = Self.typingAttributes(
+                    for: chrome,
+                    blockID: blockID,
+                    groupID: groupID,
+                    bodyFont: bodyFont,
+                    bodyColor: bodyColor
+                )
+                return
+            }
+        }
+
+        // Fallback path — resolve from the document selection.
+        if let attrs = Self.typingAttributesFromDocument(
+            document: document,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        ) {
+            textView.typingAttributes = attrs
+        }
+    }
+
+    /// Resolve `typingAttributes` from the document at the
+    /// selection path. The chrome reflects the leaf's container
+    /// (list → `bulletListItem` / `orderedListItem`, blockquote →
+    /// `blockquoteParagraph`) or the leaf's own kind for top-level
+    /// blocks. `groupID` is freshly generated — the only thing
+    /// parse-back cares about is consistency across paragraphs in
+    /// the same group, and a brand-new wrap is by definition a
+    /// single-paragraph group.
+    static func typingAttributesFromDocument(
+        document: RichTextDocument,
+        selection: BlockTreeSelection,
+        bodyFont: UIFont,
+        bodyColor: UIColor
+    ) -> [NSAttributedString.Key: Any]? {
+        guard let leafID = selection.path.last,
+              let leaf = document.block(at: selection.path) else { return nil }
+
+        var chrome: BlockChrome = chromeForLeafKind(leaf.kind)
+        var groupID: UUID? = nil
+
+        if selection.path.count >= 2 {
+            let containerPath = Array(selection.path.dropLast())
+            if let container = document.block(at: containerPath) {
+                switch container.kind {
+                case .bulletList:
+                    chrome = .bulletListItem
+                    groupID = UUID()
+                case .orderedList:
+                    chrome = .orderedListItem
+                    groupID = UUID()
+                case .blockquote:
+                    chrome = .blockquoteParagraph
+                    groupID = UUID()
+                default:
+                    break
+                }
+            }
+        }
+
+        return Self.typingAttributes(
             for: chrome,
-            blockID: blockID,
+            blockID: leafID,
             groupID: groupID,
             bodyFont: bodyFont,
             bodyColor: bodyColor
         )
+    }
+
+    /// Chrome for a leaf based on its own kind only (ignores any
+    /// list / blockquote container above it — those override at
+    /// the caller).
+    private static func chromeForLeafKind(_ kind: Block.Kind) -> BlockChrome {
+        switch kind {
+        case .paragraph:                return .paragraph
+        case .heading(let level, _):
+            switch level {
+            case 1: return .heading1
+            case 2: return .heading2
+            default: return .heading3
+            }
+        case .codeBlock:                return .codeBlock
+        case .divider:                  return .divider
+        case .bulletList, .orderedList, .blockquote:
+            return .paragraph
+        }
     }
 
     // MARK: - Viewport-space caret rect

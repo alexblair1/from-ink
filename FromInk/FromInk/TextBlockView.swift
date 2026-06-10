@@ -282,6 +282,13 @@ private struct SlashPopoverModifier: ViewModifier {
                 ))
                 .presentationCompactAdaptation(.popover)
                 .presentationBackground(Color.clear)
+                // Lets the user scroll / interact with the editor
+                // while the palette is open — without this, every
+                // outside touch (including the first frame of a
+                // scroll gesture) dismisses the popover. The
+                // wiring view's scroll observer keeps the anchor
+                // tracking the slash glyph through the scroll.
+                .presentationBackgroundInteraction(.enabled)
             }
     }
 }

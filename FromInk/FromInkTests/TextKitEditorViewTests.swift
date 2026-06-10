@@ -802,6 +802,107 @@ final class TextKitEditorViewTests: XCTestCase {
         ))
     }
 
+    // MARK: - typingAttributesFromDocument (L1 fix)
+    //
+    // When `applyBlockFormat(.bulletedList)` runs against an
+    // empty paragraph, the resulting flatten is zero-length and
+    // `refreshTypingAttributes` would otherwise no-op — leaving
+    // the user's next keystroke with the pre-wrap paragraph
+    // chrome and dissolving the list on the next parse-back.
+    // The fallback path resolves chrome from the document at the
+    // selection's path; tests pin all four container shapes.
+
+    func test_typingAttributesFromDocument_bulletListItemLeaf_returnsBulletChrome() {
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .bulletList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        let attrs = TextKitEditorView.typingAttributesFromDocument(
+            document: doc,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        XCTAssertEqual(attrs?[.blockChrome] as? Int, BlockChrome.bulletListItem.rawValue)
+        XCTAssertEqual(attrs?[.blockID] as? UUID, leafID)
+        XCTAssertNotNil(attrs?[.groupID] as? UUID,
+                        "List-container chrome must carry a groupID so parse-back groups consecutive items")
+    }
+
+    func test_typingAttributesFromDocument_orderedListItemLeaf_returnsOrderedChrome() {
+        let listID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: listID, kind: .orderedList(items: [
+                ListItem(id: UUID(), content: [Block(id: leafID, kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [listID, leafID], startUTF16: 0, endUTF16: 0)
+        let attrs = TextKitEditorView.typingAttributesFromDocument(
+            document: doc,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        XCTAssertEqual(attrs?[.blockChrome] as? Int, BlockChrome.orderedListItem.rawValue)
+        XCTAssertNotNil(attrs?[.groupID] as? UUID)
+    }
+
+    func test_typingAttributesFromDocument_blockquoteParagraphLeaf_returnsBlockquoteChrome() {
+        let quoteID = UUID()
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: quoteID, kind: .blockquote(children: [
+                Block(id: leafID, kind: .paragraph(inline: []))
+            ]))
+        ])
+        let selection = BlockTreeSelection(path: [quoteID, leafID], startUTF16: 0, endUTF16: 0)
+        let attrs = TextKitEditorView.typingAttributesFromDocument(
+            document: doc,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        XCTAssertEqual(attrs?[.blockChrome] as? Int, BlockChrome.blockquoteParagraph.rawValue)
+        XCTAssertNotNil(attrs?[.groupID] as? UUID)
+    }
+
+    func test_typingAttributesFromDocument_topLevelHeading_returnsHeadingChrome() {
+        // Top-level leaves use their OWN kind's chrome — no
+        // container to override.
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: leafID, kind: .heading(level: 2, inline: []))
+        ])
+        let selection = BlockTreeSelection(path: [leafID], startUTF16: 0, endUTF16: 0)
+        let attrs = TextKitEditorView.typingAttributesFromDocument(
+            document: doc,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+        XCTAssertEqual(attrs?[.blockChrome] as? Int, BlockChrome.heading2.rawValue)
+        XCTAssertNil(attrs?[.groupID] as? UUID,
+                     "Top-level leaves don't need a groupID — they're not part of a grouped container")
+    }
+
+    func test_typingAttributesFromDocument_unresolvablePath_returnsNil() {
+        let doc = RichTextDocument(blocks: [
+            Block(id: UUID(), kind: .paragraph(inline: []))
+        ])
+        let selection = BlockTreeSelection(path: [UUID()], startUTF16: 0, endUTF16: 0)
+        XCTAssertNil(TextKitEditorView.typingAttributesFromDocument(
+            document: doc,
+            selection: selection,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        ))
+    }
+
     func test_shouldExitList_emptySelectionPath_isFalse() {
         // Stale selection where path didn't resolve — no list to
         // exit. Defends against the editor firing the command
