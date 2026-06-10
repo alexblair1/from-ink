@@ -790,6 +790,8 @@ The block model **localizes conflicts**. Pre-block-model, the single `drawingDat
 
 LWW per block is the v1 strategy. CRDT is an open question (§23).
 
+> **2026-06-10 caveat.** Per-block LWW localizes conflicts for the *blocks*, but two write patterns in the current `NotebookClient` undermine it: the denormalized `NotePage.extractedText` / `extractedTextHash` aggregates (one field on one record — LWW keeps one device's aggregate, reflecting neither merged state) and gapless `sortIndex` reindexing (one insert dirties every subsequent block's record). Both are release gates for the CloudKit flip — see the **Phase 3 pre-flip checklist** in `data_model_edd.md` §9 for the fixes (local-only derived aggregates; fractional ordering).
+
 ### 8.3 Schema deployment checklist (future, when CloudKit is enabled)
 
 Per `CLAUDE.md` "CRITICAL pre-launch action" — applies once CloudKit is promoted:
@@ -805,7 +807,7 @@ The block model adds one record type (`CD_PageBlock`) and modifies one (`CD_Note
 
 `@Attribute(.externalStorage)` auto-promotes Data fields to CKAsset on sync. When a block is deleted, the cascade rule on `NotePage.blocks` deletes the `PageBlock` rows; SwiftData handles the asset garbage collection.
 
-A device opening a page lazily downloads only the assets for blocks scrolled into view (CKAsset lazy fetch is automatic when the field is accessed). The block snapshot path keeps assets out of memory for blocks that aren't being edited.
+**Asset download is eager, not lazy (corrected 2026-06-10).** An earlier revision of this section claimed assets lazy-fetch when the field is accessed. That is wrong: `NSPersistentCloudKitContainer` (which SwiftData wraps) downloads CKAssets **at sync-import time**. What `.externalStorage` actually provides is lazy faulting *from local disk* — the blob stays out of the row and out of memory until the field is read — not deferred *network* fetch. Consequences: a fresh device signing into a full library downloads every voice memo and ink drawing up front; first-run UX must not assume on-demand asset fetch; and clearing `audioData` post-transcription (which `VoiceSnapshot.audioData: Data?` already supports) is the real lever for keeping sync payloads bounded. The block snapshot path still keeps assets out of *memory* for blocks that aren't being edited — that part is unchanged.
 
 ---
 
@@ -1454,9 +1456,11 @@ The implementation cascades across three undo managers, in priority order:
 
 | Layer | Owned by | Undoes |
 |---|---|---|
-| Active text block | `UITextView.undoManager` (TextKit 2 native) | Text inserts/deletes, format toggles, list operations within the active block |
+| Active text block | `UITextView.undoManager` (TextKit native) | Text inserts/deletes, format toggles, list operations within the active block |
 | Active ink block | `PKCanvasView.undoManager` (PencilKit native) | Stroke add/remove/erase within the active block |
 | Page-level | `NotePageFeature` logical undo stack | Block insert/delete/reorder, drag-bar height changes, region anchor changes, highlight applies |
+
+> **Dependency (2026-06-10).** The native-undo layer only works if document↔editor sync never wholesale-replaces `textView.attributedText` during normal editing — replacement destroys the native stack. This is one of the load-bearing reasons for the imperative text boundary (§22.4.1): commands apply as incremental text-storage edits, which register undo natively.
 
 **Cascade rule on `⌘Z`:**
 
@@ -1962,9 +1966,28 @@ The pivot. Each commit isolates one concern so review can confirm one thing at a
 7. **NoteRegion text-range anchor migration** — drop `RegionAnchorAttribute` and the corresponding `AttributeScopes.FromInkAttributes`. Update `NoteRegion` schema with `anchorBlockPath`, `anchorStartOffset`, `anchorEndOffset`. Reducer step keeps anchors in sync on every document mutation.
 8. **Delete the PoC** — `SlashEditorPoC.swift` and the temporary home-screen button overlay. Reducer is the truth now.
 
+### 22.4.1 Addendum — the imperative text boundary (2026-06-10)
+
+Commits 4–8 shipped with a **bidirectional per-keystroke sync**: every keystroke ran a full-document `parseBack` + a full-document re-flatten (whose `NSAttributedString` was discarded — only the selection maps were kept), pushed the document through the binding into the reducer, and every reducer-driven structural edit (Enter, exit-list, every format command) re-flattened and **wholesale-replaced** `textView.attributedText`. The named fixes accumulated across the branch (B1, B3, B7, C1–C3, L1, M2, S2–S4) were all patches on invariants of that seam. The seam does not converge: character edits flowed textview-first (parse-back infers the document), structural edits flowed document-first (flatten pushes down) — two writers in opposite directions, reconciled by inference.
+
+Wholesale replacement also broke three things this EDD elsewhere depends on:
+- **§17.5 undo** assumes `UITextView.undoManager` native undo for in-block edits. Replacing `attributedText` destroys the native undo stack on every Enter and every format command.
+- **IME / marked text**: replacement mid-composition breaks CJK input, dictation, and Scribble — the latter is load-bearing for the Pencil story.
+- **Incremental layout**: every Enter forced a full TextKit re-layout of the document.
+
+**The revised rule mirrors the canvas boundary** (`CLAUDE.md` "Canvas + TCA boundary", view layer EDD §10): *TCA owns commands, configuration, and persistence; `NSTextStorage` owns live text imperatively.*
+
+- **Typing** stays in UIKit. `textViewDidChange` does no full-document work; the document syncs to the reducer **debounced** (idle), and immediately on **structural** change (paragraph count delta — Enter, paste-with-newlines, multi-paragraph delete).
+- **Commands** (inline format, block format, exit-list, paragraph split) are applied as **text-storage surgery** in the Coordinator — incremental edits that preserve native undo, marked text, and incremental layout. The reducer still receives the same actions for state + effects (persist, palette); the *application* moves to the imperative side — exactly like `PaperMarkupViewController` owning strokes while TCA gets `.strokeCompleted`.
+- **Parse-back is no longer inference.** All structural mutations assign fresh `blockID`s in the storage at edit time, so parse-back reads authoritative IDs instead of heuristically deduping collisions.
+- **Selection bridging** reads `.blockID` at the caret (paragraph-local scan) + a cached leaf-id→path index rebuilt only on structural sync — no per-keystroke flatten-map rebuild.
+- **Slash filter** is computed Coordinator-side from the storage text after the pinned trigger location, emitted as a lightweight event — the palette no longer needs a per-keystroke document mirror.
+
+The persisted model (`RichTextDocument`), the reducer's persistence/palette contracts, `BlockDecoratingLayoutManager`, and the test suite all survive; only the sync *flow* changes. NoteRegion text anchors (Phase 6 / §11) get *stronger* under this rule: block IDs are assigned at edit time, not recovered by inference.
+
 ### 22.5 Phase 3 (continued) — text editing chrome
 
-9. **Caret-anchored slash popover** — replace fixed-corner positioning with `UIPopoverPresentationController` anchored at the editor's caret rect on iPad regular / Mac.
+9. **Caret-anchored slash popover** — replace fixed-corner positioning with `UIPopoverPresentationController` anchored at the editor's caret rect on iPad regular / Mac. **SHIPPED — with a known coupling (2026-06-10):** the scroll-tracking machinery (`pinnedSlashLocation`, `scrollViewDidScroll` rect republish) assumes the editor's `UITextView` owns scrolling (`isScrollEnabled = true`). Phase 5's `PageBlockStackView` moves scroll ownership to the stack container, which invalidates this subsystem — budget a rework of the anchor-tracking path (likely: observe the stack's scroll view instead) as part of commit 23.
 10. **`TextAccessoryBarView`** — iPhone + iPad compact soft-keyboard accessory bar with mode switching + Aa popover (§14.4).
 11. **`UIKeyCommand` set** — ⌘B/I/U/⇧⌘K/⌘⌥1-3/⌘⌥0/⌘⇧7-9/⌘⇧D/⌘⇧/ wired to the same reducer actions as the slash menu.
 12. **`NSMenu` set** on Mac (parallel to UIKeyCommand).
@@ -2063,3 +2086,7 @@ The pivot. Each commit isolates one concern so review can confirm one thing at a
 | 2026-06-08 | `SpeechService` targets `SpeechAnalyzer` + `SpeechTranscriber` (iOS 26); `SFSpeechRecognizer` is the fallback only for unsupported locales. | The new framework is materially better for long-form transcripts (~2× faster, higher quality), which is the load-bearing voice-memo UX. |
 | 2026-06-08 | Multimodal Foundation Models (iOS 27, image input) parked as an open question for v1.1 OCR pipeline replacement; v1 ships the existing two-stage pipeline unchanged. | We target iOS 26 for v1; multimodal is a pure optimization, not a v1 dependency. |
 | 2026-06-08 | No Liquid Glass anywhere in the app — opaque paper-and-ink chrome only. | Brand decision; preserves the editorial aesthetic. See user memory `feedback_no_liquid_glass.md`. |
+| 2026-06-09 | TextKit 1 hand-built stack (`NSTextStorage` → `BlockDecoratingLayoutManager` → `NSTextContainer` → `UITextView(frame:textContainer:)`) replaces SwiftUI `TextEditor` / TextKit 2 as the editor engine. | Manual verification: neither `TextEditor` nor TextKit 2 `UITextView` paints block-level structure; `drawBackground(forGlyphRange:)` only fires under TextKit 1. (TextKit 2's `NSTextLayoutFragment.draw(at:in:)` via the layout-manager delegate is the documented modern alternative — known and deliberately not chosen for v1.) Supersedes the 2026-06-08 `TextEditor` decision. |
+| 2026-06-10 | **Imperative text boundary** — TCA owns commands, configuration, and persistence; `NSTextStorage` owns live text. No per-keystroke parse-back/flatten; commands apply as incremental storage surgery; document syncs debounced (typing) or immediately (structural change). | Mirrors the canvas boundary. The bidirectional per-keystroke sync was the root cause of the B*/C*/L*/M*/S* fix series, broke native undo (§17.5 dependency), and risked IME/Scribble breakage. See §22.4.1. |
+| 2026-06-10 | `PageBlock.bodyData` storage representation (inline vs `.externalStorage`) is decided jointly with block granularity, before the CloudKit Development schema exists. | The inline decision assumed 200B–2KB paragraphs-per-block; the current editor stores a whole page's document in one block, which can approach CloudKit's 1 MB record limit. See data_model_edd §9 pre-flip checklist item 1. |
+| 2026-06-10 | `NotePage.extractedText` / `extractedTextHash` are local derived caches, not sync-authoritative fields; recompute on remote-change import. | Per-record LWW on a denormalized aggregate yields an aggregate reflecting neither device's merged block state. See data_model_edd §9 pre-flip checklist item 2. |
