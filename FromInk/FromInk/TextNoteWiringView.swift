@@ -25,6 +25,13 @@ struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
 
+    // TEMPORARY — counts how many times the editor's onSlashTyped
+    // callback actually reaches this view. If this stays 0 after
+    // typing "/", the editor's detection / dispatch path is broken
+    // (shouldChangeTextIn → async → onSlashTyped). If it increments
+    // but isOpen stays false, the reducer chain is broken.
+    @State private var slashTypedCount: Int = 0
+
     private let ds = DesignSystem.standard
 
     var body: some View {
@@ -61,6 +68,9 @@ struct TextNoteWiringView: View {
                 Text("matched=\(matchedCount)  trigger=\(triggerOffset)")
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.white)
+                Text("slashTyped fires=\(slashTypedCount)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(slashTypedCount > 0 ? Color.green : Color.yellow)
             }
             .padding(6)
             .background(Color.black.opacity(0.7))
@@ -90,6 +100,7 @@ struct TextNoteWiringView: View {
                 store.send(.textEditing(.selectionChanged(selection)))
             },
             onSlashTyped: { path, offset in
+                slashTypedCount += 1
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
             },
             onEditorCommand: { command in
