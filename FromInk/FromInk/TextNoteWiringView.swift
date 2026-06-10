@@ -29,6 +29,8 @@ struct TextNoteWiringView: View {
 
     var body: some View {
         let paletteOpen = store.textEditing.slashPalette.isOpen
+        let matchedCount = store.textEditing.slashPalette.matchedCommands.count
+        let triggerOffset = store.textEditing.slashPalette.triggerOffset ?? -1
         return ZStack {
             Color.canvas.ignoresSafeArea()
 
@@ -48,6 +50,24 @@ struct TextNoteWiringView: View {
                 .accessibilityHidden(paletteOpen)
 
             slashPaletteOverlay
+
+            // TEMPORARY DEBUG — pinned to top-leading so we can see
+            // palette state regardless of where the popover renders.
+            // Remove once the slash menu is verified working.
+            VStack(alignment: .leading, spacing: 2) {
+                Text("DEBUG  isOpen=\(paletteOpen.description)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(paletteOpen ? Color.green : Color.red)
+                Text("matched=\(matchedCount)  trigger=\(triggerOffset)")
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.white)
+            }
+            .padding(6)
+            .background(Color.black.opacity(0.7))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.top, 40)
+            .padding(.leading, 8)
+            .allowsHitTesting(false)
         }
         .task { store.send(.onAppear) }
         .onDisappear {
