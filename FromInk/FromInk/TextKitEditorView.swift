@@ -56,6 +56,11 @@ struct TextKitEditorView: UIViewRepresentable {
     @Binding var document: RichTextDocument
     @Binding var selection: BlockTreeSelection
     let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+    /// Routed from the custom UITextView subclass's `keyCommands` to
+    /// the wiring view, which maps each `EditorCommand` onto a TCA
+    /// action. The editor view stays feature-agnostic — it doesn't
+    /// know about `TextEditingFeature.Action` names.
+    let onCommand: (EditorCommand) -> Void
     let bodyFont: UIFont
     let bodyColor: UIColor
 
@@ -79,7 +84,7 @@ struct TextKitEditorView: UIViewRepresentable {
         container.widthTracksTextView = true
         layoutManager.addTextContainer(container)
 
-        let textView = UITextView(frame: .zero, textContainer: container)
+        let textView = BlockTreeTextView(frame: .zero, textContainer: container)
         textView.font = bodyFont
         textView.textColor = bodyColor
         textView.backgroundColor = .clear
@@ -90,6 +95,9 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.autocorrectionType = .default
         textView.spellCheckingType = .default
         textView.delegate = context.coordinator
+        textView.onEditorCommand = { [weak coordinator = context.coordinator] command in
+            coordinator?.parent.onCommand(command)
+        }
 
         context.coordinator.textView = textView
 
@@ -1030,6 +1038,95 @@ struct TextKitEditorView: UIViewRepresentable {
             parent.selection = bridged
         }
     }
+}
+
+// MARK: - EditorCommand
+
+/// Keyboard-invocable editor commands the wiring view maps onto
+/// `TextEditingFeature` actions. Lives on the editor's surface so
+/// the editor stays feature-agnostic — keyboard binding logic
+/// (which key produces which command) lives ENTIRELY inside the
+/// editor; routing each command to a reducer action lives in the
+/// wiring view.
+enum EditorCommand: Equatable, Sendable {
+    case toggleBold
+    case toggleItalic
+    case toggleUnderline
+    case toggleStrikethrough
+    case toggleCode
+    case applyHeading(level: Int)   // 1, 2, 3
+    case applyBody
+    case openSlashPalette
+}
+
+// MARK: - BlockTreeTextView (UITextView subclass with key commands)
+
+/// `UITextView` subclass that surfaces a fixed `keyCommands`
+/// vocabulary for inline and block formats. The matching shortcut
+/// table — ⌘B / ⌘I / ⌘U / ⌘⇧X / ⌘E for inline; ⌘⌥1/⌘⌥2/⌘⌥3/⌘⌥0
+/// for block; ⌘⇧/ for the slash palette — matches
+/// `text_experience_edd.md` §17.
+///
+/// **Why a subclass?** UITextView itself doesn't expose
+/// `inputAccessoryView`-friendly key commands above its own built-in
+/// editing shortcuts. Overriding `keyCommands` on a subclass is the
+/// supported path. The subclass routes each command via the
+/// `onEditorCommand` closure so the SwiftUI / TCA layer can dispatch
+/// without the subclass knowing anything about the feature.
+final class BlockTreeTextView: UITextView {
+    /// Closure the editor wiring sets to route each command. Nil
+    /// during initial layout / dealloc — the action methods below
+    /// guard for that.
+    var onEditorCommand: ((EditorCommand) -> Void)? = nil
+
+    override var keyCommands: [UIKeyCommand]? {
+        let inline: [UIKeyCommand] = [
+            UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
+            UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:))),
+            UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(formatUnderline(_:))),
+            UIKeyCommand(input: "x", modifierFlags: [.command, .shift], action: #selector(formatStrikethrough(_:))),
+            UIKeyCommand(input: "e", modifierFlags: .command, action: #selector(formatCode(_:))),
+        ]
+        let block: [UIKeyCommand] = [
+            UIKeyCommand(input: "1", modifierFlags: [.command, .alternate], action: #selector(applyHeading1(_:))),
+            UIKeyCommand(input: "2", modifierFlags: [.command, .alternate], action: #selector(applyHeading2(_:))),
+            UIKeyCommand(input: "3", modifierFlags: [.command, .alternate], action: #selector(applyHeading3(_:))),
+            UIKeyCommand(input: "0", modifierFlags: [.command, .alternate], action: #selector(applyBody(_:))),
+        ]
+        let palette: [UIKeyCommand] = [
+            UIKeyCommand(input: "/", modifierFlags: [.command, .shift], action: #selector(openSlashPalette(_:))),
+        ]
+        var commands = inline + block + palette
+        // Apply consistent discoverability metadata so the iPadOS
+        // hardware-keyboard hold-Cmd HUD groups them sanely.
+        for command in commands {
+            command.wantsPriorityOverSystemBehavior = true
+        }
+        if #available(iOS 17.0, *) {
+            commands[0].discoverabilityTitle = "Bold"
+            commands[1].discoverabilityTitle = "Italic"
+            commands[2].discoverabilityTitle = "Underline"
+            commands[3].discoverabilityTitle = "Strikethrough"
+            commands[4].discoverabilityTitle = "Code"
+            commands[5].discoverabilityTitle = "Heading 1"
+            commands[6].discoverabilityTitle = "Heading 2"
+            commands[7].discoverabilityTitle = "Heading 3"
+            commands[8].discoverabilityTitle = "Body"
+            commands[9].discoverabilityTitle = "Slash Menu"
+        }
+        return commands
+    }
+
+    @objc private func formatBold(_ sender: Any?) { onEditorCommand?(.toggleBold) }
+    @objc private func formatItalic(_ sender: Any?) { onEditorCommand?(.toggleItalic) }
+    @objc private func formatUnderline(_ sender: Any?) { onEditorCommand?(.toggleUnderline) }
+    @objc private func formatStrikethrough(_ sender: Any?) { onEditorCommand?(.toggleStrikethrough) }
+    @objc private func formatCode(_ sender: Any?) { onEditorCommand?(.toggleCode) }
+    @objc private func applyHeading1(_ sender: Any?) { onEditorCommand?(.applyHeading(level: 1)) }
+    @objc private func applyHeading2(_ sender: Any?) { onEditorCommand?(.applyHeading(level: 2)) }
+    @objc private func applyHeading3(_ sender: Any?) { onEditorCommand?(.applyHeading(level: 3)) }
+    @objc private func applyBody(_ sender: Any?) { onEditorCommand?(.applyBody) }
+    @objc private func openSlashPalette(_ sender: Any?) { onEditorCommand?(.openSlashPalette) }
 }
 
 // MARK: - BlockChrome — paragraph-level discriminator

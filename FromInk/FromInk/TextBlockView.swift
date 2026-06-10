@@ -70,6 +70,9 @@ struct TextBlockView: View {
                 onSlashTyped: { path, offset in
                     model.onSlashTyped(path, offset)
                 },
+                onCommand: { command in
+                    model.onEditorCommand(command)
+                },
                 bodyFont: Self.serifBodyFont(),
                 bodyColor: UIColor(model.bodyColor)
             )
@@ -202,6 +205,7 @@ extension TextBlockView {
         let onDocumentEdited: (RichTextDocument) -> Void
         let onSelectionChanged: (BlockTreeSelection) -> Void
         let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+        let onEditorCommand: (EditorCommand) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
 
@@ -240,6 +244,7 @@ extension TextBlockView.Model {
         onDocumentEdited: @escaping (RichTextDocument) -> Void = { _ in },
         onSelectionChanged: @escaping (BlockTreeSelection) -> Void = { _ in },
         onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void = { _, _ in },
+        onEditorCommand: @escaping (EditorCommand) -> Void = { _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
         ds: DesignSystem = .standard
@@ -259,6 +264,7 @@ extension TextBlockView.Model {
         self.onDocumentEdited = onDocumentEdited
         self.onSelectionChanged = onSelectionChanged
         self.onSlashTyped = onSlashTyped
+        self.onEditorCommand = onEditorCommand
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
         self.bodyFont = .system(.body, design: .serif)

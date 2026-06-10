@@ -422,6 +422,72 @@ final class TextKitEditorViewTests: XCTestCase {
 
     // MARK: - S2 — nsRange clamps stale-offset overruns
 
+    // MARK: - Keyboard shortcuts — UIKeyCommand vocabulary
+
+    func test_blockTreeTextView_exposesInlineFormatShortcuts() {
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "b" && cmd.modifierFlags == .command
+        }, "⌘B should appear in keyCommands")
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "i" && cmd.modifierFlags == .command
+        }, "⌘I should appear in keyCommands")
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "u" && cmd.modifierFlags == .command
+        }, "⌘U should appear in keyCommands")
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "x" && cmd.modifierFlags == [.command, .shift]
+        }, "⌘⇧X should appear in keyCommands for strikethrough")
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "e" && cmd.modifierFlags == .command
+        }, "⌘E should appear in keyCommands for code")
+    }
+
+    func test_blockTreeTextView_exposesBlockFormatShortcuts() {
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        for digit in ["0", "1", "2", "3"] {
+            XCTAssertTrue(commands.contains { cmd in
+                cmd.input == digit && cmd.modifierFlags == [.command, .alternate]
+            }, "⌘⌥\(digit) should appear in keyCommands")
+        }
+    }
+
+    func test_blockTreeTextView_exposesSlashPaletteShortcut() {
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "/" && cmd.modifierFlags == [.command, .shift]
+        }, "⌘⇧/ should appear in keyCommands for slash palette")
+    }
+
+    func test_blockTreeTextView_onEditorCommand_firesForBold() {
+        let textView = BlockTreeTextView()
+        var receivedCommands: [EditorCommand] = []
+        textView.onEditorCommand = { receivedCommands.append($0) }
+        // Invoke the @objc selector directly (the keyCommands route
+        // through the same method); UIResponder routing is private.
+        textView.perform(NSSelectorFromString("formatBold:"), with: nil)
+        XCTAssertEqual(receivedCommands, [.toggleBold])
+    }
+
+    func test_blockTreeTextView_onEditorCommand_firesForHeadingLevels() {
+        let textView = BlockTreeTextView()
+        var receivedCommands: [EditorCommand] = []
+        textView.onEditorCommand = { receivedCommands.append($0) }
+        textView.perform(NSSelectorFromString("applyHeading1:"), with: nil)
+        textView.perform(NSSelectorFromString("applyHeading2:"), with: nil)
+        textView.perform(NSSelectorFromString("applyHeading3:"), with: nil)
+        textView.perform(NSSelectorFromString("applyBody:"), with: nil)
+        XCTAssertEqual(receivedCommands, [
+            .applyHeading(level: 1),
+            .applyHeading(level: 2),
+            .applyHeading(level: 3),
+            .applyBody
+        ])
+    }
+
     func test_nsRange_forSelection_outOfRangeOffsets_areClamped() {
         let id = UUID()
         let doc = RichTextDocument(blocks: [

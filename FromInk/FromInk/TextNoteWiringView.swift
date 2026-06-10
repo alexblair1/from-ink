@@ -72,6 +72,9 @@ struct TextNoteWiringView: View {
             onSlashTyped: { path, offset in
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
             },
+            onEditorCommand: { command in
+                Self.handle(command: command, store: store)
+            },
             onCreateRequested: {
                 // Tap on the empty-state placeholder asks the
                 // notebook feature to re-run the page-blocks load,
@@ -165,4 +168,39 @@ struct TextNoteWiringView: View {
             Spacer()
         }
     }
+
+    /// Map an editor-side `EditorCommand` onto the corresponding
+    /// reducer action. The editor stays feature-agnostic; this is
+    /// where the keyboard-shortcut → TCA action coupling lives.
+    ///
+    /// `.openSlashPalette` opens the palette at the current
+    /// selection's leaf path + offset. The selection's TCA state is
+    /// kept in sync by `textViewDidChangeSelection`, so reading it
+    /// here picks up the cursor's current position.
+    #if os(iOS) || os(visionOS)
+    private static func handle(command: EditorCommand, store: StoreOf<NotebookFeature>) {
+        switch command {
+        case .toggleBold:
+            store.send(.textEditing(.toggleInlineFormat(.bold)))
+        case .toggleItalic:
+            store.send(.textEditing(.toggleInlineFormat(.italic)))
+        case .toggleUnderline:
+            store.send(.textEditing(.toggleInlineFormat(.underline)))
+        case .toggleStrikethrough:
+            store.send(.textEditing(.toggleInlineFormat(.strikethrough)))
+        case .toggleCode:
+            store.send(.textEditing(.toggleInlineFormat(.code)))
+        case .applyHeading(let level):
+            store.send(.textEditing(.applyBlockFormat(.heading(level: level))))
+        case .applyBody:
+            store.send(.textEditing(.applyBlockFormat(.body)))
+        case .openSlashPalette:
+            let selection = store.textEditing.selection
+            store.send(.textEditing(.slashTyped(
+                blockPath: selection.path,
+                offsetUTF16: selection.startUTF16
+            )))
+        }
+    }
+    #endif
 }
