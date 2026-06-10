@@ -25,12 +25,9 @@ struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
 
-    // TEMPORARY — counts how many times the editor's onSlashTyped
-    // callback actually reaches this view. If this stays 0 after
-    // typing "/", the editor's detection / dispatch path is broken
-    // (shouldChangeTextIn → async → onSlashTyped). If it increments
-    // but isOpen stays false, the reducer chain is broken.
     @State private var slashTypedCount: Int = 0
+    @State private var documentEditedCount: Int = 0
+    @State private var selectionChangedCount: Int = 0
 
     private let ds = DesignSystem.standard
 
@@ -68,6 +65,9 @@ struct TextNoteWiringView: View {
                 Text("matched=\(matchedCount)  trigger=\(triggerOffset)")
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.white)
+                Text("documentEdited=\(documentEditedCount)  selectionChanged=\(selectionChangedCount)")
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.white)
                 Text("slashTyped fires=\(slashTypedCount)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(slashTypedCount > 0 ? Color.green : Color.yellow)
@@ -94,9 +94,11 @@ struct TextNoteWiringView: View {
             persistFailureTitle: store.textEditing.lastPersistFailureReason
                 .map { _ in AppStrings.TextEditing.persistFailedBannerTitle },
             onDocumentEdited: { document in
+                documentEditedCount += 1
                 store.send(.textEditing(.documentEdited(document)))
             },
             onSelectionChanged: { selection in
+                selectionChangedCount += 1
                 store.send(.textEditing(.selectionChanged(selection)))
             },
             onSlashTyped: { path, offset in
