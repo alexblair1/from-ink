@@ -25,15 +25,6 @@ struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
 
-    /// Latest caret rect reported by the editor — in **screen
-    /// coordinates** so the popover positioning is robust to wherever
-    /// the editor sits in the SwiftUI hierarchy. Updated on every
-    /// `onSlashTyped` (`/` typed at a word boundary) and on every
-    /// `.openSlashPalette` keyboard-shortcut command. The popover
-    /// translates back to its local space via a `GeometryReader`
-    /// reading its own `.frame(in: .global)`.
-    @State private var slashCaretRectScreen: CGRect = .zero
-
     private let ds = DesignSystem.standard
 
     var body: some View {
@@ -78,14 +69,10 @@ struct TextNoteWiringView: View {
             onSelectionChanged: { selection in
                 store.send(.textEditing(.selectionChanged(selection)))
             },
-            onSlashTyped: { path, offset, caretRect in
-                slashCaretRectScreen = caretRect
+            onSlashTyped: { path, offset in
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
             },
             onEditorCommand: { command in
-                if case let .openSlashPalette(rect) = command {
-                    slashCaretRectScreen = rect
-                }
                 Self.handle(command: command, store: store)
             },
             onCreateRequested: {
@@ -104,15 +91,11 @@ struct TextNoteWiringView: View {
         ))
     }
 
-    /// Slash command palette overlay. Anchored to the caret rect
-    /// captured at trigger time — see `slashCaretRectScreen`. A
-    /// `GeometryReader` translates screen coords (UIView.convert
-    /// result from the editor) into this overlay's local space, then
-    /// the popover sits just below the caret at the caret's leading
-    /// edge. If the caret rect is empty / off-screen (initial state,
-    /// off-screen during programmatic edits), the popover falls back
-    /// to a small inset from the overlay's top-leading corner so it
-    /// remains visible.
+    /// Slash command palette overlay. Renders as a floating popover
+    /// near the editor's top-leading edge when `slashPalette.isOpen`
+    /// is true. Caret-anchored positioning is a polish follow-up;
+    /// for v1 the popover sits in a consistent corner of the
+    /// content frame so the user always finds it in the same place.
     @ViewBuilder
     private var slashPaletteOverlay: some View {
         if store.textEditing.slashPalette.isOpen {
@@ -142,34 +125,21 @@ struct TextNoteWiringView: View {
                 )
             }
 
-        let popover = SlashMenuPopoverView(model: .init(
-            rows: rows,
-            filterText: store.textEditing.slashPalette.filterText
-        ))
-
-        // Caret-anchored positioning via overlay alignment + padding.
-        // The padding values are derived from the screen-coord caret
-        // rect — the wiring view's outer ZStack is full-screen, so
-        // `caretRect.minX`/`caretRect.maxY` map roughly to padding
-        // values into the popover overlay. The `max(...)` floors
-        // keep the popover visible during the initial frame when
-        // `slashCaretRectScreen` is still `.zero`.
-        let caretRect = slashCaretRectScreen
-        let leadingPadding = max(ds.spacing.lg + ds.spacing.md, caretRect.minX)
-        let topPadding = max(ds.spacing.xxl, caretRect.maxY + 6)
-
-        return ZStack(alignment: .topLeading) {
-            // Transparent tap-dismiss surface covers everything
-            // EXCEPT the popover itself (which is rendered on top
-            // and absorbs its own taps).
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    store.send(.textEditing(.slashPalette(.dismissed)))
-                }
-            popover
-                .padding(.top, topPadding)
-                .padding(.leading, leadingPadding)
+        return VStack {
+            HStack {
+                SlashMenuPopoverView(model: .init(
+                    rows: rows,
+                    filterText: store.textEditing.slashPalette.filterText
+                ))
+                .padding(.top, ds.spacing.xxl)
+                .padding(.leading, ds.spacing.lg + ds.spacing.md)
+                Spacer()
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.send(.textEditing(.slashPalette(.dismissed)))
         }
     }
 
@@ -240,8 +210,6 @@ struct TextNoteWiringView: View {
         case .applyNumberedList:
             store.send(.textEditing(.applyBlockFormat(.numberedList)))
         case .openSlashPalette:
-            // The caret rect is read by the view-layer @State in the
-            // body closure; here we only dispatch the reducer action.
             let selection = store.textEditing.selection
             // Empty selection — fall back to the document's last leaf
             // so the palette opens with a usable trigger location.

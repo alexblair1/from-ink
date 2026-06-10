@@ -538,29 +538,6 @@ final class TextKitEditorViewTests: XCTestCase {
         ])
     }
 
-    func test_openSlashPaletteShortcut_carriesCaretRect() {
-        // ⌘⇧/ path: BlockTreeTextView's @objc method captures the
-        // caret rect at the current selection in screen coords and
-        // ships it through the EditorCommand enum.
-        let textView = BlockTreeTextView()
-        textView.frame = CGRect(x: 0, y: 0, width: 320, height: 200)
-        textView.text = "Hello"
-        var receivedCommands: [EditorCommand] = []
-        textView.onEditorCommand = { receivedCommands.append($0) }
-
-        textView.perform(#selector(BlockTreeTextView.openSlashPalette(_:)), with: nil)
-        XCTAssertEqual(receivedCommands.count, 1)
-        guard case let .openSlashPalette(rect) = receivedCommands.first else {
-            XCTFail("Expected .openSlashPalette with caret rect")
-            return
-        }
-        // Without a window the convert(to: nil) result still returns
-        // a valid rect (text view's own coords). We assert structure
-        // rather than exact coordinates.
-        XCTAssertGreaterThanOrEqual(rect.width, 0)
-        XCTAssertGreaterThanOrEqual(rect.height, 0)
-    }
-
     func test_blockTreeTextView_onEditorCommand_firesForListShortcuts() {
         let textView = BlockTreeTextView()
         var receivedCommands: [EditorCommand] = []
