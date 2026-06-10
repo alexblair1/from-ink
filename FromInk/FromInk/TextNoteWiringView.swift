@@ -173,11 +173,22 @@ struct TextNoteWiringView: View {
     /// reducer action. The editor stays feature-agnostic; this is
     /// where the keyboard-shortcut → TCA action coupling lives.
     ///
-    /// `.openSlashPalette` opens the palette at the current
-    /// selection's leaf path + offset. The selection's TCA state is
-    /// kept in sync by `textViewDidChangeSelection`, so reading it
-    /// here picks up the cursor's current position.
-    #if os(iOS) || os(visionOS)
+    /// **Selection sync invariant.** `.openSlashPalette` reads
+    /// `store.textEditing.selection` to decide WHERE to open the
+    /// palette. That state is kept fresh by
+    /// `TextKitEditorView.Coordinator.textViewDidChangeSelection`,
+    /// which fires on every cursor move BEFORE any key-command
+    /// handler runs (UIKit dispatches selection-change delegates
+    /// synchronously during typing). If you ever change the selection-
+    /// sync pattern (batching, debouncing, etc.), audit this method
+    /// — a stale selection would target the wrong leaf.
+    ///
+    /// **Empty-selection fallback (M2).** When `selection.path` is
+    /// empty (no cursor placed yet, e.g. brand-new document), the
+    /// palette would otherwise open with an empty path then dismiss
+    /// on the first edit via the refresh effect. Fall back to the
+    /// document's last leaf — same fallback `applyBlockFormat`
+    /// already uses for unset selections.
     private static func handle(command: EditorCommand, store: StoreOf<NotebookFeature>) {
         switch command {
         case .toggleBold:
@@ -194,13 +205,27 @@ struct TextNoteWiringView: View {
             store.send(.textEditing(.applyBlockFormat(.heading(level: level))))
         case .applyBody:
             store.send(.textEditing(.applyBlockFormat(.body)))
+        case .applyBulletedList:
+            store.send(.textEditing(.applyBlockFormat(.bulletedList)))
+        case .applyNumberedList:
+            store.send(.textEditing(.applyBlockFormat(.numberedList)))
         case .openSlashPalette:
             let selection = store.textEditing.selection
-            store.send(.textEditing(.slashTyped(
-                blockPath: selection.path,
-                offsetUTF16: selection.startUTF16
-            )))
+            // Empty selection — fall back to the document's last leaf
+            // so the palette opens with a usable trigger location.
+            let path: [UUID]
+            let offset: Int
+            if !selection.path.isEmpty {
+                path = selection.path
+                offset = selection.startUTF16
+            } else if let lastLeaf = store.textEditing.document.lastLeafBlock {
+                path = [lastLeaf.id]
+                offset = lastLeaf.joinedInlineText?.utf16.count ?? 0
+            } else {
+                // Empty document — no leaf to anchor to; no-op.
+                return
+            }
+            store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
         }
     }
-    #endif
 }

@@ -454,6 +454,18 @@ final class TextKitEditorViewTests: XCTestCase {
         }
     }
 
+    func test_blockTreeTextView_exposesListShortcuts() {
+        // S2: ⌘⇧7 numbered list, ⌘⇧8 bulleted list.
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "7" && cmd.modifierFlags == [.command, .shift]
+        }, "⌘⇧7 should appear in keyCommands for numbered list")
+        XCTAssertTrue(commands.contains { cmd in
+            cmd.input == "8" && cmd.modifierFlags == [.command, .shift]
+        }, "⌘⇧8 should appear in keyCommands for bulleted list")
+    }
+
     func test_blockTreeTextView_exposesSlashPaletteShortcut() {
         let textView = BlockTreeTextView()
         let commands = textView.keyCommands ?? []
@@ -462,13 +474,51 @@ final class TextKitEditorViewTests: XCTestCase {
         }, "⌘⇧/ should appear in keyCommands for slash palette")
     }
 
+    func test_blockTreeTextView_keyCommands_allWantPriorityOverSystemBehavior() {
+        // Regression: every shortcut must trump UITextView's defaults
+        // — otherwise ⌘B/I/U fall through to its built-in rich-text
+        // path which doesn't use our reducer actions.
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        XCTAssertFalse(commands.isEmpty, "keyCommands must not be empty")
+        for command in commands {
+            XCTAssertTrue(
+                command.wantsPriorityOverSystemBehavior,
+                "Every command must set wantsPriorityOverSystemBehavior (got false on \(command.input ?? "?"))"
+            )
+        }
+    }
+
+    func test_blockTreeTextView_keyCommands_allHaveDiscoverabilityTitles() {
+        // Hold-⌘ HUD on iPad with hardware keyboard reads these.
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        for command in commands {
+            XCTAssertFalse(
+                (command.discoverabilityTitle ?? "").isEmpty,
+                "Every command must set a discoverabilityTitle (got empty on \(command.input ?? "?"))"
+            )
+        }
+    }
+
+    func test_blockTreeTextView_keyCommands_areCached_returnsIdenticalArrayBetweenCalls() {
+        // M1: caching avoids per-call allocation of 12 UIKeyCommand
+        // instances. Identity check confirms the same array is
+        // returned, not a fresh copy each time.
+        let textView = BlockTreeTextView()
+        let first = textView.keyCommands ?? []
+        let second = textView.keyCommands ?? []
+        XCTAssertEqual(first.count, second.count)
+        for (a, b) in zip(first, second) {
+            XCTAssertTrue(a === b, "Cached keyCommands should return identical UIKeyCommand instances")
+        }
+    }
+
     func test_blockTreeTextView_onEditorCommand_firesForBold() {
         let textView = BlockTreeTextView()
         var receivedCommands: [EditorCommand] = []
         textView.onEditorCommand = { receivedCommands.append($0) }
-        // Invoke the @objc selector directly (the keyCommands route
-        // through the same method); UIResponder routing is private.
-        textView.perform(NSSelectorFromString("formatBold:"), with: nil)
+        textView.perform(#selector(BlockTreeTextView.formatBold(_:)), with: nil)
         XCTAssertEqual(receivedCommands, [.toggleBold])
     }
 
@@ -476,16 +526,25 @@ final class TextKitEditorViewTests: XCTestCase {
         let textView = BlockTreeTextView()
         var receivedCommands: [EditorCommand] = []
         textView.onEditorCommand = { receivedCommands.append($0) }
-        textView.perform(NSSelectorFromString("applyHeading1:"), with: nil)
-        textView.perform(NSSelectorFromString("applyHeading2:"), with: nil)
-        textView.perform(NSSelectorFromString("applyHeading3:"), with: nil)
-        textView.perform(NSSelectorFromString("applyBody:"), with: nil)
+        textView.perform(#selector(BlockTreeTextView.applyHeading1(_:)), with: nil)
+        textView.perform(#selector(BlockTreeTextView.applyHeading2(_:)), with: nil)
+        textView.perform(#selector(BlockTreeTextView.applyHeading3(_:)), with: nil)
+        textView.perform(#selector(BlockTreeTextView.applyBodyParagraph(_:)), with: nil)
         XCTAssertEqual(receivedCommands, [
             .applyHeading(level: 1),
             .applyHeading(level: 2),
             .applyHeading(level: 3),
             .applyBody
         ])
+    }
+
+    func test_blockTreeTextView_onEditorCommand_firesForListShortcuts() {
+        let textView = BlockTreeTextView()
+        var receivedCommands: [EditorCommand] = []
+        textView.onEditorCommand = { receivedCommands.append($0) }
+        textView.perform(#selector(BlockTreeTextView.applyBulletedList(_:)), with: nil)
+        textView.perform(#selector(BlockTreeTextView.applyNumberedList(_:)), with: nil)
+        XCTAssertEqual(receivedCommands, [.applyBulletedList, .applyNumberedList])
     }
 
     func test_nsRange_forSelection_outOfRangeOffsets_areClamped() {
