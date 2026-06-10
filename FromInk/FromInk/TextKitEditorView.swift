@@ -55,12 +55,29 @@ import UIKit
 struct TextKitEditorView: UIViewRepresentable {
     @Binding var document: RichTextDocument
     @Binding var selection: BlockTreeSelection
-    let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+    /// Fired when the user types a `/` at a paragraph boundary. The
+    /// `caretRect` is the rect of the `/` glyph in the editor
+    /// `UITextView`'s **viewport** coordinate space (post
+    /// `contentOffset` subtraction) — used by the wiring view as the
+    /// `.popover()` attachment anchor so the palette appears beside
+    /// the slash regardless of how far the document has scrolled.
+    let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRect: CGRect) -> Void
     /// Routed from the custom UITextView subclass's `keyCommands` to
     /// the wiring view, which maps each `EditorCommand` onto a TCA
     /// action. The editor view stays feature-agnostic — it doesn't
     /// know about `TextEditingFeature.Action` names.
     let onCommand: (EditorCommand) -> Void
+    /// Republishes the caret rect of the pinned slash position while
+    /// the palette is open and the user scrolls the editor. The
+    /// wiring view stores the rect in `@State` so the popover
+    /// anchor tracks the slash glyph through scroll. Only fires
+    /// while `isSlashPaletteOpen` is true.
+    let onCaretAnchorMoved: (CGRect) -> Void
+    /// True while the slash palette is presented. Tells the
+    /// `Coordinator` to clear its pinned slash location when the
+    /// palette closes (so scroll events stop emitting stale anchor
+    /// updates).
+    let isSlashPaletteOpen: Bool
     let bodyFont: UIFont
     let bodyColor: UIColor
 
@@ -96,7 +113,21 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.spellCheckingType = .default
         textView.delegate = context.coordinator
         textView.onEditorCommand = { [weak coordinator = context.coordinator] command in
-            coordinator?.parent.onCommand(command)
+            guard let coord = coordinator else { return }
+            // ⌘⇧/ opens the palette without going through
+            // `textViewDidChange` (no text was inserted), so the
+            // typed-slash pin path doesn't fire. Pin here from the
+            // current selection so scroll tracking works for
+            // keyboard-shortcut-opened palettes too.
+            if case .openSlashPalette = command,
+               let textView = coord.textView,
+               let start = textView.selectedTextRange?.start {
+                coord.pinnedSlashLocation = textView.offset(
+                    from: textView.beginningOfDocument,
+                    to: start
+                )
+            }
+            coord.parent.onCommand(command)
         }
 
         context.coordinator.textView = textView
@@ -169,6 +200,16 @@ struct TextKitEditorView: UIViewRepresentable {
             textView.selectedRange = nsRange
             context.coordinator.isApplyingBindingUpdate = false
         }
+
+        // Clear the slash anchor pin when the palette closes so
+        // subsequent scroll events don't republish stale rects to a
+        // dismissed popover. Setting the pin happens lazily in
+        // `textViewDidChange` / `onEditorCommand`; clearing happens
+        // here because the wiring view drives palette open/close
+        // through the binding.
+        if !isSlashPaletteOpen {
+            context.coordinator.pinnedSlashLocation = nil
+        }
     }
 
     /// Read the chrome / blockID / groupID at the cursor's position
@@ -194,6 +235,32 @@ struct TextKitEditorView: UIViewRepresentable {
             bodyFont: bodyFont,
             bodyColor: bodyColor
         )
+    }
+
+    // MARK: - Viewport-space caret rect
+
+    /// Return the caret rect at `offset` translated into the
+    /// `textView`'s **viewport** coordinate space — i.e. the rect
+    /// SwiftUI sees as the local space of the `UIViewRepresentable`.
+    ///
+    /// `UITextView.caretRect(for:)` returns the rect in the text
+    /// container's content space, which equals viewport space only
+    /// when `contentOffset == .zero`. The instant the user scrolls,
+    /// content y diverges from viewport y by `contentOffset.y`.
+    /// SwiftUI's `.popover(attachmentAnchor: .rect(...))` expects
+    /// viewport-space rects, so without this translation the
+    /// popover anchor drifts as soon as a note grows past one
+    /// viewport.
+    static func visibleCaretRect(
+        in textView: UITextView,
+        atOffset offset: Int
+    ) -> CGRect {
+        guard let position = textView.position(
+            from: textView.beginningOfDocument,
+            offset: offset
+        ) else { return .zero }
+        return textView.caretRect(for: position)
+            .offsetBy(dx: -textView.contentOffset.x, dy: -textView.contentOffset.y)
     }
 
     // MARK: - Flatten: RichTextDocument → NSAttributedString
@@ -1026,6 +1093,17 @@ struct TextKitEditorView: UIViewRepresentable {
         /// parse-back guarantees consistency.
         var pendingSlashLocation: Int? = nil
 
+        /// UTF-16 offset of the `/` that opened the currently-
+        /// presented palette. Set in `textViewDidChange` (typed `/`
+        /// path) and via the `onEditorCommand` interception in
+        /// `makeUIView` (⌘⇧/ keyboard shortcut path). Cleared in
+        /// `updateUIView` when `isSlashPaletteOpen` flips to false.
+        /// `scrollViewDidScroll` reads this to republish the rect
+        /// so the popover anchor tracks the slash glyph through
+        /// scroll without us having to observe scroll position
+        /// in the wiring view.
+        var pinnedSlashLocation: Int? = nil
+
         init(parent: TextKitEditorView) {
             self.parent = parent
             self.lastSyncedDocument = parent.document
@@ -1093,7 +1171,24 @@ struct TextKitEditorView: UIViewRepresentable {
                 flattenMap: reflatten.flattenMap
             )
             guard !bridged.path.isEmpty else { return }
-            parent.onSlashTyped(bridged.path, bridged.startUTF16)
+
+            // Caret rect at the SLASH position, not the current
+            // cursor (which has advanced by one after the insertion).
+            // This keeps the popover pinned to the slash glyph while
+            // the user types filter characters after it.
+            let caretRect = TextKitEditorView.visibleCaretRect(
+                in: textView,
+                atOffset: slashLocation
+            )
+
+            // Pin the location for scroll tracking — scroll events
+            // (see `scrollViewDidScroll`) republish a fresh rect so
+            // the popover follows the slash glyph as the user
+            // scrolls. Cleared in `updateUIView` when the palette
+            // closes.
+            self.pinnedSlashLocation = slashLocation
+
+            parent.onSlashTyped(bridged.path, bridged.startUTF16, caretRect)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
@@ -1103,6 +1198,26 @@ struct TextKitEditorView: UIViewRepresentable {
                 flattenMap: flattenMap
             )
             parent.selection = bridged
+        }
+
+        // MARK: - UIScrollViewDelegate
+
+        /// `UITextViewDelegate` inherits from `UIScrollViewDelegate`
+        /// — UIKit invokes this on every scroll tick (touch drag,
+        /// momentum, programmatic scroll-to-caret). While the
+        /// palette is open we republish the slash glyph's current
+        /// viewport rect so the popover anchor follows the slash
+        /// instead of drifting away as the textView scrolls. When
+        /// the palette closes, `pinnedSlashLocation` is nil and we
+        /// skip — no allocation overhead during ordinary scrolling.
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            guard let textView = self.textView,
+                  let location = pinnedSlashLocation else { return }
+            let rect = TextKitEditorView.visibleCaretRect(
+                in: textView,
+                atOffset: location
+            )
+            parent.onCaretAnchorMoved(rect)
         }
     }
 }
@@ -1186,7 +1301,27 @@ final class BlockTreeTextView: UITextView {
     @objc func applyBodyParagraph(_ sender: Any?) { onEditorCommand?(.applyBody) }
     @objc func applyBulletedList(_ sender: Any?) { onEditorCommand?(.applyBulletedList) }
     @objc func applyNumberedList(_ sender: Any?) { onEditorCommand?(.applyNumberedList) }
-    @objc func openSlashPalette(_ sender: Any?) { onEditorCommand?(.openSlashPalette) }
+    @objc func openSlashPalette(_ sender: Any?) {
+        // Capture the current caret rect so the wiring view can
+        // anchor the popover beside the cursor. Subtract
+        // `contentOffset` so the rect is in viewport space — the
+        // same convention `TextKitEditorView.visibleCaretRect` uses
+        // for the typed-slash path, so the wiring view treats both
+        // sources identically.
+        //
+        // The `.zero` fallback is defensive: `UIKeyCommand` only
+        // dispatches while this view is in the responder chain,
+        // which means `selectedTextRange` is non-nil in practice.
+        // Cheap insurance against a UIKit edge case.
+        let rect: CGRect
+        if let start = selectedTextRange?.start {
+            rect = caretRect(for: start)
+                .offsetBy(dx: -contentOffset.x, dy: -contentOffset.y)
+        } else {
+            rect = .zero
+        }
+        onEditorCommand?(.openSlashPalette(caretRectInEditor: rect))
+    }
 }
 
 // MARK: - BlockChrome — paragraph-level discriminator

@@ -67,12 +67,16 @@ struct TextBlockView: View {
                     get: { model.selection },
                     set: { model.onSelectionChanged($0) }
                 ),
-                onSlashTyped: { path, offset in
-                    model.onSlashTyped(path, offset)
+                onSlashTyped: { path, offset, rect in
+                    model.onSlashTyped(path, offset, rect)
                 },
                 onCommand: { command in
                     model.onEditorCommand(command)
                 },
+                onCaretAnchorMoved: { rect in
+                    model.slashPopover.onAnchorMoved(rect)
+                },
+                isSlashPaletteOpen: model.slashPopover.isOpen,
                 bodyFont: Self.serifBodyFont(),
                 bodyColor: UIColor(model.bodyColor)
             )
@@ -96,6 +100,7 @@ struct TextBlockView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityLabel(model.editorAccessibilityLabel)
         .accessibilityHint(model.accessibilityHint)
+        .modifier(SlashPopoverModifier(popover: model.slashPopover))
     }
 
     #if os(iOS) || os(visionOS)
@@ -177,6 +182,110 @@ struct TextBlockView: View {
     }
 }
 
+// MARK: - SlashPopover state
+
+extension TextBlockView {
+    /// Slash command palette popover surface. Clusters the five
+    /// fields the popover modifier reads so the Model stays flat
+    /// for view-level rendering but doesn't spray slash-specific
+    /// names across its top level. When a second popover type
+    /// lands (highlight color picker, selection menu), generalize
+    /// to an `EditorPopover` enum — `n=1` doesn't justify the
+    /// abstraction yet.
+    struct SlashPopover {
+        let isOpen: Bool
+        /// Caret rect in the editor `UITextView`'s viewport space
+        /// (post `contentOffset` subtraction). Matches SwiftUI's
+        /// `.popover(attachmentAnchor: .rect(...))` coordinate
+        /// convention so no translation happens at the modifier.
+        let anchorRect: CGRect
+        let rows: [SlashMenuPopoverView.Row]
+        let filterText: String
+        /// Republished by the editor's scroll observer while the
+        /// palette is open. The wiring view stores the rect in
+        /// `@State` so the popover follows the slash glyph through
+        /// scroll without us observing scroll from SwiftUI.
+        let onAnchorMoved: (CGRect) -> Void
+        let onDismissed: () -> Void
+
+        static let closed = SlashPopover(
+            isOpen: false,
+            anchorRect: .zero,
+            rows: [],
+            filterText: "",
+            onAnchorMoved: { _ in },
+            onDismissed: {}
+        )
+    }
+}
+
+// MARK: - Slash popover modifier
+
+/// Attaches a caret-anchored `.popover()` to the editor when the
+/// slash palette is open. SwiftUI's `.popover` wraps
+/// `UIPopoverPresentationController` natively — we get the system
+/// arrow, tap-outside dismissal, VoiceOver focus management, and
+/// safe-area-aware repositioning for free.
+///
+/// **Coordinate space.** `model.slashPopover.anchorRect` is in the
+/// editor `UITextView`'s viewport space, which equals this ZStack's
+/// local space (the ZStack contains only the editor + an absolutely
+/// positioned placeholder, with `maxWidth/maxHeight: .infinity`).
+/// `TextKitEditorView.visibleCaretRect` already subtracts
+/// `contentOffset` at capture time, and the editor's scroll
+/// observer republishes the rect on every scroll tick, so the
+/// modifier can use the rect directly without any further
+/// translation.
+///
+/// **`arrowEdge: .top`** — popover appears BELOW the caret (arrow
+/// points up at it). Follows the autocomplete convention (Notion,
+/// Slack, Xcode quick help): the user is typing forward and looks
+/// downward for suggestions. `UIPopoverPresentationController`
+/// auto-flips to above when there isn't enough room below, so the
+/// system handles the keyboard-overlap edge case for us.
+///
+/// **`presentationCompactAdaptation(.popover)`** — load-bearing.
+/// Without it, iOS renders this as a full-height sheet in compact
+/// horizontal size class (iPhone, iPad split view). A contextual
+/// command palette as a sheet is the wrong UX — it covers the
+/// document you're filtering against. Forcing `.popover` keeps the
+/// caret-anchored behavior consistent across iPhone, iPad, and Mac
+/// Catalyst.
+///
+/// **`presentationBackground(Color.clear)`** — drops the system
+/// popover's translucent material so `SlashMenuPopoverView`'s own
+/// paper background shows through. Without this the chrome
+/// double-stacks (system material under the palette's opaque
+/// paper) and the iPhone variant in particular reads as
+/// Liquid-Glass-adjacent — a direct violation of the paper-and-ink
+/// aesthetic the design system locks in. The system arrow still
+/// renders because `.presentationBackground` only affects the
+/// content container.
+private struct SlashPopoverModifier: ViewModifier {
+    let popover: TextBlockView.SlashPopover
+
+    func body(content: Content) -> some View {
+        content
+            .popover(
+                isPresented: Binding(
+                    get: { popover.isOpen },
+                    set: { newValue in
+                        if !newValue { popover.onDismissed() }
+                    }
+                ),
+                attachmentAnchor: .rect(.rect(popover.anchorRect)),
+                arrowEdge: .top
+            ) {
+                SlashMenuPopoverView(model: .init(
+                    rows: popover.rows,
+                    filterText: popover.filterText
+                ))
+                .presentationCompactAdaptation(.popover)
+                .presentationBackground(Color.clear)
+            }
+    }
+}
+
 // MARK: - Model
 
 extension TextBlockView {
@@ -204,10 +313,17 @@ extension TextBlockView {
         /// transitional placeholder doesn't call any of them.
         let onDocumentEdited: (RichTextDocument) -> Void
         let onSelectionChanged: (BlockTreeSelection) -> Void
-        let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void
+        let onSlashTyped: (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRectInEditor: CGRect) -> Void
         let onEditorCommand: (EditorCommand) -> Void
         let onCreateRequested: () -> Void
         let onRetryRequested: () -> Void
+
+        /// Slash command palette popover state. The wiring view
+        /// captures the caret rect when the slash trigger fires and
+        /// builds the row list from store state; the editor's
+        /// scroll observer republishes the rect via
+        /// `slashPopover.onAnchorMoved`.
+        let slashPopover: SlashPopover
 
         let bodyFont: Font
         let bodyColor: Color
@@ -243,10 +359,11 @@ extension TextBlockView.Model {
         persistFailureTitle: String? = nil,
         onDocumentEdited: @escaping (RichTextDocument) -> Void = { _ in },
         onSelectionChanged: @escaping (BlockTreeSelection) -> Void = { _ in },
-        onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int) -> Void = { _, _ in },
+        onSlashTyped: @escaping (_ blockPath: [UUID], _ offsetUTF16: Int, _ caretRectInEditor: CGRect) -> Void = { _, _, _ in },
         onEditorCommand: @escaping (EditorCommand) -> Void = { _ in },
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
+        slashPopover: TextBlockView.SlashPopover = .closed,
         ds: DesignSystem = .standard
     ) {
         self.isPresented = isPresented
@@ -267,6 +384,7 @@ extension TextBlockView.Model {
         self.onEditorCommand = onEditorCommand
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
+        self.slashPopover = slashPopover
         self.bodyFont = .system(.body, design: .serif)
         self.bodyColor = ds.colors.ink
         self.placeholderColor = ds.colors.ink3

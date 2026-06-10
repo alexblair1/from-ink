@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Keyboard-invocable editor commands. Maps to `TextEditingFeature`
@@ -31,5 +32,15 @@ enum EditorCommand: Equatable, Sendable {
     case applyBody
     case applyBulletedList
     case applyNumberedList
-    case openSlashPalette
+    /// Open the slash command palette. `caretRectInEditor` is the
+    /// caret rect at the moment the shortcut fires, expressed in the
+    /// editor `UITextView`'s local coordinate space (matches the
+    /// SwiftUI `TextKitEditorView` representable's bounds). The
+    /// wiring view stores this in `@State` and uses it as the
+    /// `.popover()` attachment anchor so the palette appears beside
+    /// the cursor instead of pinned to a corner. `.zero` is a valid
+    /// fallback when no caret is available (text view not first
+    /// responder) — the popover degrades to the attached view's
+    /// top-leading.
+    case openSlashPalette(caretRectInEditor: CGRect)
 }

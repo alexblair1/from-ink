@@ -21,15 +21,23 @@ import SwiftUI
 /// jank on iPad. Content width is capped at
 /// `textEditorMaxContentWidth` and centered so long-form reading on
 /// wide viewports stays comfortable.
+///
+/// **Slash popover anchoring.** The slash trigger fires with a
+/// caret rect from the editor's `UITextView` (in editor-local
+/// coordinates). We stash it in `@State` so the popover modifier on
+/// `TextBlockView` has a stable anchor while the palette stays
+/// open — the caret moves forward as the user types filter
+/// characters, but the popover stays pinned to the slash glyph.
 struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
 
+    @State private var slashPopoverAnchorRect: CGRect = .zero
+
     private let ds = DesignSystem.standard
 
     var body: some View {
-        let paletteOpen = store.textEditing.slashPalette.isOpen
-        return ZStack {
+        ZStack {
             Color.canvas.ignoresSafeArea()
 
             editorRegion
@@ -37,17 +45,8 @@ struct TextNoteWiringView: View {
                 .padding(.horizontal, ds.spacing.lg)
                 .padding(.vertical, ds.spacing.xl)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                // Hide editor from VoiceOver while the palette is
-                // open so the modal popover is the only focus
-                // target. allowsHitTesting alone doesn't block
-                // VoiceOver — both modifiers are required per
-                // `feedback_modal_accessibility.md`.
-                .accessibilityHidden(paletteOpen)
 
             dismissChrome
-                .accessibilityHidden(paletteOpen)
-
-            slashPaletteOverlay
         }
         .task { store.send(.onAppear) }
         .onDisappear {
@@ -69,11 +68,12 @@ struct TextNoteWiringView: View {
             onSelectionChanged: { selection in
                 store.send(.textEditing(.selectionChanged(selection)))
             },
-            onSlashTyped: { path, offset in
+            onSlashTyped: { path, offset, rect in
+                slashPopoverAnchorRect = rect
                 store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
             },
             onEditorCommand: { command in
-                Self.handle(command: command, store: store)
+                handle(command: command)
             },
             onCreateRequested: {
                 // Tap on the empty-state placeholder asks the
@@ -87,26 +87,32 @@ struct TextNoteWiringView: View {
                 // Decode-failed / orphan placeholder retry — same
                 // path as the empty-state tap: re-run the load.
                 store.send(.textBlocksReloadRequested)
-            }
+            },
+            slashPopover: TextBlockView.SlashPopover(
+                isOpen: store.textEditing.slashPalette.isOpen,
+                anchorRect: slashPopoverAnchorRect,
+                rows: paletteRows(),
+                filterText: store.textEditing.slashPalette.filterText,
+                onAnchorMoved: { rect in
+                    // Republished by the editor's scroll observer
+                    // while the palette is open — keeps the
+                    // popover anchored to the slash glyph as the
+                    // textView scrolls.
+                    slashPopoverAnchorRect = rect
+                },
+                onDismissed: {
+                    store.send(.textEditing(.slashPalette(.dismissed)))
+                }
+            )
         ))
     }
 
-    /// Slash command palette overlay. Renders as a floating popover
-    /// near the editor's top-leading edge when `slashPalette.isOpen`
-    /// is true. Caret-anchored positioning is a polish follow-up;
-    /// for v1 the popover sits in a consistent corner of the
-    /// content frame so the user always finds it in the same place.
-    @ViewBuilder
-    private var slashPaletteOverlay: some View {
-        if store.textEditing.slashPalette.isOpen {
-            slashPalettePopover
-                .transition(.opacity)
-                .accessibilityAddTraits(.isModal)
-        }
-    }
-
-    private var slashPalettePopover: some View {
-        let rows: [SlashMenuPopoverView.Row] = store
+    /// Build the row list the slash popover renders from the current
+    /// palette state. Indexed match against `selectedIndex` so
+    /// keyboard navigation highlights the right row; `availability`
+    /// drives the coming-soon badge.
+    private func paletteRows() -> [SlashMenuPopoverView.Row] {
+        store
             .textEditing
             .slashPalette
             .matchedCommands
@@ -124,23 +130,6 @@ struct TextNoteWiringView: View {
                     }
                 )
             }
-
-        return VStack {
-            HStack {
-                SlashMenuPopoverView(model: .init(
-                    rows: rows,
-                    filterText: store.textEditing.slashPalette.filterText
-                ))
-                .padding(.top, ds.spacing.xxl)
-                .padding(.leading, ds.spacing.lg + ds.spacing.md)
-                Spacer()
-            }
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            store.send(.textEditing(.slashPalette(.dismissed)))
-        }
     }
 
     /// Dismiss chrome — top-right X. The text variant has no canvas
@@ -189,7 +178,7 @@ struct TextNoteWiringView: View {
     /// on the first edit via the refresh effect. Fall back to the
     /// document's last leaf — same fallback `applyBlockFormat`
     /// already uses for unset selections.
-    private static func handle(command: EditorCommand, store: StoreOf<NotebookFeature>) {
+    private func handle(command: EditorCommand) {
         switch command {
         case .toggleBold:
             store.send(.textEditing(.toggleInlineFormat(.bold)))
@@ -209,7 +198,7 @@ struct TextNoteWiringView: View {
             store.send(.textEditing(.applyBlockFormat(.bulletedList)))
         case .applyNumberedList:
             store.send(.textEditing(.applyBlockFormat(.numberedList)))
-        case .openSlashPalette:
+        case .openSlashPalette(let caretRectInEditor):
             let selection = store.textEditing.selection
             // Empty selection — fall back to the document's last leaf
             // so the palette opens with a usable trigger location.
@@ -225,6 +214,7 @@ struct TextNoteWiringView: View {
                 // Empty document — no leaf to anchor to; no-op.
                 return
             }
+            slashPopoverAnchorRect = caretRectInEditor
             store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
         }
     }
