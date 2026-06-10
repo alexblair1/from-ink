@@ -1400,6 +1400,63 @@ struct TextKitEditorView: UIViewRepresentable {
         return chrome == .bulletListItem || chrome == .orderedListItem
     }
 
+    /// Merge From Ink's custom keys back into UIKit-derived typing
+    /// attributes.
+    ///
+    /// **Why this exists (the disappearing-bullet bug).** UIKit
+    /// re-derives `typingAttributes` on EVERY selection change — tap,
+    /// arrow key, programmatic `selectedRange` set — and the derived
+    /// dictionary contains ONLY standard attributes; custom keys are
+    /// dropped (verified empirically 2026-06-10 on the iOS 26
+    /// simulator). The first character typed after any caret move
+    /// therefore carried no `.blockChrome` / `.blockID`, the
+    /// paragraph probed as chromeless, the bullet/number/quote chrome
+    /// vanished, and parse-back dissolved the block to a body
+    /// paragraph.
+    ///
+    /// The merge keeps UIKit's derived standard attributes (correct
+    /// inline continuation — bold keeps flowing after bold text) and
+    /// re-asserts:
+    ///   - paragraph-identity keys (`.blockChrome`, `.blockID`,
+    ///     `.groupID`, `.fromInkListItemID`, `.fromInkLanguageHint`)
+    ///     from the caret paragraph's probe character, and
+    ///   - custom inline-mark keys (`.fromInkInlineCode`,
+    ///     `.fromInkHighlightKind`) from the character preceding the
+    ///     caret, same-paragraph only — mirroring UIKit's own
+    ///     continuation rule for standard attributes.
+    static func typingAttributesPreservingChrome(
+        derived: [NSAttributedString.Key: Any],
+        storage: NSAttributedString,
+        caretLocation: Int
+    ) -> [NSAttributedString.Key: Any] {
+        guard storage.length > 0 else { return derived }
+        let (textRange, probe) = paragraphSlice(at: caretLocation, in: storage)
+        guard let probe, probe < storage.length else { return derived }
+
+        var merged = derived
+        let paragraphAttrs = storage.attributes(at: probe, effectiveRange: nil)
+        let identityKeys: [NSAttributedString.Key] = [
+            .blockChrome, .blockID, .groupID, .fromInkListItemID, .fromInkLanguageHint
+        ]
+        for key in identityKeys {
+            merged[key] = paragraphAttrs[key]
+        }
+
+        let inlineKeys: [NSAttributedString.Key] = [.fromInkInlineCode, .fromInkHighlightKind]
+        let precedingLocation = caretLocation - 1
+        if precedingLocation >= textRange.location, precedingLocation < storage.length, precedingLocation >= 0 {
+            let preceding = storage.attributes(at: precedingLocation, effectiveRange: nil)
+            for key in inlineKeys {
+                merged[key] = preceding[key]
+            }
+        } else {
+            for key in inlineKeys {
+                merged[key] = nil
+            }
+        }
+        return merged
+    }
+
     /// Typing on the phantom tail line (the caret position AFTER the
     /// document's final `\n`) creates a new paragraph whose
     /// `.blockID` duplicates its predecessor's via `typingAttributes`
@@ -1891,6 +1948,20 @@ struct TextKitEditorView: UIViewRepresentable {
                 return true
             }
 
+            // Last-line defense for the disappearing-bullet bug:
+            // UIKit strips the custom keys from typingAttributes on
+            // every selection change, and delegate dispatch order
+            // isn't guaranteed to let textViewDidChangeSelection's
+            // re-assertion win. shouldChangeTextIn fires immediately
+            // before the input system applies this change — merging
+            // here guarantees the inserted text carries the host
+            // paragraph's chrome/identity keys.
+            textView.typingAttributes = TextKitEditorView.typingAttributesPreservingChrome(
+                derived: textView.typingAttributes,
+                storage: textView.attributedText,
+                caretLocation: range.location
+            )
+
             switch TextKitEditorView.evaluateSlashTrigger(
                 replacementText: text,
                 replacementRange: range,
@@ -2040,6 +2111,19 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            // UIKit just re-derived typingAttributes for the new
+            // caret position and STRIPPED every custom key (verified
+            // 2026-06-10 — see typingAttributesPreservingChrome).
+            // Re-assert the chrome/identity keys on every selection
+            // change, including programmatic ones, or the next typed
+            // character lands chromeless and the block's bullet /
+            // number / quote chrome vanishes.
+            textView.typingAttributes = TextKitEditorView.typingAttributesPreservingChrome(
+                derived: textView.typingAttributes,
+                storage: textView.attributedText,
+                caretLocation: textView.selectedRange.location
+            )
+
             guard !isApplyingBindingUpdate else { return }
             // Attribute-based bridge: O(paragraph) against the live
             // storage. The flatten maps are only rebuilt at sync
