@@ -1393,8 +1393,18 @@ struct TextKitEditorView: UIViewRepresentable {
     ) -> Bool {
         guard text == "\n", range.length == 0 else { return false }
         let (textRange, probe) = paragraphSlice(at: range.location, in: storage)
+        // The probe must be the caret paragraph's OWN terminator
+        // (`probe == textRange.location`), never the previous
+        // paragraph's via the phantom-tail fallback. At the phantom
+        // position after the document's final `\n`, the fallback
+        // probe reads the PRECEDING paragraph's list chrome — firing
+        // exitList against an unset selection, which no-ops in the
+        // reducer while the suppressed newline makes Return appear
+        // dead. (The caret clamp in textViewDidChangeSelection keeps
+        // carets off the phantom position entirely; this guard is the
+        // pure-function half of the same invariant.)
         guard textRange.length == 0,
-              let probe, probe < storage.length,
+              let probe, probe == textRange.location, probe < storage.length,
               let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
               let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
         return chrome == .bulletListItem || chrome == .orderedListItem
@@ -1427,9 +1437,26 @@ struct TextKitEditorView: UIViewRepresentable {
     static func typingAttributesPreservingChrome(
         derived: [NSAttributedString.Key: Any],
         storage: NSAttributedString,
-        caretLocation: Int
+        caretLocation: Int,
+        bodyFont: UIFont,
+        bodyColor: UIColor
     ) -> [NSAttributedString.Key: Any] {
-        guard storage.length > 0 else { return derived }
+        // Empty storage: nothing to probe, and the derived attributes
+        // are whatever the user last edited — after deleting an
+        // entire list that means list chrome plus the 28pt indent
+        // paragraph style, leaving the caret visually indented in an
+        // "empty" note and the next character resurrecting the list.
+        // Reset to body-paragraph typing attributes (same shape
+        // makeUIView seeds for an empty document).
+        guard storage.length > 0 else {
+            return typingAttributes(
+                for: .paragraph,
+                blockID: UUID(),
+                groupID: nil,
+                bodyFont: bodyFont,
+                bodyColor: bodyColor
+            )
+        }
         let (textRange, probe) = paragraphSlice(at: caretLocation, in: storage)
         guard let probe, probe < storage.length else { return derived }
 
@@ -1976,7 +2003,9 @@ struct TextKitEditorView: UIViewRepresentable {
             textView.typingAttributes = TextKitEditorView.typingAttributesPreservingChrome(
                 derived: textView.typingAttributes,
                 storage: textView.attributedText,
-                caretLocation: range.location
+                caretLocation: range.location,
+                bodyFont: parent.bodyFont,
+                bodyColor: parent.bodyColor
             )
 
             switch TextKitEditorView.evaluateSlashTrigger(
@@ -2128,6 +2157,26 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            // Phantom-position clamp. Flatten terminates EVERY
+            // paragraph with `\n`, so TextKit exposes a tappable
+            // extra-line-fragment position AFTER the final newline —
+            // a position that addresses no paragraph: the selection
+            // bridge returns unset, exitList no-ops, and Return there
+            // appends rows it inherits attrs for, endlessly. The
+            // caret must never rest there; snap it to `length - 1`,
+            // the end of the last REAL paragraph (Apple Notes does
+            // the equivalent — tapping below the last line lands at
+            // its end). Re-setting selectedRange re-enters this
+            // delegate once with a non-phantom position.
+            let storageLength = textView.attributedText.length
+            if textView.selectedRange.length == 0,
+               textView.selectedRange.location == storageLength,
+               storageLength > 0,
+               (textView.attributedText.string as NSString).character(at: storageLength - 1) == 0x0A {
+                textView.selectedRange = NSRange(location: storageLength - 1, length: 0)
+                return
+            }
+
             // UIKit just re-derived typingAttributes for the new
             // caret position and STRIPPED every custom key (verified
             // 2026-06-10 — see typingAttributesPreservingChrome).
@@ -2138,7 +2187,9 @@ struct TextKitEditorView: UIViewRepresentable {
             textView.typingAttributes = TextKitEditorView.typingAttributesPreservingChrome(
                 derived: textView.typingAttributes,
                 storage: textView.attributedText,
-                caretLocation: textView.selectedRange.location
+                caretLocation: textView.selectedRange.location,
+                bodyFont: parent.bodyFont,
+                bodyColor: parent.bodyColor
             )
 
             guard !isApplyingBindingUpdate else { return }

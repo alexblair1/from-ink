@@ -30,6 +30,7 @@ final class BulletChromeRegressionTests: XCTestCase {
     private final class ReducerMirror {
         var document: RichTextDocument = .empty
         var selection: BlockTreeSelection = BlockTreeSelection()
+        var commands: [EditorCommand] = []
     }
 
     private func makeEditorRig(
@@ -55,7 +56,7 @@ final class BulletChromeRegressionTests: XCTestCase {
             document: Binding(get: { mirror.document }, set: { mirror.document = $0 }),
             selection: Binding(get: { mirror.selection }, set: { mirror.selection = $0 }),
             onSlashTyped: { _, _, _ in },
-            onCommand: { _ in },
+            onCommand: { mirror.commands.append($0) },
             onCaretAnchorMoved: { _ in },
             onSlashFilterChanged: { _ in },
             isSlashPaletteOpen: false,
@@ -224,6 +225,80 @@ final class BulletChromeRegressionTests: XCTestCase {
         XCTAssertEqual(items.first?.content.first?.id, originalLeafID, "First half keeps the original leaf id")
     }
 
+    func test_enterOnEmptySingleBulletItem_emitsExitList_andSuppressesNewline() {
+        let (textView, coordinator, mirror) = makeEditorRig(document: emptyBulletDoc())
+
+        textView.selectedRange = NSRange(location: 0, length: 0)
+        coordinator.textViewDidChangeSelection(textView)
+        let accepted = coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 0),
+            replacementText: "\n"
+        )
+
+        XCTAssertFalse(accepted, "Enter on an empty list item must be suppressed — the exit goes through the reducer")
+        XCTAssertEqual(mirror.commands, [.exitList])
+        // The pre-command sync must leave reducer doc + selection
+        // consistent so the reducer's exitList surgery resolves.
+        XCTAssertEqual(mirror.selection.path.count, 2, "Bridged selection addresses [container, leaf]")
+        XCTAssertEqual(mirror.selection.path.last, mirror.document.blocks.first?.descendants.first?.id)
+    }
+
+    func test_enterOnEmptyLastItemOfMultiItemList_emitsExitList() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "a")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let (textView, coordinator, mirror) = makeEditorRig(document: doc)
+
+        // Caret on the empty second item ("a\n" + empty item's \n at 2).
+        textView.selectedRange = NSRange(location: 2, length: 0)
+        coordinator.textViewDidChangeSelection(textView)
+        let accepted = coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 2, length: 0),
+            replacementText: "\n"
+        )
+
+        XCTAssertFalse(accepted)
+        XCTAssertEqual(mirror.commands, [.exitList])
+    }
+
+    func test_deleteEverything_resetsTypingAttributesToBody() {
+        // Symptom: create a list, select-all, delete — the caret keeps
+        // the list indentation (stale paragraphStyle + chrome in
+        // typingAttributes), and the next typed character resurrects
+        // list styling in an empty document.
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "item")]))])
+            ]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+
+        // Select-all + delete, through the real event sequence.
+        let fullRange = NSRange(location: 0, length: textView.attributedText.length)
+        textView.selectedRange = fullRange
+        coordinator.textViewDidChangeSelection(textView)
+        let accepted = coordinator.textView(
+            textView, shouldChangeTextIn: fullRange, replacementText: ""
+        )
+        XCTAssertTrue(accepted)
+        textView.deleteBackward()
+        coordinator.textViewDidChangeSelection(textView)
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(textView.attributedText.length, 0)
+        let typing = textView.typingAttributes
+        let chrome = (typing[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
+        XCTAssertNotEqual(chrome, .bulletListItem, "Empty document must not keep list chrome in typing attributes")
+        let style = typing[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.headIndent ?? 0, 0, "List indentation must not survive into an empty document")
+        XCTAssertEqual(style?.firstLineHeadIndent ?? 0, 0)
+    }
+
     func test_typingAttributesPreservingChrome_keepsDerivedStandardAttributes() {
         let doc = emptyBulletDoc()
         let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
@@ -231,7 +306,9 @@ final class BulletChromeRegressionTests: XCTestCase {
         let merged = TextKitEditorView.typingAttributesPreservingChrome(
             derived: [.font: boldFont],
             storage: flat.attributed,
-            caretLocation: 0
+            caretLocation: 0,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
         )
         XCTAssertEqual(
             merged[.font] as? UIFont, boldFont,
@@ -244,15 +321,74 @@ final class BulletChromeRegressionTests: XCTestCase {
         )
     }
 
-    func test_typingAttributesPreservingChrome_emptyStorage_passesThroughDerived() {
-        let derived: [NSAttributedString.Key: Any] = [.font: bodyFont]
+    func test_typingAttributesPreservingChrome_emptyStorage_resetsToBodyParagraph() {
+        // Stale list attrs after delete-everything must reset, not
+        // pass through — otherwise the caret keeps the list indent
+        // and the next character resurrects the list.
+        let staleListStyle = NSMutableParagraphStyle()
+        staleListStyle.headIndent = 28
+        staleListStyle.firstLineHeadIndent = 28
+        let derived: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .paragraphStyle: staleListStyle,
+            .blockChrome: BlockChrome.bulletListItem.rawValue
+        ]
         let merged = TextKitEditorView.typingAttributesPreservingChrome(
             derived: derived,
             storage: NSAttributedString(),
-            caretLocation: 0
+            caretLocation: 0,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
         )
-        XCTAssertEqual(merged.count, 1)
-        XCTAssertNil(merged[.blockChrome])
+        XCTAssertEqual(
+            (merged[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:)),
+            .paragraph,
+            "Empty storage resets to body-paragraph typing attributes"
+        )
+        let style = merged[.paragraphStyle] as? NSParagraphStyle
+        XCTAssertEqual(style?.headIndent ?? -1, 0)
+        XCTAssertEqual(style?.firstLineHeadIndent ?? -1, 0)
+    }
+
+    // MARK: - Phantom tail position
+
+    func test_shouldExitList_atPhantomPositionAfterFinalNewline_returnsFalse() {
+        // Caret past the document's final \n addresses NO paragraph.
+        // The probe must not fall back to the PREVIOUS paragraph's
+        // list chrome — that fired exitList against an unset
+        // selection (reducer no-op) while suppressing the newline:
+        // Return appeared completely dead.
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "x")]))])
+            ]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertFalse(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: flat.attributed.length, length: 0),
+            storage: flat.attributed
+        ))
+    }
+
+    func test_caretClamp_snapsPhantomPositionToEndOfLastParagraph() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "x")]))])
+            ]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+
+        // Tap below the last line → UIKit parks the caret at the
+        // phantom extra-line-fragment position (== storage length).
+        textView.selectedRange = NSRange(location: textView.attributedText.length, length: 0)
+        coordinator.textViewDidChangeSelection(textView)
+
+        XCTAssertEqual(
+            textView.selectedRange,
+            NSRange(location: textView.attributedText.length - 1, length: 0),
+            "Caret must snap off the phantom position to the end of the last real paragraph"
+        )
     }
 }
 #endif
