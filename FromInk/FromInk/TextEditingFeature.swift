@@ -716,7 +716,15 @@ extension TextEditingFeature {
 
         let prefix = Array(items.prefix(itemIndex))
         let suffix = Array(items.suffix(from: itemIndex + 1))
-        let exitedParagraph = Block(id: leafID, kind: .paragraph(inline: []))
+        // Preserve the leaf's actual inline runs (normally empty —
+        // the editor only fires exitList on empty items). Hardcoding
+        // empty here turned any desynced-selection edge case into
+        // silent text loss; carrying the runs makes the surgery safe
+        // no matter which leaf the selection names.
+        let exitedRuns = items[itemIndex].content
+            .first(where: { $0.id == leafID })?
+            .kind.inlineRuns ?? []
+        let exitedParagraph = Block(id: leafID, kind: .paragraph(inline: exitedRuns))
 
         var replacements: [Block] = []
         if !prefix.isEmpty {

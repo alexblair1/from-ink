@@ -264,6 +264,14 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         XCTAssertFalse(accepted)
         XCTAssertEqual(mirror.commands, [.exitList])
+        // The reducer can only exit when the selection resolves to a
+        // [container, leaf] path AND that leaf exists in the mirrored
+        // document — a 1-element fallback path means parse-back and
+        // storage disagree on the empty item's id (the swallowed-
+        // Return bug).
+        XCTAssertEqual(mirror.selection.path.count, 2, "Bridged selection must address [container, leaf]")
+        let leaf = mirror.document.block(at: mirror.selection.path)
+        XCTAssertEqual(leaf?.joinedInlineText, "", "Selection must resolve to the empty item in the mirrored document")
     }
 
     func test_deleteEverything_resetsTypingAttributesToBody() {
@@ -348,6 +356,55 @@ final class BulletChromeRegressionTests: XCTestCase {
         let style = merged[.paragraphStyle] as? NSParagraphStyle
         XCTAssertEqual(style?.headIndent ?? -1, 0)
         XCTAssertEqual(style?.firstLineHeadIndent ?? -1, 0)
+    }
+
+    /// Fast double-Return: iOS 26 defers `textViewDidChange` to the
+    /// next runloop, so a quick second Return arrives BEFORE the
+    /// first Return's didChange (and therefore before identity
+    /// hygiene + sync). The exit-list branch must settle hygiene
+    /// itself or the bridge resolves the caret against duplicate
+    /// blockIDs — exiting the WRONG (non-empty, first) item.
+    func test_fastDoubleReturn_exitsTheEmptySecondItem_notTheFirst() {
+        let firstLeafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(id: firstLeafID, kind: .paragraph(inline: [Inline(text: "x")]))])
+            ]))
+        ])
+        let (textView, coordinator, mirror) = makeEditorRig(document: doc)
+
+        // Return #1 at the end of "x" — native insert. NO didChange
+        // yet (deferred on device).
+        textView.selectedRange = NSRange(location: 1, length: 0)
+        coordinator.textViewDidChangeSelection(textView)
+        XCTAssertTrue(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 1, length: 0),
+            replacementText: "\n"
+        ))
+        textView.insertText("\n")
+        coordinator.textViewDidChangeSelection(textView)
+
+        // Return #2 lands while the storage still carries the
+        // duplicate blockID on the new empty paragraph.
+        let accepted = coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 2, length: 0),
+            replacementText: "\n"
+        )
+
+        XCTAssertFalse(accepted, "Second Return on the empty item must route to exitList")
+        XCTAssertEqual(mirror.commands, [.exitList])
+        // The mirrored selection must name the EMPTY second item —
+        // naming the first ("x") makes the reducer wipe its text.
+        XCTAssertEqual(mirror.selection.path.count, 2)
+        XCTAssertNotEqual(
+            mirror.selection.path.last, firstLeafID,
+            "Bridge resolved the caret to the FIRST item — stale hygiene at sync time"
+        )
+        // And the named leaf must actually be empty in the mirrored doc.
+        let leaf = mirror.document.block(at: mirror.selection.path)
+        XCTAssertEqual(leaf?.joinedInlineText, "", "exitList must target the empty item")
     }
 
     // MARK: - Phantom tail position

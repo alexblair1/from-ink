@@ -1048,10 +1048,19 @@ struct TextKitEditorView: UIViewRepresentable {
             let paragraphEnd = nlRange.location != NSNotFound ? nlRange.location : full.length
             let paragraphRange = NSRange(location: cursor, length: paragraphEnd - cursor)
             if paragraphRange.length > 0 || cursor == 0 || cursor > 0 {
-                // Read paragraph metadata from the first character.
-                let metaLocation = paragraphRange.length > 0
-                    ? paragraphRange.location
-                    : max(0, paragraphRange.location - 1)
+                // Read paragraph metadata from the first character —
+                // which for an EMPTY paragraph is its own trailing
+                // `\n` at `location` (always within bounds here since
+                // `cursor < length`). The previous `location - 1`
+                // fallback probed the PRECEDING paragraph's
+                // terminator, giving empty paragraphs the wrong
+                // blockID: parsed ids diverged from storage ids,
+                // the path index missed the caret's real block, and
+                // exitList's `path.count >= 2` guard swallowed
+                // Return on every multi-item list. Hygiene, the
+                // selection bridge, and drawBackground all probe the
+                // own-terminator convention — parse-back now matches.
+                let metaLocation = paragraphRange.location
                 let attrs = attributed.attributes(at: metaLocation, effectiveRange: nil)
                 let chromeRaw = (attrs[.blockChrome] as? Int) ?? BlockChrome.paragraph.rawValue
                 let chrome = BlockChrome(rawValue: chromeRaw) ?? .paragraph
@@ -1742,6 +1751,20 @@ struct TextKitEditorView: UIViewRepresentable {
         /// wholesale-replaces in response to our own push.
         func syncDocumentFromStorage(_ textView: UITextView) {
             cancelPendingSync()
+            // Settle paragraph identity BEFORE parsing. iOS 26 defers
+            // textViewDidChange to the next runloop, so a sync can be
+            // triggered (fast second keystroke hitting the exit-list
+            // branch, command handoff, palette interaction, flush)
+            // while the storage still carries duplicate blockIDs from
+            // an un-hygiened structural edit. parseBack would dedupe
+            // those with FRESH ids in the parsed document only —
+            // storage and document then disagree, and the selection
+            // bridge resolves the caret to the WRONG leaf (the
+            // exit-wrong-item / vanishing-text bug).
+            if TextKitEditorView.newlineCount(in: textView.text as NSString) != lastNewlineCount
+                || TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText) {
+                applyParagraphIdentityFixups(textView)
+            }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             pathIndex = TextKitEditorView.leafPathIndex(parsed)
             let rebuilt = TextKitEditorView.maps(
