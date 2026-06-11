@@ -90,15 +90,6 @@ struct TextBlockView: View {
                 .foregroundStyle(model.bodyColor)
             #endif
 
-            if model.isDocumentEmpty {
-                Text(model.emptyBlockPlaceholder)
-                    .font(model.bodyFont)
-                    .foregroundStyle(model.placeholderColor)
-                    .padding(.top, 8)
-                    .padding(.leading, 2)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityLabel(model.editorAccessibilityLabel)
@@ -311,7 +302,6 @@ extension TextBlockView {
 
         let document: RichTextDocument
         let plainText: String
-        let isDocumentEmpty: Bool
 
         /// Mirrors `TextEditingFeature.State.selection`. The editor
         /// will bind through this once it lands in commit 4; the
@@ -343,7 +333,6 @@ extension TextBlockView {
 
         let bodyFont: Font
         let bodyColor: Color
-        let placeholderColor: Color
         let headlineFont: Font
         let subheadFont: Font
         let bannerTitleFont: Font
@@ -353,7 +342,6 @@ extension TextBlockView {
         let bannerHorizontalPadding: CGFloat
         let bannerVerticalPadding: CGFloat
 
-        let emptyBlockPlaceholder: String
         let editorPlaceholderHeadline: String
         let emptyNoteHeadline: String
         let emptyNoteSubhead: String
@@ -388,18 +376,13 @@ extension TextBlockView.Model {
         // `plainText` feeds only the macOS read-only placeholder.
         // Resolving it on iOS would walk the entire document on every
         // SwiftUI render — every keystroke AND every caret move (the
-        // selection mirror re-renders the wiring view). Same render-
-        // cost rule as the `isDocumentEmpty` short-circuit below (S4).
+        // selection mirror re-renders the wiring view) — render-cost
+        // rule S4.
         #if os(macOS)
         self.plainText = document.plainText
         #else
         self.plainText = ""
         #endif
-        // Avoid walking the entire document via `plainText` on every
-        // SwiftUI render (S4). Short-circuit on the first block that
-        // has any visible content; divider counts as content.
-        self.isDocumentEmpty = document.blocks.isEmpty
-            || !document.blocks.contains(where: { Self.hasVisibleContent($0) })
         self.selection = selection
         self.persistFailureTitle = persistFailureTitle
         self.persistFailureSubtitle = AppStrings.TextEditing.persistFailedBannerSubtitle
@@ -412,7 +395,6 @@ extension TextBlockView.Model {
         self.slashPopover = slashPopover
         self.bodyFont = .system(.body, design: .serif)
         self.bodyColor = ds.colors.ink
-        self.placeholderColor = ds.colors.ink3
         self.headlineFont = .system(.title2, design: .serif)
         self.subheadFont = .system(.subheadline, design: .default)
         self.bannerTitleFont = .system(.footnote, design: .default).weight(.medium)
@@ -421,7 +403,6 @@ extension TextBlockView.Model {
         self.bannerBorderColor = ds.colors.rule
         self.bannerHorizontalPadding = ds.spacing.md
         self.bannerVerticalPadding = ds.spacing.sm
-        self.emptyBlockPlaceholder = AppStrings.TextEditing.emptyBlockPlaceholder
         self.editorPlaceholderHeadline = ""
         self.emptyNoteHeadline = AppStrings.TextEditing.emptyNoteHeadline
         self.emptyNoteSubhead = AppStrings.TextEditing.emptyNoteSubhead
@@ -429,24 +410,5 @@ extension TextBlockView.Model {
         self.decodeFailureSubhead = AppStrings.TextEditing.bodyDecodeFailedSubhead
         self.editorAccessibilityLabel = AppStrings.TextEditing.editorAccessibilityLabel
         self.accessibilityHint = AppStrings.TextEditing.blockAccessibilityHint
-    }
-
-    /// Short-circuit visible-content check that walks only as far as
-    /// the first non-empty leaf. Used in place of `document.plainText`
-    /// (which walks the entire document) for the `isDocumentEmpty`
-    /// flag that the placeholder overlay reads on every render.
-    private static func hasVisibleContent(_ block: Block) -> Bool {
-        switch block.kind {
-        case .paragraph(let inline), .heading(_, let inline):
-            return inline.contains { !$0.text.isEmpty }
-        case .codeBlock(let text, _):
-            return !text.isEmpty
-        case .bulletList(let items), .orderedList(let items):
-            return items.contains { item in item.content.contains(where: hasVisibleContent) }
-        case .blockquote(let children):
-            return children.contains(where: hasVisibleContent)
-        case .divider:
-            return true
-        }
     }
 }

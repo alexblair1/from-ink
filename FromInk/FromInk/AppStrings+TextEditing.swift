@@ -9,14 +9,6 @@ extension AppStrings {
     enum TextEditing {
         // MARK: - Editor placeholders
 
-        /// Placeholder shown when a text block is empty AND focused.
-        /// Disappears as soon as the user types anything.
-        static let emptyBlockPlaceholder = NSLocalizedString(
-            "textEditing.emptyBlockPlaceholder",
-            value: "Start typing…",
-            comment: "Placeholder text shown inside an empty, focused text block."
-        )
-
         /// Placeholder shown when a whole text note is empty (no
         /// blocks at all, or one empty block on a brand-new page).
         static let emptyNoteHeadline = NSLocalizedString(
