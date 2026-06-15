@@ -1304,6 +1304,65 @@ final class TextKitEditorViewTests: XCTestCase {
         ), "A range deletion is a normal delete, not an outdent")
     }
 
+    // MARK: - typingAttributesPreservingChrome (font follows chrome)
+
+    func test_typingAttributesPreservingChrome_emptyHeading_typesHeadingFont() {
+        let doc = RichTextDocument(blocks: [Block(kind: .heading(level: 1, inline: []))])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // What UIKit hands us on an empty heading line: body font, because
+        // there's no preceding glyph to inherit the heading font from.
+        let derived: [NSAttributedString.Key: Any] = [.font: bodyFont]
+
+        let merged = TextKitEditorView.typingAttributesPreservingChrome(
+            derived: derived,
+            storage: flat.attributed,
+            caretLocation: 0,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+
+        XCTAssertEqual((merged[.font] as? UIFont)?.pointSize, 28,
+                       "Typing in an empty heading must inherit the 28pt heading font, not body")
+        XCTAssertEqual(merged[.blockChrome] as? Int, BlockChrome.heading1.rawValue)
+    }
+
+    func test_typingAttributesPreservingChrome_bodyParagraph_staysBodyFont() {
+        let doc = RichTextDocument(blocks: [Block(kind: .paragraph(inline: [Inline(text: "Hi")]))])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+
+        let merged = TextKitEditorView.typingAttributesPreservingChrome(
+            derived: [.font: bodyFont],
+            storage: flat.attributed,
+            caretLocation: 2,
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+
+        XCTAssertEqual((merged[.font] as? UIFont)?.pointSize, bodyFont.pointSize)
+    }
+
+    func test_typingAttributesPreservingChrome_preservesBoldTraitOnHeading() {
+        // Heading whose text is bold — typing at the end should stay
+        // bold AND heading-sized (chrome base font + preserved trait).
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Hi", marks: [.bold])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+
+        let merged = TextKitEditorView.typingAttributesPreservingChrome(
+            derived: [.font: bodyFont],
+            storage: flat.attributed,
+            caretLocation: 2,  // end of "Hi"
+            bodyFont: bodyFont,
+            bodyColor: bodyColor
+        )
+
+        let font = merged[.font] as? UIFont
+        XCTAssertEqual(font?.pointSize, 28, "Stays heading-sized")
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+                      "Preceding bold trait continues")
+    }
+
     func test_slashFilter_returnsTextAfterTrigger_andNilWhenTriggerGone() {
         let doc = RichTextDocument(blocks: [
             Block(kind: .paragraph(inline: [Inline(text: "see /head below")]))

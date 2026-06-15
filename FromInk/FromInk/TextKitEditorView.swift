@@ -1645,12 +1645,53 @@ struct TextKitEditorView: UIViewRepresentable {
             merged[key] = paragraphAttrs[key]
         }
 
-        let inlineKeys: [NSAttributedString.Key] = [.fromInkInlineCode, .fromInkHighlightKind]
         let precedingLocation = caretLocation - 1
-        if precedingLocation >= textRange.location, precedingLocation < storage.length, precedingLocation >= 0 {
-            let preceding = storage.attributes(at: precedingLocation, effectiveRange: nil)
+        let precedingInParagraph = precedingLocation >= textRange.location
+            && precedingLocation >= 0 && precedingLocation < storage.length
+        let precedingAttrs = precedingInParagraph
+            ? storage.attributes(at: precedingLocation, effectiveRange: nil)
+            : nil
+
+        // Chromes with a DISTINCT base font (heading sizes, monospace
+        // code, italic quote) need the font set from the chrome:
+        // `derived` gets it wrong on an EMPTY such line — UIKit has no
+        // preceding glyph to inherit the 28pt heading font from, so the
+        // caret looks heading-sized (the line's `\n` carries the heading
+        // font) but typed text comes out body. Bold/italic continuation
+        // is preserved by folding the derived + preceding-character
+        // traits onto the chrome's base font.
+        //
+        // Body-font chromes (paragraph, lists, divider) are left ALONE:
+        // `derived` already carries the correct font incl. UIKit's
+        // inline-mark continuation — the proven behaviour.
+        if let chromeRaw = paragraphAttrs[.blockChrome] as? Int,
+           let chrome = BlockChrome(rawValue: chromeRaw) {
+            switch chrome {
+            case .heading1, .heading2, .heading3, .codeBlock, .blockquoteParagraph:
+                var base = font(for: chrome, bodyFont: bodyFont)
+                var traits: UIFontDescriptor.SymbolicTraits = []
+                if let f = derived[.font] as? UIFont {
+                    traits.formUnion(f.fontDescriptor.symbolicTraits.intersection([.traitBold, .traitItalic]))
+                }
+                if let f = precedingAttrs?[.font] as? UIFont {
+                    traits.formUnion(f.fontDescriptor.symbolicTraits.intersection([.traitBold, .traitItalic]))
+                }
+                if !traits.isEmpty,
+                   let descriptor = base.fontDescriptor.withSymbolicTraits(traits) {
+                    base = UIFont(descriptor: descriptor, size: 0)
+                }
+                merged[.font] = base
+                merged[.paragraphStyle] = paragraphStyle(for: chrome)
+                merged[.foregroundColor] = foregroundColor(for: chrome, bodyColor: bodyColor)
+            case .paragraph, .bulletListItem, .orderedListItem, .divider:
+                break
+            }
+        }
+
+        let inlineKeys: [NSAttributedString.Key] = [.fromInkInlineCode, .fromInkHighlightKind]
+        if let precedingAttrs {
             for key in inlineKeys {
-                merged[key] = preceding[key]
+                merged[key] = precedingAttrs[key]
             }
         } else {
             for key in inlineKeys {
