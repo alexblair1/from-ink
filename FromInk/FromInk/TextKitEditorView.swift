@@ -101,14 +101,6 @@ struct TextKitEditorView: UIViewRepresentable {
         let storage = NSTextStorage()
         let layoutManager = BlockDecoratingLayoutManager()
         layoutManager.tintColor = bodyColor
-        // Hot-path chrome paint reads paragraph kind from the live
-        // ParagraphIndex (weak — the manager is retained by the
-        // textView, the coordinator holds the textView weakly, so a
-        // strong capture here would never cycle, but weak keeps the
-        // ownership story one-directional).
-        layoutManager.currentParagraphIndex = { [weak coordinator = context.coordinator] in
-            coordinator?.paragraphIndex ?? ParagraphIndex()
-        }
         storage.addLayoutManager(layoutManager)
 
         let container = NSTextContainer(
@@ -2486,26 +2478,6 @@ enum BlockChrome: Int {
     case divider
 }
 
-extension BlockChrome {
-    /// The `ParagraphKind` this chrome represents — the bridge the
-    /// drawBackground fallback uses to express an attribute-probed
-    /// chrome in the same vocabulary as `ParagraphIndex`, so both the
-    /// index and the fallback feed one paint switch.
-    var paragraphKind: ParagraphKind {
-        switch self {
-        case .paragraph:            return .paragraph
-        case .heading1:             return .heading(level: 1)
-        case .heading2:             return .heading(level: 2)
-        case .heading3:             return .heading(level: 3)
-        case .bulletListItem:       return .bulletListItem
-        case .orderedListItem:      return .orderedListItem
-        case .blockquoteParagraph:  return .blockquoteParagraph
-        case .codeBlock:            return .codeBlock
-        case .divider:              return .divider
-        }
-    }
-}
-
 extension NSAttributedString.Key {
     /// `Int` rawValue of `BlockChrome`. Set on every character of a
     /// flattened paragraph (including its trailing newline). The
@@ -2565,16 +2537,6 @@ extension NSAttributedString.Key {
 final class BlockDecoratingLayoutManager: NSLayoutManager {
     var tintColor: UIColor = .label
 
-    /// Live read of the editor's `ParagraphIndex`, set by the
-    /// Coordinator in `makeUIView`. `drawBackground` uses it as the
-    /// PRIMARY source for paragraph kind + ordered-list ordinals,
-    /// falling back to the `.blockChrome`/`.groupID` attributes when
-    /// the index is structurally inconsistent with the storage (the
-    /// sub-runloop window after a structural edit, before its rebuild).
-    /// Default returns an empty index → the fallback always runs, so
-    /// the manager renders correctly even before wiring.
-    var currentParagraphIndex: () -> ParagraphIndex = { ParagraphIndex() }
-
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         guard let textStorage = textStorage else { return }
@@ -2583,44 +2545,30 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         let nsString = textStorage.string as NSString
         let storageLength = textStorage.length
 
-        // Paragraph KIND comes from `ParagraphIndex` — the side channel
-        // UIKit's `typingAttributes` can't strip or consolidate. We
-        // still enumerate by `\n` boundary (the storage's geometry is
-        // the source of truth for *where* paragraphs are), but resolve
-        // each paragraph's kind by ABSOLUTE index into the index, not
-        // by an attribute probe.
-        //
-        // The index is trusted only when its paragraph count matches
-        // the storage's — equal counts prove the structure is current
-        // (a structural edit changes the count and its index rebuild is
-        // deferred a runloop; until then counts disagree and we fall
-        // back to the `.blockChrome` probe, which rides the live text).
-        // Count match also guarantees paragraph ORDER, so the absolute
-        // index addresses the right entry; non-structural edits never
-        // change a paragraph's kind, so range drift between syncs is
-        // irrelevant to what we draw here.
-        let index = currentParagraphIndex()
-        let prefixNewlines = Self.newlineCount(
-            in: nsString, range: NSRange(location: 0, length: charRange.location)
-        )
-        let totalNewlines = prefixNewlines + Self.newlineCount(
-            in: nsString,
-            range: NSRange(location: charRange.location, length: storageLength - charRange.location)
-        )
-        let useIndex = !index.entries.isEmpty && index.entries.count == totalNewlines
-
+        // Enumerate by **paragraph boundary** (split on `\n`), not
+        // by `.blockChrome` or `.blockID`. Both attribute-based
+        // enumerations have a fatal flaw for live editing: when
+        // the user types after pressing Enter, `typingAttributes`
+        // carries the previous paragraph's chrome AND blockID
+        // forward. UIKit applies those attrs to the new character,
+        // so two adjacent paragraphs in `attributedText` carry
+        // identical attribute values — `enumerateAttribute`
+        // consolidates them into one range, and only the first
+        // line gets a chrome paint. Splitting on `\n` instead
+        // gives us one paint call per paragraph regardless of
+        // attribute consolidation.
         let end = charRange.location + charRange.length
         var cursor = charRange.location
-        var absIndex = prefixNewlines
         while cursor < end {
             let searchRange = NSRange(location: cursor, length: end - cursor)
             let nlRange = nsString.range(of: "\n", options: [], range: searchRange)
             let paraEnd = nlRange.location != NSNotFound ? nlRange.location : end
             let paraRange = NSRange(location: cursor, length: paraEnd - cursor)
 
-            // Anchor location for the line fragment + the marker's font
-            // probe: the first character of the paragraph, or the
-            // trailing `\n` for an empty paragraph (flatten tags it too).
+            // Probe chrome at the first character of the
+            // paragraph, or at the trailing `\n` itself for empty
+            // paragraphs (the `\n` carries the paragraph's attrs
+            // because flatten sets them there too).
             let probeLocation: Int
             if paraRange.length > 0 {
                 probeLocation = paraRange.location
@@ -2632,14 +2580,10 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 probeLocation = -1
             }
 
-            if probeLocation >= 0, probeLocation < storageLength,
-               let kind = paragraphKind(
-                   absIndex: absIndex,
-                   probeLocation: probeLocation,
-                   index: index,
-                   useIndex: useIndex,
-                   storage: textStorage
-               ) {
+            if probeLocation >= 0,
+               probeLocation < storageLength,
+               let chromeRaw = textStorage.attribute(.blockChrome, at: probeLocation, effectiveRange: nil) as? Int,
+               let chrome = BlockChrome(rawValue: chromeRaw) {
 
                 // Extend the glyph range by one when the paragraph
                 // has no text — `enumerateLineFragments` doesn't
@@ -2655,7 +2599,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 let glyphRange = self.glyphRange(forCharacterRange: extendedChar, actualCharacterRange: nil)
                 let probeRange = NSRange(location: probeLocation, length: 1)
 
-                switch kind {
+                switch chrome {
                 case .blockquoteParagraph:
                     drawBlockquote(glyphRange: glyphRange, origin: origin)
                 case .codeBlock:
@@ -2665,91 +2609,31 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 case .bulletListItem:
                     drawBullet(glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
                 case .orderedListItem:
-                    // Ordinal from the item's position within its group,
-                    // computed over the WHOLE storage/index — never a
-                    // per-draw counter, which would render item 11 as
-                    // "1." once a long list scrolls mid-way.
-                    let ordinal: Int
-                    if useIndex, absIndex < index.entries.count {
-                        ordinal = Self.orderedItemOrdinal(in: index.entries, at: absIndex)
-                    } else {
-                        let groupID = textStorage.attribute(.groupID, at: probeLocation, effectiveRange: nil) as? UUID
-                        ordinal = Self.orderedItemOrdinal(
-                            in: textStorage,
-                            paragraphStart: paraRange.location,
-                            groupID: groupID
-                        )
-                    }
+                    // The ordinal is derived from the item's position
+                    // within its group in the STORAGE, not from a
+                    // per-draw running counter. drawBackground is
+                    // invoked with only the glyph range being redrawn
+                    // — a counter that starts at the first *drawn*
+                    // item renders item 11 as "1." the moment a long
+                    // list is scrolled mid-way.
+                    let groupID = textStorage.attribute(.groupID, at: probeLocation, effectiveRange: nil) as? UUID
+                    let ordinal = Self.orderedItemOrdinal(
+                        in: textStorage,
+                        paragraphStart: paraRange.location,
+                        groupID: groupID
+                    )
                     drawNumber(ordinal, glyphRange: glyphRange, origin: origin, storage: textStorage, charRange: probeRange)
-                case .paragraph, .heading:
+                default:
                     break
                 }
             }
 
             if nlRange.location == NSNotFound { break }
             cursor = paraEnd + 1
-            absIndex += 1
         }
-    }
-
-    /// Resolve a paragraph's kind: `ParagraphIndex` by absolute index
-    /// when the index is consistent with the storage, else the
-    /// `.blockChrome` attribute probe (mapped into the same vocabulary).
-    private func paragraphKind(
-        absIndex: Int,
-        probeLocation: Int,
-        index: ParagraphIndex,
-        useIndex: Bool,
-        storage: NSTextStorage
-    ) -> ParagraphKind? {
-        if useIndex, absIndex >= 0, absIndex < index.entries.count {
-            return index.entries[absIndex].kind
-        }
-        guard let chromeRaw = storage.attribute(.blockChrome, at: probeLocation, effectiveRange: nil) as? Int,
-              let chrome = BlockChrome(rawValue: chromeRaw) else { return nil }
-        return chrome.paragraphKind
-    }
-
-    /// Count of `\n` within `range` of `s` — maps a character location
-    /// to its absolute paragraph index and size-checks the index
-    /// against the storage. CFString-optimized search; O(range). Could
-    /// be cached on the manager and invalidated on edit if a very long
-    /// note ever makes the per-draw pass measurable.
-    static func newlineCount(in s: NSString, range: NSRange) -> Int {
-        var count = 0
-        var start = range.location
-        let end = range.location + range.length
-        while start < end {
-            let r = s.range(of: "\n", options: [], range: NSRange(location: start, length: end - start))
-            if r.location == NSNotFound { break }
-            count += 1
-            start = r.location + 1
-        }
-        return count
     }
 
     // MARK: - Ordered-list ordinal (pure, testable)
-
-    /// 1-based ordinal of the ordered-list item at `entryIndex`,
-    /// computed by walking PRECEDING `ParagraphIndex` entries while they
-    /// are `.orderedListItem` in the SAME list container (the container
-    /// id is the entry's `blockPath` second-to-last component). The
-    /// index-sourced mirror of the `.groupID` storage walk; the walk
-    /// stops at the first non-matching entry, so a fresh list group
-    /// restarts at 1.
-    static func orderedItemOrdinal(in entries: [ParagraphIndex.Entry], at entryIndex: Int) -> Int {
-        guard entryIndex >= 0, entryIndex < entries.count else { return 1 }
-        let container = entries[entryIndex].blockPath.dropLast().last
-        var ordinal = 1
-        var i = entryIndex - 1
-        while i >= 0,
-              entries[i].kind == .orderedListItem,
-              entries[i].blockPath.dropLast().last == container {
-            ordinal += 1
-            i -= 1
-        }
-        return ordinal
-    }
 
     /// 1-based ordinal of the ordered-list item whose paragraph starts
     /// at `paragraphStart`, computed by walking PRECEDING paragraphs in
