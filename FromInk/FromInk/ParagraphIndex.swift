@@ -1,0 +1,279 @@
+import Foundation
+
+/// Side-channel index of paragraph identity, owned by the editor's
+/// `Coordinator`. Each entry covers one paragraph (one leaf block
+/// emitted into the flattened NSAttributedString).
+///
+/// **Why this exists.** The previous design encoded block identity
+/// directly into NSAttributedString attribute keys (`.blockID`,
+/// `.groupID`, `.blockChrome`, `.fromInkListItemID`,
+/// `.fromInkLanguageHint`). That broke in three ways:
+///
+///   - UIKit's `typingAttributes` carried identity attributes forward
+///     across Enter, causing two adjacent paragraphs to share a
+///     blockID and `enumerateAttribute` to consolidate them into one
+///     range — only the first paragraph painted its chrome.
+///   - UIKit re-derived `typingAttributes` on every selection change
+///     and stripped every custom key, requiring a re-assert dance in
+///     two delegate methods to keep bullets from disappearing on tap.
+///   - `parseBack` had to dedupe identity collisions with fresh UUIDs
+///     in the parsed document only — leaving storage and document in
+///     disagreement on identity, which the selection bridge had to
+///     reconcile mid-typing.
+///
+/// `ParagraphIndex` is the side channel UIKit can't touch. Identity is
+/// explicit at every edit site: structural edits update the index
+/// incrementally with fresh blockIDs, reducer-driven mutations update
+/// the index alongside the storage edit. The selection bridge, slash
+/// trigger, drawBackground discriminator, and document parse-back all
+/// read from this single source of truth.
+///
+/// **Range convention.** `Entry.range` is the paragraph's text range
+/// EXCLUDING its trailing `\n` — matching `TextKitEditorView.flatten`'s
+/// existing `FlattenMap` contract. An empty paragraph has a
+/// zero-length range; its trailing `\n` carries the paragraph's
+/// attributes for layout but doesn't extend the range.
+struct ParagraphIndex: Equatable, Sendable {
+
+    /// One paragraph's identity + position. `range` is in the editor's
+    /// flattened NSAttributedString; the other fields address the
+    /// paragraph's place in the document tree.
+    struct Entry: Equatable, Sendable {
+        /// Paragraph's text range in the storage, excluding the
+        /// trailing `\n`. Empty paragraphs have length zero.
+        var range: NSRange
+
+        /// Path through the document tree to this paragraph's leaf,
+        /// matching `RichTextDocument.block(at:)`'s convention
+        /// (container ids included, ListItem ids skipped — see
+        /// `RichTextDocument.block(at:)` for the path semantics).
+        var blockPath: [UUID]
+
+        /// Semantic kind for rendering + structural decisions. See
+        /// `ParagraphKind` for the full set.
+        var kind: ParagraphKind
+
+        /// Identity of the enclosing `ListItem` when this paragraph
+        /// is a list item's text. Nil for non-list paragraphs.
+        /// Carried so list-item identity survives parse-back round
+        /// trips (region anchors on list rows will need this).
+        var listItemID: UUID?
+
+        /// Optional language hint for `.codeBlock` paragraphs.
+        /// Carried for future syntax-highlight work; nil for other
+        /// kinds.
+        var languageHint: String?
+
+        init(
+            range: NSRange,
+            blockPath: [UUID],
+            kind: ParagraphKind,
+            listItemID: UUID? = nil,
+            languageHint: String? = nil
+        ) {
+            self.range = range
+            self.blockPath = blockPath
+            self.kind = kind
+            self.listItemID = listItemID
+            self.languageHint = languageHint
+        }
+    }
+
+    var entries: [Entry]
+
+    init(entries: [Entry] = []) {
+        self.entries = entries
+    }
+
+    /// Build an index whose entry ranges match what
+    /// `TextKitEditorView.flatten` would produce for the same document.
+    /// Pure — no UIKit access, callable off the main actor, callable
+    /// from cross-platform code.
+    ///
+    /// **Range contract.** Each entry's `range` covers its paragraph's
+    /// text only (excluding the trailing `\n`) — matching the existing
+    /// `FlattenMap` contract so the two structures address the same
+    /// positions identically. An empty paragraph has length zero; its
+    /// position is the same character index where the next paragraph's
+    /// text begins minus one (the trailing `\n`).
+    ///
+    /// **Path semantics.** Container ids are included in the path;
+    /// `ListItem` ids are skipped per the
+    /// `RichTextDocument.block(at:)` convention. This means the index
+    /// can address a list-item's text paragraph with
+    /// `[bulletList.id, paragraph.id]` and round-trip through
+    /// `RichTextDocument.block(at:)` unchanged.
+    init(document: RichTextDocument) {
+        var entries: [Entry] = []
+        var cursor = 0
+
+        func appendEntry(
+            text: String,
+            blockPath: [UUID],
+            kind: ParagraphKind,
+            listItemID: UUID? = nil,
+            languageHint: String? = nil
+        ) {
+            // UTF-16 code units — the storage's NSRange convention and
+            // the BlockTreeSelection offset convention.
+            let length = (text as NSString).length
+            entries.append(Entry(
+                range: NSRange(location: cursor, length: length),
+                blockPath: blockPath,
+                kind: kind,
+                listItemID: listItemID,
+                languageHint: languageHint
+            ))
+            // +1 for the trailing `\n` that flatten emits after every
+            // paragraph — even the last one, per the flatten contract
+            // ("don't trim the terminator").
+            cursor += length + 1
+        }
+
+        func walk(_ block: Block, pathPrefix: [UUID], inBlockquote: Bool) {
+            let path = pathPrefix + [block.id]
+            switch block.kind {
+            case .paragraph(let inline):
+                let text = inline.reduce(into: "") { $0.append($1.text) }
+                let kind: ParagraphKind = inBlockquote ? .blockquoteParagraph : .paragraph
+                appendEntry(text: text, blockPath: path, kind: kind)
+
+            case .heading(let level, let inline):
+                let text = inline.reduce(into: "") { $0.append($1.text) }
+                appendEntry(text: text, blockPath: path, kind: .heading(level: level))
+
+            case .codeBlock(let text, let languageHint):
+                appendEntry(
+                    text: text,
+                    blockPath: path,
+                    kind: .codeBlock,
+                    languageHint: languageHint
+                )
+
+            case .divider:
+                // Divider flattens as the non-breaking space anchor
+                // (one UTF-16 unit) so TextKit has a glyph to position
+                // the rule against.
+                appendEntry(text: "\u{00A0}", blockPath: path, kind: .divider)
+
+            case .bulletList(let items):
+                for item in items {
+                    for (idx, child) in item.content.enumerated() {
+                        if idx == 0, case .paragraph(let inline) = child.kind {
+                            let text = inline.reduce(into: "") { $0.append($1.text) }
+                            appendEntry(
+                                text: text,
+                                blockPath: path + [child.id],
+                                kind: .bulletListItem,
+                                listItemID: item.id
+                            )
+                        } else {
+                            walk(child, pathPrefix: path, inBlockquote: inBlockquote)
+                        }
+                    }
+                }
+
+            case .orderedList(let items):
+                for item in items {
+                    for (idx, child) in item.content.enumerated() {
+                        if idx == 0, case .paragraph(let inline) = child.kind {
+                            let text = inline.reduce(into: "") { $0.append($1.text) }
+                            appendEntry(
+                                text: text,
+                                blockPath: path + [child.id],
+                                kind: .orderedListItem,
+                                listItemID: item.id
+                            )
+                        } else {
+                            walk(child, pathPrefix: path, inBlockquote: inBlockquote)
+                        }
+                    }
+                }
+
+            case .blockquote(let children):
+                for child in children {
+                    walk(child, pathPrefix: path, inBlockquote: true)
+                }
+            }
+        }
+
+        for block in document.blocks {
+            walk(block, pathPrefix: [], inBlockquote: false)
+        }
+        self.entries = entries
+    }
+
+    /// Leaf-block id at the tail of each entry's `blockPath`. Used by
+    /// the selection bridge to map a probed paragraph back to a
+    /// `BlockTreeSelection`.
+    func entry(forLeafID leafID: UUID) -> Entry? {
+        entries.first { $0.blockPath.last == leafID }
+    }
+
+    /// Adjust entry ranges in place for a *non-structural* text edit —
+    /// one that changes characters within a single paragraph without
+    /// adding, removing, or merging any paragraph (no `\n` inserted or
+    /// deleted).
+    ///
+    /// `editedRange` is the replaced range in PRE-edit storage
+    /// coordinates; `newLength` is the UTF-16 length of the text that
+    /// replaced it. The host paragraph (the one containing
+    /// `editedRange.location`) grows or shrinks by the delta, and every
+    /// later paragraph shifts by the same delta. Identity — `blockPath`,
+    /// `kind`, `listItemID`, `languageHint` — is untouched, because a
+    /// within-paragraph edit can't change which block a paragraph is.
+    ///
+    /// **Why only non-structural.** The editor routes every structural
+    /// edit (Enter, paste containing `\n`, cross-paragraph delete)
+    /// through an immediate full rebuild (`syncDocumentFromStorage` →
+    /// `ParagraphIndex(document:)`), so the incremental path never has
+    /// to mint fresh blockIDs or split/merge entries. It exists purely
+    /// to keep ranges accurate between a plain keystroke and the
+    /// debounced sync that follows it — the window in which a live
+    /// reader (the layout manager's chrome paint, the selection bridge)
+    /// would otherwise see stale offsets.
+    ///
+    /// No-ops when the delta is zero or `editedRange.location` falls
+    /// past the last paragraph (the phantom-tail position after the
+    /// document's final `\n`, which the caret never rests at).
+    mutating func applyNonStructuralEdit(editedRange: NSRange, newLength: Int) {
+        let delta = newLength - editedRange.length
+        guard delta != 0 else { return }
+        // Host = the paragraph containing the edit's start. Inclusive
+        // on both ends, earlier paragraph wins at a shared boundary —
+        // the same rule `entry(containing:)` uses, so the live reader
+        // and this maintainer agree on which paragraph an edit belongs
+        // to.
+        guard let host = entries.firstIndex(where: { entry in
+            editedRange.location >= entry.range.location
+                && editedRange.location <= entry.range.location + entry.range.length
+        }) else { return }
+        entries[host].range.length += delta
+        for i in entries.indices where i > host {
+            entries[i].range.location += delta
+        }
+    }
+
+    /// Entry whose paragraph range contains `location`.
+    ///
+    /// **Boundary semantics.** Inclusive on both ends. At the position
+    /// equal to the END of one paragraph's text (e.g. position 5 for
+    /// the paragraph "Hello"), the EARLIER paragraph wins — the next
+    /// paragraph's range starts at the position AFTER the `\n`
+    /// terminator (position 6), so the end-of-paragraph caret routes
+    /// to its host paragraph. This matches UIKit's `typingAttributes`
+    /// "extend the current paragraph" convention.
+    ///
+    /// Returns nil when `location` is past the last paragraph (the
+    /// "phantom tail" position after the document's final `\n`) — the
+    /// caller is responsible for snapping or treating as unset.
+    func entry(containing location: Int) -> Entry? {
+        for entry in entries {
+            if location >= entry.range.location,
+               location <= entry.range.location + entry.range.length {
+                return entry
+            }
+        }
+        return nil
+    }
+}
