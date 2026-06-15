@@ -335,6 +335,98 @@ final class ParagraphIndexTests: XCTestCase {
         XCTAssertEqual(incremental.entries, ParagraphIndex(document: after).entries)
     }
 
+    // MARK: - Structural split (Enter)
+
+    func test_split_paragraphInMiddle_makesTwoParagraphs() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "HelloWorld")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1]))
+
+        index.applyStructuralSplit(at: 5)  // after "Hello"
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 5))
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "First half keeps the original identity")
+        XCTAssertEqual(index.entries[0].kind, .paragraph)
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 6, length: 5), "Second half begins after the new \\n")
+        XCTAssertEqual(index.entries[1].kind, .paragraph)
+        XCTAssertNotEqual(index.entries[1].blockPath, [p1.id], "Second half gets a fresh id")
+    }
+
+    func test_split_listItemAtEnd_makesNewItemInSameContainer() {
+        let itemPara = Block(kind: .paragraph(inline: [Inline(text: "one")]))
+        let item = ListItem(content: [itemPara])
+        let list = Block(kind: .bulletList(items: [item]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [list]))
+
+        index.applyStructuralSplit(at: 3)  // Enter at end of "one"
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 3))
+        XCTAssertEqual(index.entries[0].kind, .bulletListItem)
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 4, length: 0), "New empty item after the \\n")
+        XCTAssertEqual(index.entries[1].kind, .bulletListItem, "Stays a list item — this is what UIKit corrupts")
+        XCTAssertEqual(index.entries[1].blockPath.first, list.id, "Same list container → numbering continues")
+        XCTAssertNotEqual(index.entries[1].blockPath.last, itemPara.id, "Fresh leaf id")
+        XCTAssertNotNil(index.entries[1].listItemID)
+        XCTAssertNotEqual(index.entries[1].listItemID, item.id, "Fresh listItemID")
+    }
+
+    func test_split_heading_demotesSecondHalfToParagraph() {
+        let h = Block(kind: .heading(level: 2, inline: [Inline(text: "Title")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [h]))
+
+        index.applyStructuralSplit(at: 5)
+
+        XCTAssertEqual(index.entries[0].kind, .heading(level: 2))
+        XCTAssertEqual(index.entries[1].kind, .paragraph, "Enter after a heading drops to body")
+    }
+
+    func test_split_blockquoteParagraph_keepsContainer() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "quote")]))
+        let bq = Block(kind: .blockquote(children: [p]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [bq]))
+
+        index.applyStructuralSplit(at: 5)
+
+        XCTAssertEqual(index.entries[1].kind, .blockquoteParagraph)
+        XCTAssertEqual(index.entries[1].blockPath.first, bq.id, "Same blockquote container")
+    }
+
+    func test_split_shiftsLaterParagraphs() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "CD")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+
+        index.applyStructuralSplit(at: 1)  // split "AB" → "A" / "B"
+
+        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 1))
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 2, length: 1))
+        XCTAssertEqual(index.entries[2].range, NSRange(location: 4, length: 2), "p2 shifts by the inserted \\n")
+        XCTAssertEqual(index.entries[2].blockPath, [p2.id], "p2 identity unchanged")
+    }
+
+    func test_split_atParagraphStart_leavesEmptyFirstHalf() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+
+        index.applyStructuralSplit(at: 0)
+
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 0), "Empty first half")
+        XCTAssertEqual(index.entries[0].blockPath, [p.id], "Original keeps identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 1, length: 5), "Content moves to the second half")
+    }
+
+    func test_split_outsideAnyParagraph_isNoOp() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "Hi")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+        let before = index.entries
+
+        index.applyStructuralSplit(at: 99)
+
+        XCTAssertEqual(index.entries, before)
+    }
+
     // MARK: - Range alignment with flatten output
 
     /// The index's ranges must match what `flatten` actually produces —

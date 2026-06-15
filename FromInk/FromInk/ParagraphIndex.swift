@@ -254,6 +254,79 @@ struct ParagraphIndex: Equatable, Sendable {
         }
     }
 
+    /// Update the index for an Enter that splits the paragraph at
+    /// `location` into two. The FIRST half keeps the original
+    /// paragraph's identity (the original is left in place); the SECOND
+    /// half becomes a NEW paragraph with a fresh leaf id, its kind and
+    /// container inherited per the editor's split policy — matching what
+    /// `paragraphIdentityFixups` + `parseBack` produce today, so the
+    /// index stays authoritative across Enter even when UIKit corrupts
+    /// the storage's identity attributes:
+    ///
+    ///   - paragraph → second half is a top-level `.paragraph`
+    ///   - heading → second half DEMOTES to a top-level `.paragraph`
+    ///     (Enter after a heading drops to body)
+    ///   - bullet / ordered list item → second half is a NEW item of
+    ///     the same kind in the SAME list container, with a fresh
+    ///     `listItemID`
+    ///   - blockquote paragraph → second half is another blockquote
+    ///     paragraph in the same container
+    ///
+    /// A `\n` is inserted at `location`, so the first half's terminator
+    /// becomes that newline and every paragraph after the split shifts
+    /// by one. `makeID` mints fresh ids (injectable for deterministic
+    /// tests). No-op when `location` falls outside every entry (the
+    /// phantom tail).
+    ///
+    /// Code blocks are treated as a top-level paragraph split for now —
+    /// Enter inside a code block (an internal newline, not a block
+    /// split) is a separate case the editor doesn't yet route here.
+    mutating func applyStructuralSplit(at location: Int, makeID: () -> UUID = { UUID() }) {
+        guard let i = entries.firstIndex(where: { entry in
+            location >= entry.range.location
+                && location <= entry.range.location + entry.range.length
+        }) else { return }
+        let original = entries[i]
+        let firstLength = location - original.range.location
+        let secondLength = original.range.length - firstLength
+
+        // First half keeps identity; shrink to the pre-split portion.
+        // Its terminator is now the inserted `\n` at `location`.
+        entries[i].range = NSRange(location: original.range.location, length: firstLength)
+
+        // Second half: fresh identity per the split policy above.
+        let container = Array(original.blockPath.dropLast())
+        let second: Entry
+        switch original.kind {
+        case .bulletListItem, .orderedListItem:
+            second = Entry(
+                range: NSRange(location: location + 1, length: secondLength),
+                blockPath: container + [makeID()],
+                kind: original.kind,
+                listItemID: makeID()
+            )
+        case .blockquoteParagraph:
+            second = Entry(
+                range: NSRange(location: location + 1, length: secondLength),
+                blockPath: container + [makeID()],
+                kind: .blockquoteParagraph
+            )
+        case .paragraph, .heading, .codeBlock, .divider:
+            // Top-level body paragraph (heading demotes to body).
+            second = Entry(
+                range: NSRange(location: location + 1, length: secondLength),
+                blockPath: [makeID()],
+                kind: .paragraph
+            )
+        }
+        entries.insert(second, at: i + 1)
+
+        // Everything after the new second half shifts by the inserted `\n`.
+        for j in entries.indices where j > i + 1 {
+            entries[j].range.location += 1
+        }
+    }
+
     /// Entry whose paragraph range contains `location`.
     ///
     /// **Boundary semantics.** Inclusive on both ends. At the position
