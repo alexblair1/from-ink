@@ -425,7 +425,8 @@ final class BulletChromeRegressionTests: XCTestCase {
         XCTAssertFalse(TextKitEditorView.shouldExitList(
             replacementText: "\n",
             replacementRange: NSRange(location: flat.attributed.length, length: 0),
-            storage: flat.attributed
+            storage: flat.attributed,
+            paragraphIndex: ParagraphIndex(document: doc)
         ))
     }
 

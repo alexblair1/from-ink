@@ -1195,13 +1195,47 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertTrue(TextKitEditorView.shouldExitList(
             replacementText: "\n",
             replacementRange: NSRange(location: 5, length: 0),
-            storage: flat.attributed
+            storage: flat.attributed,
+            paragraphIndex: ParagraphIndex(document: doc)
         ))
         XCTAssertFalse(TextKitEditorView.shouldExitList(
             replacementText: "\n",
             replacementRange: NSRange(location: 2, length: 0),
-            storage: flat.attributed
+            storage: flat.attributed,
+            paragraphIndex: ParagraphIndex(document: doc)
         ), "Non-empty list item gets the native Enter (split into a new row)")
+    }
+
+    /// Kind comes from ParagraphIndex, not `.blockChrome`. Flatten a
+    /// plain (non-list) empty paragraph but hand an index that calls it
+    /// a bullet item — shouldExitList must follow the INDEX (true).
+    func test_shouldExitList_storageBased_prefersParagraphIndexKind() {
+        let doc = RichTextDocument(blocks: [Block(kind: .paragraph(inline: []))])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let index = ParagraphIndex(entries: [
+            .init(range: NSRange(location: 0, length: 0), blockPath: [UUID()], kind: .bulletListItem)
+        ])
+        XCTAssertTrue(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            storage: flat.attributed,
+            paragraphIndex: index
+        ), "Index kind (bulletListItem) drives the decision over the .blockChrome attribute (paragraph)")
+    }
+
+    /// When the index can't name the paragraph (empty/stale), fall back
+    /// to the `.blockChrome` probe and still exit on an empty list item.
+    func test_shouldExitList_storageBased_fallsBackToChromeWhenIndexStale() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [ListItem(content: [Block(kind: .paragraph(inline: []))])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertTrue(TextKitEditorView.shouldExitList(
+            replacementText: "\n",
+            replacementRange: NSRange(location: 0, length: 0),
+            storage: flat.attributed,
+            paragraphIndex: ParagraphIndex()  // stale/empty
+        ), "Attribute fallback still detects the empty bullet item")
     }
 
     func test_slashFilter_returnsTextAfterTrigger_andNilWhenTriggerGone() {

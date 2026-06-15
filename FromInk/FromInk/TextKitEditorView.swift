@@ -1447,7 +1447,8 @@ struct TextKitEditorView: UIViewRepresentable {
     static func shouldExitList(
         replacementText text: String,
         replacementRange range: NSRange,
-        storage: NSAttributedString
+        storage: NSAttributedString,
+        paragraphIndex: ParagraphIndex
     ) -> Bool {
         guard text == "\n", range.length == 0 else { return false }
         let (textRange, probe) = paragraphSlice(at: range.location, in: storage)
@@ -1462,8 +1463,15 @@ struct TextKitEditorView: UIViewRepresentable {
         // carets off the phantom position entirely; this guard is the
         // pure-function half of the same invariant.)
         guard textRange.length == 0,
-              let probe, probe == textRange.location, probe < storage.length,
-              let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
+              let probe, probe == textRange.location, probe < storage.length else { return false }
+        // Kind from ParagraphIndex (primary), trusted only when its
+        // entry range matches the live empty-paragraph slice; otherwise
+        // fall back to the `.blockChrome` probe — the same identity
+        // resolution contract `bridgeSelection` uses.
+        if let entry = paragraphIndex.entry(containing: range.location), entry.range == textRange {
+            return entry.kind == .bulletListItem || entry.kind == .orderedListItem
+        }
+        guard let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
               let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
         return chrome == .bulletListItem || chrome == .orderedListItem
     }
@@ -2125,7 +2133,8 @@ struct TextKitEditorView: UIViewRepresentable {
             if TextKitEditorView.shouldExitList(
                 replacementText: text,
                 replacementRange: range,
-                storage: textView.attributedText
+                storage: textView.attributedText,
+                paragraphIndex: paragraphIndex
             ) {
                 pendingSlashLocation = nil
                 pendingNonStructuralEdit = nil
