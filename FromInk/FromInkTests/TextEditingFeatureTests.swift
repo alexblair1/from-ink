@@ -329,6 +329,68 @@ final class TextEditingFeatureTests: XCTestCase {
         XCTAssertEqual(innerInline.first?.text, "First")
     }
 
+    // MARK: - Slash command → heading (diagnostic for the live bug)
+
+    /// The live slash path: select Heading 1 from the palette with a
+    /// CORRECT trigger path. The leaf must become a heading. If this
+    /// passes, the reducer flow is sound and the live bug is the trigger
+    /// path id not matching the document (the bridge).
+    @MainActor
+    func test_slashCommandSelected_heading1_withMatchingPath_appliesHeading() async {
+        let doc = paragraphDoc("/")
+        let leafID = doc.blocks[0].id
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [leafID], offset: 1)
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.triggerBlockPath = [leafID]
+        initial.slashPalette.triggerOffset = 0
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading1)))
+        await store.skipReceivedActions()
+
+        guard case .heading(let level, _) = store.state.document.blocks.first?.kind else {
+            XCTFail("Expected heading after slash commandSelected with a matching path")
+            return
+        }
+        XCTAssertEqual(level, 1)
+    }
+
+    /// Same flow but the trigger path names a leaf that ISN'T in the
+    /// document (what a stale/wrong bridge path produces). Reproduces
+    /// the reported symptom: replaceLeaf finds nothing → nothing changes.
+    @MainActor
+    func test_slashCommandSelected_heading1_withMismatchedPath_noOps() async {
+        let doc = paragraphDoc("/")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.selection = .insertion(at: [doc.blocks[0].id], offset: 1)
+        initial.slashPalette.isOpen = true
+        initial.slashPalette.triggerBlockPath = [UUID()]  // not in the document
+        initial.slashPalette.triggerOffset = 0
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { $0.continuousClock = ImmediateClock() }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.slashPalette(.commandSelected(.heading1)))
+        await store.skipReceivedActions()
+
+        if case .heading = store.state.document.blocks.first?.kind {
+            XCTFail("A mismatched trigger path should NOT apply the heading")
+        }
+    }
+
     @MainActor
     func test_applyBlockFormat_numberedList_wrapsLeafInOrderedList() async {
         let doc = paragraphDoc("Step")

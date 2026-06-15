@@ -163,6 +163,28 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         XCTAssertFalse(TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex()))
     }
 
+    // MARK: - Heading diagnostics
+
+    func test_diag_flattenGivesHeadingFont_andReStampPreservesIt() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [Inline(text: "body")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let font0 = flat.attributed.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertEqual(font0?.pointSize, 28, "flatten gives H1 its 28pt font")
+        let chrome0 = flat.attributed.attribute(.blockChrome, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(chrome0, BlockChrome.heading1.rawValue)
+
+        let mutable = NSMutableAttributedString(attributedString: flat.attributed)
+        TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex(document: doc))
+
+        let font1 = mutable.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertEqual(font1?.pointSize, 28, "re-stamp preserves the heading font")
+        let chrome1 = mutable.attribute(.blockChrome, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(chrome1, BlockChrome.heading1.rawValue, "re-stamp preserves heading chrome")
+    }
+
     private static func threeItemOrderedList() -> RichTextDocument {
         RichTextDocument(blocks: [
             Block(kind: .orderedList(items: [

@@ -1989,6 +1989,15 @@ struct TextKitEditorView: UIViewRepresentable {
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             pathIndex = TextKitEditorView.leafPathIndex(parsed)
             paragraphIndex = ParagraphIndex(document: parsed)
+            // Re-stamp the storage's identity attributes from the parsed
+            // document so storage and document NEVER diverge on identity.
+            // parseBack mints fresh ids for deduped/corrupt paragraphs in
+            // the parsed tree only; without this, the storage keeps the
+            // stale ids and anything that reads identity from the storage
+            // (the selection bridge → the slash trigger path) hands the
+            // reducer a leaf id that no longer exists, so block-format
+            // commands silently no-op (the "headings do nothing" bug).
+            TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
             let rebuilt = TextKitEditorView.maps(
                 fromStorage: textView.attributedText,
                 pathIndex: pathIndex
