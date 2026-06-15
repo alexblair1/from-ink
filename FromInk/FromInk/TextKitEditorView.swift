@@ -162,6 +162,15 @@ struct TextKitEditorView: UIViewRepresentable {
             coord.parent.onCommand(command)
         }
 
+        // Backspace at the start of an empty list item outdents it to a
+        // body paragraph. Lives on the subclass (not shouldChangeTextIn)
+        // because at document offset 0 UIKit never asks the delegate —
+        // there's nothing to delete — so a lone empty list item at the
+        // top could otherwise never lose its list indent.
+        textView.onDeleteBackward = { [weak coordinator = context.coordinator] in
+            coordinator?.handleBackspaceOutdent() ?? false
+        }
+
         context.coordinator.textView = textView
 
         // Seed initial content from the document.
@@ -1476,6 +1485,40 @@ struct TextKitEditorView: UIViewRepresentable {
         return chrome == .bulletListItem || chrome == .orderedListItem
     }
 
+    /// Backspace at the START of an EMPTY list-item paragraph should
+    /// OUTDENT it to a body paragraph (the Apple Notes / Bear gesture),
+    /// not no-op (a lone empty item at the document top — where the
+    /// caret sits visually indented by the list's 28pt
+    /// `firstLineHeadIndent` and the user is otherwise stuck) and not
+    /// merge upward. Pure for unit testing; reads emptiness + chrome
+    /// from the storage like `shouldExitList`.
+    ///
+    /// **Empty-only by design.** Backspace on a NON-empty list item
+    /// keeps UIKit's native behaviour (merge with the previous line).
+    /// The own-terminator probe (`probe == textRange.location`) keeps
+    /// the phantom-tail position from triggering a spurious outdent,
+    /// matching `shouldExitList`.
+    static func shouldOutdentOnBackspace(
+        storage: NSAttributedString,
+        selectedRange: NSRange,
+        paragraphIndex: ParagraphIndex
+    ) -> Bool {
+        guard selectedRange.length == 0 else { return false }
+        let (textRange, probe) = paragraphSlice(at: selectedRange.location, in: storage)
+        guard textRange.length == 0,
+              selectedRange.location == textRange.location,
+              let probe, probe == textRange.location, probe < storage.length else { return false }
+        // Kind: ParagraphIndex primary, `.blockChrome` fallback — the
+        // same resolution contract `shouldExitList` / `bridgeSelection`
+        // use.
+        if let entry = paragraphIndex.entry(containing: selectedRange.location), entry.range == textRange {
+            return entry.kind == .bulletListItem || entry.kind == .orderedListItem
+        }
+        guard let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
+              let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
+        return chrome == .bulletListItem || chrome == .orderedListItem
+    }
+
     /// Merge From Ink's custom keys back into UIKit-derived typing
     /// attributes.
     ///
@@ -1898,6 +1941,26 @@ struct TextKitEditorView: UIViewRepresentable {
         /// True while a debounced sync is pending — the teardown path
         /// uses this to decide whether a final flush is needed.
         var hasPendingSync: Bool { syncTask != nil }
+
+        /// Backspace at the start of an empty list item → outdent to a
+        /// body paragraph via the reducer, mirroring the Enter→exitList
+        /// path (sync first so the reducer acts on current content, then
+        /// dispatch `.exitList`). Returns true when it handled the
+        /// keystroke so the caller skips the native delete. Fires even
+        /// at document offset 0, where `shouldChangeTextIn` never runs.
+        func handleBackspaceOutdent() -> Bool {
+            guard let textView, textView.markedTextRange == nil else { return false }
+            guard TextKitEditorView.shouldOutdentOnBackspace(
+                storage: textView.attributedText,
+                selectedRange: textView.selectedRange,
+                paragraphIndex: paragraphIndex
+            ) else { return false }
+            pendingSlashLocation = nil
+            pendingNonStructuralEdit = nil
+            syncDocumentFromStorage(textView)
+            parent.onCommand(.exitList)
+            return true
+        }
 
         // MARK: - Storage surgery primitives
 
@@ -2383,6 +2446,19 @@ final class BlockTreeTextView: UITextView {
     /// during initial layout / dealloc — the action methods below
     /// guard for that.
     var onEditorCommand: ((EditorCommand) -> Void)? = nil
+
+    /// Closure the editor wiring sets to intercept Backspace. Returns
+    /// true when it handled the keystroke (e.g. outdenting an empty
+    /// list item) so `super.deleteBackward()` is skipped. This fires
+    /// even with the caret at offset 0 — where UIKit never calls
+    /// `shouldChangeTextIn` because there's nothing to delete — so a
+    /// lone empty list item at the document top can still outdent.
+    var onDeleteBackward: (() -> Bool)? = nil
+
+    override func deleteBackward() {
+        if onDeleteBackward?() == true { return }
+        super.deleteBackward()
+    }
 
     /// Cached `keyCommands` array (M1). UIKit calls the getter
     /// periodically while the responder chain is walked or when ⌘ is

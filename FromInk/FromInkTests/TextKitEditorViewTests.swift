@@ -1238,6 +1238,72 @@ final class TextKitEditorViewTests: XCTestCase {
         ), "Attribute fallback still detects the empty bullet item")
     }
 
+    // MARK: - shouldOutdentOnBackspace (pure)
+
+    func test_shouldOutdentOnBackspace_emptyBulletItem_atTop_isTrue() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [ListItem(content: [Block(kind: .paragraph(inline: []))])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // Lone empty bullet item: storage "\n", caret at offset 0.
+        XCTAssertTrue(TextKitEditorView.shouldOutdentOnBackspace(
+            storage: flat.attributed,
+            selectedRange: NSRange(location: 0, length: 0),
+            paragraphIndex: ParagraphIndex(document: doc)
+        ))
+    }
+
+    func test_shouldOutdentOnBackspace_emptyOrderedItem_isTrue() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .orderedList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "a")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: []))])
+            ]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // "a\n\n" — the empty second item's paragraph starts at 2.
+        XCTAssertTrue(TextKitEditorView.shouldOutdentOnBackspace(
+            storage: flat.attributed,
+            selectedRange: NSRange(location: 2, length: 0),
+            paragraphIndex: ParagraphIndex(document: doc)
+        ))
+    }
+
+    func test_shouldOutdentOnBackspace_nonEmptyListItem_isFalse() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "x")]))])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        // Caret at the start of a NON-empty item — native merge, no outdent.
+        XCTAssertFalse(TextKitEditorView.shouldOutdentOnBackspace(
+            storage: flat.attributed,
+            selectedRange: NSRange(location: 0, length: 0),
+            paragraphIndex: ParagraphIndex(document: doc)
+        ))
+    }
+
+    func test_shouldOutdentOnBackspace_emptyTopLevelParagraph_isFalse() {
+        let doc = RichTextDocument(blocks: [Block(kind: .paragraph(inline: []))])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertFalse(TextKitEditorView.shouldOutdentOnBackspace(
+            storage: flat.attributed,
+            selectedRange: NSRange(location: 0, length: 0),
+            paragraphIndex: ParagraphIndex(document: doc)
+        ), "An empty body paragraph has no list indent to escape")
+    }
+
+    func test_shouldOutdentOnBackspace_nonZeroSelection_isFalse() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "ab")]))])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertFalse(TextKitEditorView.shouldOutdentOnBackspace(
+            storage: flat.attributed,
+            selectedRange: NSRange(location: 0, length: 2),
+            paragraphIndex: ParagraphIndex(document: doc)
+        ), "A range deletion is a normal delete, not an outdent")
+    }
+
     func test_slashFilter_returnsTextAfterTrigger_andNilWhenTriggerGone() {
         let doc = RichTextDocument(blocks: [
             Block(kind: .paragraph(inline: [Inline(text: "see /head below")]))
