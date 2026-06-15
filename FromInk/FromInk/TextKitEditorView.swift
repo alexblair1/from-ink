@@ -1882,6 +1882,19 @@ struct TextKitEditorView: UIViewRepresentable {
         /// rebuild instead).
         var pendingNonStructuralEdit: (range: NSRange, newLength: Int)? = nil
 
+        /// A clean single-`\n` structural edit captured in
+        /// `shouldChangeTextIn` (Enter split / backspace-join merge).
+        /// `syncDocumentFromStorage` applies it to `paragraphIndex` and
+        /// re-stamps the storage's identity attributes from the result
+        /// (Path B) — healing the corruption UIKit's `typingAttributes`
+        /// inflicts across Enter. `nil` for complex edits (multi-`\n`
+        /// paste, range deletes), which fall back to the legacy fixups.
+        enum StructuralEdit: Equatable {
+            case split(at: Int)
+            case merge(atParagraphStart: Int)
+        }
+        var pendingStructuralEdit: StructuralEdit? = nil
+
         /// `\n` count at the last sync — the structural-change
         /// discriminator. A didChange that doesn't move this number
         /// didn't add/remove/merge paragraphs and needs no immediate
@@ -1948,8 +1961,29 @@ struct TextKitEditorView: UIViewRepresentable {
             // storage and document then disagree, and the selection
             // bridge resolves the caret to the WRONG leaf (the
             // exit-wrong-item / vanishing-text bug).
-            if TextKitEditorView.newlineCount(in: textView.text as NSString) != lastNewlineCount
-                || TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText) {
+            // Path B: when we captured a clean structural edit, update
+            // the index incrementally and re-stamp the storage's identity
+            // attributes FROM the index — healing the corruption UIKit's
+            // typingAttributes inflicts across Enter (lost bullets/numbers,
+            // restarting numbering). The re-stamp is count-guarded; if the
+            // index and storage disagree (a complex/untracked edit) it
+            // no-ops and we fall back to the legacy duplicate-blockID
+            // fixups, so behaviour is never worse than before.
+            let needsLegacyFixups =
+                TextKitEditorView.newlineCount(in: textView.text as NSString) != lastNewlineCount
+                || TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText)
+            var healed = false
+            if let structural = pendingStructuralEdit {
+                switch structural {
+                case .split(let location):
+                    paragraphIndex.applyStructuralSplit(at: location)
+                case .merge(let location):
+                    paragraphIndex.applyStructuralMerge(atParagraphStart: location)
+                }
+                healed = TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
+            }
+            pendingStructuralEdit = nil
+            if !healed, needsLegacyFixups {
                 applyParagraphIdentityFixups(textView)
             }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
@@ -2222,6 +2256,7 @@ struct TextKitEditorView: UIViewRepresentable {
             if textView.markedTextRange != nil {
                 pendingSlashLocation = nil
                 pendingNonStructuralEdit = nil
+                pendingStructuralEdit = nil
                 return true
             }
 
@@ -2268,6 +2303,7 @@ struct TextKitEditorView: UIViewRepresentable {
             ) {
                 pendingSlashLocation = nil
                 pendingNonStructuralEdit = nil
+                pendingStructuralEdit = nil
                 syncDocumentFromStorage(textView)
                 parent.onCommand(.exitList)
                 return false
@@ -2281,12 +2317,23 @@ struct TextKitEditorView: UIViewRepresentable {
             // (fresh blockID, heading demotion) before the immediate
             // document sync.
             //
-            // Capture the edit so the non-structural branch of
-            // `textViewDidChange` can keep `paragraphIndex`'s ranges
-            // current without a full rebuild. A structural edit (Enter,
-            // newline paste) is captured too but never applied — its
-            // didChange branch rebuilds the index wholesale and clears
-            // this.
+            // Capture the edit for the index maintainers. A non-structural
+            // keystroke keeps `paragraphIndex`'s ranges current via
+            // `applyNonStructuralEdit`; a clean single-`\n` structural edit
+            // (Enter split, backspace-join merge) is captured so the sync
+            // can update the index incrementally and re-stamp identity from
+            // it (Path B). Complex edits leave `pendingStructuralEdit` nil
+            // and fall back to the legacy fixups.
+            let ns = textView.attributedText.string as NSString
+            if text == "\n", range.length == 0 {
+                pendingStructuralEdit = .split(at: range.location)
+            } else if text.isEmpty, range.length == 1,
+                      range.location < ns.length,
+                      ns.substring(with: range) == "\n" {
+                pendingStructuralEdit = .merge(atParagraphStart: range.location + 1)
+            } else {
+                pendingStructuralEdit = nil
+            }
             pendingNonStructuralEdit = (range: range, newLength: (text as NSString).length)
             return true
         }
