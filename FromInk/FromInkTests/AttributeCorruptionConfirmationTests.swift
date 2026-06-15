@@ -109,6 +109,60 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         XCTAssertEqual(style?.firstLineHeadIndent, 28, "Indent persists even though the marker is gone")
     }
 
+    // MARK: - Path B: re-stamping from the index heals the corruption
+
+    /// THE FIX, proven: corrupt the storage exactly as UIKit does (strip
+    /// chrome + group from continuation items), then re-stamp from the
+    /// authoritative index — parseBack recovers the intact single list.
+    func test_reStampFromIndex_healsStrippedChrome_listSurvivesParseBack() {
+        let doc = Self.threeItemOrderedList()
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let mutable = NSMutableAttributedString(attributedString: flat.attributed)
+        for range in [flat.flattenMap[1].nsRange, flat.flattenMap[2].nsRange] {
+            mutable.removeAttribute(.blockChrome, range: range)
+            mutable.removeAttribute(.groupID, range: range)
+        }
+        // Sanity: corrupted storage fragments the list (the bug).
+        XCTAssertNotEqual(TextKitEditorView.parseBack(mutable).blocks.count, 1)
+
+        // Heal from the authoritative index (what the live wiring will do
+        // after structural maintenance).
+        let healed = TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex(document: doc))
+        XCTAssertTrue(healed)
+
+        let recovered = TextKitEditorView.parseBack(mutable)
+        XCTAssertEqual(recovered.blocks.count, 1, "Re-stamp heals the fragmentation")
+        guard case .orderedList(let items) = recovered.blocks[0].kind else {
+            return XCTFail("Expected a single ordered list after healing")
+        }
+        XCTAssertEqual(items.count, 3, "All three items back in one list → numbering 1,2,3")
+    }
+
+    /// The re-stamp also restores the `.blockChrome` the layout manager
+    /// probes, so the markers paint again.
+    func test_reStampFromIndex_restoresChromeProbe() {
+        let doc = Self.threeItemOrderedList()
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let mutable = NSMutableAttributedString(attributedString: flat.attributed)
+        let item2 = flat.flattenMap[1].nsRange
+        mutable.removeAttribute(.blockChrome, range: item2)
+        XCTAssertNil(mutable.attribute(.blockChrome, at: item2.location, effectiveRange: nil))
+
+        TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex(document: doc))
+
+        let chrome = mutable.attribute(.blockChrome, at: item2.location, effectiveRange: nil) as? Int
+        XCTAssertEqual(chrome, BlockChrome.orderedListItem.rawValue, "Marker chrome restored from the index")
+    }
+
+    /// Count mismatch (index not yet aligned with the storage) → no-op,
+    /// so the caller falls back to the legacy path instead of corrupting.
+    func test_reStampFromIndex_countMismatch_isNoOp() {
+        let doc = Self.threeItemOrderedList()
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let mutable = NSMutableAttributedString(attributedString: flat.attributed)
+        XCTAssertFalse(TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex()))
+    }
+
     private static func threeItemOrderedList() -> RichTextDocument {
         RichTextDocument(blocks: [
             Block(kind: .orderedList(items: [

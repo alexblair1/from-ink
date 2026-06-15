@@ -1040,6 +1040,73 @@ struct TextKitEditorView: UIViewRepresentable {
         return RichTextDocument(blocks: topLevel)
     }
 
+    // MARK: - Identity re-stamp (Path B: heal attributes from the index)
+
+    /// Re-stamp per-paragraph identity attributes onto `storage` FROM the
+    /// authoritative `index`, matching the i-th paragraph (split on `\n`)
+    /// to the i-th entry. This heals the corruption UIKit's
+    /// `typingAttributes` inflicts across Enter — instead of relying on
+    /// the fragile preservation dances, we overwrite `.blockChrome`,
+    /// `.blockID`, `.groupID`, `.fromInkListItemID`,
+    /// `.fromInkLanguageHint`, and `.paragraphStyle` with the values the
+    /// index says are correct, so `parseBack` and `drawBackground` read
+    /// the right structure regardless of what UIKit stripped. Inline
+    /// attributes (marks, per-run fonts) are left untouched.
+    ///
+    /// Matching is by ORDER, not range — so index range drift is
+    /// irrelevant; only the paragraph COUNT must agree (it does right
+    /// after structural maintenance updates the index). Returns `false`
+    /// without mutating when the counts disagree, so the caller can fall
+    /// back to the legacy fixups.
+    @discardableResult
+    static func reStampIdentity(on storage: NSMutableAttributedString, from index: ParagraphIndex) -> Bool {
+        let ns = storage.string as NSString
+        var paraRanges: [NSRange] = []
+        var cursor = 0
+        while cursor < ns.length {
+            let nl = ns.range(of: "\n", options: [], range: NSRange(location: cursor, length: ns.length - cursor))
+            let end = nl.location != NSNotFound ? nl.location + 1 : ns.length
+            paraRanges.append(NSRange(location: cursor, length: end - cursor))
+            if nl.location == NSNotFound { break }
+            cursor = end
+        }
+        guard paraRanges.count == index.entries.count else { return false }
+
+        for (range, entry) in zip(paraRanges, index.entries) {
+            let chrome = BlockChrome(entry.kind)
+            storage.addAttribute(.blockChrome, value: chrome.rawValue, range: range)
+            if let leafID = entry.blockPath.last {
+                storage.addAttribute(.blockID, value: leafID, range: range)
+            }
+            // groupID is the container id for grouped kinds (so parseBack
+            // re-groups them into one list/quote); absent otherwise.
+            let container: UUID?
+            switch entry.kind {
+            case .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                container = entry.blockPath.dropLast().last
+            default:
+                container = nil
+            }
+            if let container {
+                storage.addAttribute(.groupID, value: container, range: range)
+            } else {
+                storage.removeAttribute(.groupID, range: range)
+            }
+            if let itemID = entry.listItemID {
+                storage.addAttribute(.fromInkListItemID, value: itemID, range: range)
+            } else {
+                storage.removeAttribute(.fromInkListItemID, range: range)
+            }
+            if let hint = entry.languageHint {
+                storage.addAttribute(.fromInkLanguageHint, value: hint, range: range)
+            } else {
+                storage.removeAttribute(.fromInkLanguageHint, range: range)
+            }
+            storage.addAttribute(.paragraphStyle, value: paragraphStyle(for: chrome), range: range)
+        }
+        return true
+    }
+
     private struct ParagraphSlice {
         let nsRange: NSRange
         let text: String
@@ -2552,6 +2619,30 @@ enum BlockChrome: Int {
     case blockquoteParagraph
     case codeBlock
     case divider
+}
+
+extension BlockChrome {
+    /// The chrome a `ParagraphKind` flattens to — the inverse of the
+    /// kind a paragraph parses back to. Used by the index → storage
+    /// re-stamp to write the authoritative kind onto the storage's
+    /// `.blockChrome` attribute. Heading levels follow flatten's
+    /// mapping (1/2 explicit, 3+ → heading3).
+    init(_ kind: ParagraphKind) {
+        switch kind {
+        case .paragraph:            self = .paragraph
+        case .heading(let level):
+            switch level {
+            case 1:  self = .heading1
+            case 2:  self = .heading2
+            default: self = .heading3
+            }
+        case .bulletListItem:       self = .bulletListItem
+        case .orderedListItem:      self = .orderedListItem
+        case .blockquoteParagraph:  self = .blockquoteParagraph
+        case .codeBlock:            self = .codeBlock
+        case .divider:              self = .divider
+        }
+    }
 }
 
 extension NSAttributedString.Key {
