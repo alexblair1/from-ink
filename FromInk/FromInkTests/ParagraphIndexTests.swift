@@ -427,6 +427,86 @@ final class ParagraphIndexTests: XCTestCase {
         XCTAssertEqual(index.entries, before)
     }
 
+    // MARK: - Structural merge (backspace join)
+
+    func test_merge_twoParagraphs_predecessorAbsorbsAndKeepsIdentity() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "CD")]))
+        let p3 = Block(kind: .paragraph(inline: [Inline(text: "EF")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2, p3]))
+        // "AB\nCD\nEF\n": p1(0,2) p2(3,2) p3(6,2). Backspace at start of p2 (3).
+        index.applyStructuralMerge(atParagraphStart: 3)
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 4), "p1 absorbs p2's text")
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "Predecessor keeps its identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 5, length: 2), "p3 shifts back by the deleted \\n")
+        XCTAssertEqual(index.entries[1].blockPath, [p3.id])
+    }
+
+    func test_merge_bodyIntoListItem_staysListItem() {
+        let itemPara = Block(kind: .paragraph(inline: [Inline(text: "one")]))
+        let item = ListItem(content: [itemPara])
+        let list = Block(kind: .bulletList(items: [item]))
+        let body = Block(kind: .paragraph(inline: [Inline(text: "two")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [list, body]))
+        // "one\ntwo\n": item(0,3) body(4,3). Backspace at start of body (4).
+        index.applyStructuralMerge(atParagraphStart: 4)
+
+        XCTAssertEqual(index.entries.count, 1)
+        XCTAssertEqual(index.entries[0].kind, .bulletListItem, "Merged result keeps the list item's kind")
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 6))
+        XCTAssertEqual(index.entries[0].blockPath.first, list.id)
+    }
+
+    func test_merge_emptyParagraphUp_absorbsNothing() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let pEmpty = Block(kind: .paragraph(inline: []))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, pEmpty]))
+        // "AB\n\n": p1(0,2) pEmpty(3,0). Backspace at start of the empty (3).
+        index.applyStructuralMerge(atParagraphStart: 3)
+
+        XCTAssertEqual(index.entries.count, 1)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 2))
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id])
+    }
+
+    func test_merge_atFirstParagraph_isNoOp() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "CD")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+        let before = index.entries
+
+        index.applyStructuralMerge(atParagraphStart: 0)  // nothing to merge into
+
+        XCTAssertEqual(index.entries, before)
+    }
+
+    func test_merge_atNonParagraphStart_isNoOp() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "CD")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+        let before = index.entries
+
+        index.applyStructuralMerge(atParagraphStart: 1)  // mid-paragraph, not a start
+
+        XCTAssertEqual(index.entries, before)
+    }
+
+    /// Split then merge at the same point round-trips the ranges (the
+    /// fresh ids differ, but the structure/positions return to start).
+    func test_splitThenMerge_restoresRangesAndCount() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "HelloWorld")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1]))
+
+        index.applyStructuralSplit(at: 5)        // → "Hello" / "World"
+        index.applyStructuralMerge(atParagraphStart: 6)  // join "World" back up
+
+        XCTAssertEqual(index.entries.count, 1)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 10))
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "Predecessor (original) identity survives the round trip")
+    }
+
     // MARK: - Range alignment with flatten output
 
     /// The index's ranges must match what `flatten` actually produces —

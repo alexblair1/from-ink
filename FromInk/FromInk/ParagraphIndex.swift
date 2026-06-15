@@ -327,6 +327,35 @@ struct ParagraphIndex: Equatable, Sendable {
         }
     }
 
+    /// Update the index for a backspace/delete that removes the `\n`
+    /// between a paragraph and its predecessor, merging the two into
+    /// one. `location` is the start of the paragraph being merged UP
+    /// (the caret's paragraph before a backspace-at-start).
+    ///
+    /// The predecessor ABSORBS the merged paragraph's text and keeps its
+    /// own identity + kind — matching `parseBack`, which reads the merged
+    /// paragraph's attributes from its (now the predecessor's) first
+    /// character. So merging a body paragraph up into a list item leaves
+    /// a list item; merging two list items leaves one item in the same
+    /// container.
+    ///
+    /// No-op when no paragraph starts exactly at `location`, or when it
+    /// is the first paragraph (nothing to merge into).
+    mutating func applyStructuralMerge(atParagraphStart location: Int) {
+        guard let b = entries.firstIndex(where: { $0.range.location == location }), b > 0 else { return }
+        let a = b - 1
+        // The `\n` was the predecessor's terminator (never counted in
+        // its range), so the predecessor simply grows by the merged
+        // paragraph's text length.
+        entries[a].range.length += entries[b].range.length
+        entries.remove(at: b)
+        // Everything from the removed paragraph onward shifts back by
+        // the deleted `\n`.
+        for j in entries.indices where j >= b {
+            entries[j].range.location -= 1
+        }
+    }
+
     /// Entry whose paragraph range contains `location`.
     ///
     /// **Boundary semantics.** Inclusive on both ends. At the position
