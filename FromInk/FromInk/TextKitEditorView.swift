@@ -175,6 +175,7 @@ struct TextKitEditorView: UIViewRepresentable {
         context.coordinator.flattenMap = initial.flattenMap
         context.coordinator.flattenIDMap = initial.flattenIDMap
         context.coordinator.pathIndex = Self.leafPathIndex(document)
+        context.coordinator.paragraphIndex = ParagraphIndex(document: document)
         context.coordinator.lastNewlineCount = Self.newlineCount(in: initial.attributed.string as NSString)
         // Default typing attributes for an empty document.
         textView.typingAttributes = Self.typingAttributes(
@@ -218,6 +219,7 @@ struct TextKitEditorView: UIViewRepresentable {
             context.coordinator.flattenMap = flattened.flattenMap
             context.coordinator.flattenIDMap = flattened.flattenIDMap
             context.coordinator.pathIndex = Self.leafPathIndex(document)
+            context.coordinator.paragraphIndex = ParagraphIndex(document: document)
             context.coordinator.lastNewlineCount = Self.newlineCount(in: flattened.attributed.string as NSString)
             context.coordinator.lastSyncedDocument = document
 
@@ -253,6 +255,7 @@ struct TextKitEditorView: UIViewRepresentable {
         let bridgedCurrent = Self.bridgeSelection(
             storage: textView.attributedText,
             selectedRange: textView.selectedRange,
+            paragraphIndex: context.coordinator.paragraphIndex,
             pathIndex: context.coordinator.pathIndex
         )
         if selection != bridgedCurrent,
@@ -1283,11 +1286,24 @@ struct TextKitEditorView: UIViewRepresentable {
         return (textRange, probe)
     }
 
-    /// Bridge a UITextView selection into `BlockTreeSelection` by
-    /// reading the `.blockID` attribute at the caret's paragraph and
-    /// resolving the full path through `pathIndex`. O(paragraph) —
-    /// replaces the flatten-map scan that previously required a full
-    /// re-flatten per keystroke to stay fresh.
+    /// Bridge a UITextView selection into `BlockTreeSelection`.
+    /// Paragraph text ranges come from the live storage
+    /// (`paragraphSlice`), so the caret-local offsets are always
+    /// fresh; the host paragraph's *identity* comes from
+    /// `ParagraphIndex` — the single source of truth UIKit's
+    /// `typingAttributes` can't strip or duplicate. O(paragraph).
+    ///
+    /// **Identity resolution.** Primary source is `paragraphIndex`,
+    /// keyed by the caret's location. It's trusted only when its entry
+    /// range matches the live paragraph slice exactly — that equality
+    /// is the proof the index's ranges are current (the incremental
+    /// `applyNonStructuralEdit` maintenance keeps them so between
+    /// debounced syncs). When the index hasn't caught up to a
+    /// structural edit yet (its rebuild is deferred to the next
+    /// runloop), the ranges disagree and we FALL BACK to the `.blockID`
+    /// attribute probe, which rides along with the live text and is
+    /// always correct. The attribute keys stay in storage as this
+    /// safety net until every reader has migrated off them.
     ///
     /// Contract parity with the map-based bridge:
     ///   - Multi-paragraph ranges clamp `endUTF16` to the host
@@ -1298,6 +1314,7 @@ struct TextKitEditorView: UIViewRepresentable {
     static func bridgeSelection(
         storage: NSAttributedString,
         selectedRange: NSRange,
+        paragraphIndex: ParagraphIndex,
         pathIndex: [UUID: [UUID]]
     ) -> BlockTreeSelection {
         let ns = storage.string as NSString
@@ -1309,14 +1326,16 @@ struct TextKitEditorView: UIViewRepresentable {
             return BlockTreeSelection()
         }
         let (textRange, probe) = paragraphSlice(at: selectedRange.location, in: storage)
-        guard let probe, probe < storage.length,
-              let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID else {
+        guard let path = hostPath(
+            forCaretAt: selectedRange.location,
+            textRange: textRange,
+            probe: probe,
+            storage: storage,
+            paragraphIndex: paragraphIndex,
+            pathIndex: pathIndex
+        ) else {
             return BlockTreeSelection()
         }
-        // Fall back to a top-level path when the index hasn't seen
-        // this leaf yet (brand-new paragraph typed since the last
-        // sync; the next sync creates the block with this id).
-        let path = pathIndex[blockID] ?? [blockID]
         let start = max(0, selectedRange.location - textRange.location)
         let absoluteEnd = min(selectedRange.location + selectedRange.length, textRange.location + textRange.length)
         let end = max(start, absoluteEnd - textRange.location)
@@ -1325,6 +1344,36 @@ struct TextKitEditorView: UIViewRepresentable {
             startUTF16: min(start, textRange.length),
             endUTF16: min(end, textRange.length)
         )
+    }
+
+    /// The caret paragraph's block path, resolved index-first with an
+    /// attribute-probe fallback. See `bridgeSelection` for the identity
+    /// resolution contract. `nil` when neither source can name the
+    /// paragraph (empty/torn-down storage).
+    private static func hostPath(
+        forCaretAt location: Int,
+        textRange: NSRange,
+        probe: Int?,
+        storage: NSAttributedString,
+        paragraphIndex: ParagraphIndex,
+        pathIndex: [UUID: [UUID]]
+    ) -> [UUID]? {
+        // Primary: ParagraphIndex. Trusted only when its entry range
+        // matches the live paragraph slice — equal ranges prove the
+        // index is current for this paragraph.
+        if let entry = paragraphIndex.entry(containing: location),
+           entry.range == textRange {
+            return entry.blockPath
+        }
+        // Fallback: `.blockID` attribute, which rides the live text and
+        // never goes stale. Top-level path when `pathIndex` hasn't seen
+        // this leaf yet (brand-new paragraph typed since the last sync;
+        // the next sync creates the block with this id).
+        guard let probe, probe < storage.length,
+              let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID else {
+            return nil
+        }
+        return pathIndex[blockID] ?? [blockID]
     }
 
     /// Rebuild the flatten maps by walking the STORAGE's paragraphs
@@ -1695,6 +1744,26 @@ struct TextKitEditorView: UIViewRepresentable {
         /// freshly re-flattened document.
         var pathIndex: [UUID: [UUID]] = [:]
 
+        /// Side-channel paragraph identity — the single source of truth
+        /// for paragraph→block-path mapping that UIKit's
+        /// `typingAttributes` can't touch. Rebuilt in full at every
+        /// document sync (alongside `flattenMap` and `pathIndex`) and
+        /// maintained incrementally between debounced syncs via
+        /// `applyNonStructuralEdit` so its ranges stay live for readers.
+        /// Read by `bridgeSelection` (identity resolution); further
+        /// readers migrate off the attribute-based paths in subsequent
+        /// commits.
+        var paragraphIndex: ParagraphIndex = .init()
+
+        /// The storage text edit captured in `shouldChangeTextIn`,
+        /// applied to `paragraphIndex` in `textViewDidChange`'s
+        /// non-structural branch to keep the index's ranges current
+        /// between debounced syncs. `nil` for edits that don't flow
+        /// through the native insertion path (composition, exit-list)
+        /// or that turn out to be structural (consumed by a full
+        /// rebuild instead).
+        var pendingNonStructuralEdit: (range: NSRange, newLength: Int)? = nil
+
         /// `\n` count at the last sync — the structural-change
         /// discriminator. A didChange that doesn't move this number
         /// didn't add/remove/merge paragraphs and needs no immediate
@@ -1767,6 +1836,7 @@ struct TextKitEditorView: UIViewRepresentable {
             }
             let parsed = TextKitEditorView.parseBack(textView.attributedText)
             pathIndex = TextKitEditorView.leafPathIndex(parsed)
+            paragraphIndex = ParagraphIndex(document: parsed)
             let rebuilt = TextKitEditorView.maps(
                 fromStorage: textView.attributedText,
                 pathIndex: pathIndex
@@ -1790,6 +1860,7 @@ struct TextKitEditorView: UIViewRepresentable {
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: textView.attributedText,
                 selectedRange: textView.selectedRange,
+                paragraphIndex: paragraphIndex,
                 pathIndex: pathIndex
             )
             if bridged != parent.selection {
@@ -2012,6 +2083,7 @@ struct TextKitEditorView: UIViewRepresentable {
             // composition ends.
             if textView.markedTextRange != nil {
                 pendingSlashLocation = nil
+                pendingNonStructuralEdit = nil
                 return true
             }
 
@@ -2056,6 +2128,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 storage: textView.attributedText
             ) {
                 pendingSlashLocation = nil
+                pendingNonStructuralEdit = nil
                 syncDocumentFromStorage(textView)
                 parent.onCommand(.exitList)
                 return false
@@ -2068,6 +2141,14 @@ struct TextKitEditorView: UIViewRepresentable {
             // structural path assigns the new paragraph its identity
             // (fresh blockID, heading demotion) before the immediate
             // document sync.
+            //
+            // Capture the edit so the non-structural branch of
+            // `textViewDidChange` can keep `paragraphIndex`'s ranges
+            // current without a full rebuild. A structural edit (Enter,
+            // newline paste) is captured too but never applied — its
+            // didChange branch rebuilds the index wholesale and clears
+            // this.
+            pendingNonStructuralEdit = (range: range, newLength: (text as NSString).length)
             return true
         }
 
@@ -2116,8 +2197,21 @@ struct TextKitEditorView: UIViewRepresentable {
             if isStructural || needsTailFixup || paletteInteraction {
                 syncDocumentFromStorage(textView)
             } else {
+                // Non-structural keystroke: no paragraph added, removed,
+                // or merged — keep the index's ranges live with a cheap
+                // in-place shift instead of waiting for the debounced
+                // rebuild, so `bridgeSelection` resolves identity from
+                // the index (not the fallback) for caret moves before
+                // the next sync.
+                if let edit = pendingNonStructuralEdit {
+                    paragraphIndex.applyNonStructuralEdit(
+                        editedRange: edit.range,
+                        newLength: edit.newLength
+                    )
+                }
                 scheduleDebouncedSync(textView)
             }
+            pendingNonStructuralEdit = nil
 
             // Live filter republish while the palette is open —
             // computed storage-side; nil dismisses (trigger deleted).
@@ -2146,6 +2240,7 @@ struct TextKitEditorView: UIViewRepresentable {
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: attributedText,
                 selectedRange: NSRange(location: slashLocation, length: 0),
+                paragraphIndex: paragraphIndex,
                 pathIndex: pathIndex
             )
             guard !bridged.path.isEmpty else { return }
@@ -2216,13 +2311,15 @@ struct TextKitEditorView: UIViewRepresentable {
             )
 
             guard !isApplyingBindingUpdate else { return }
-            // Attribute-based bridge: O(paragraph) against the live
-            // storage. The flatten maps are only rebuilt at sync
-            // points and their offsets go stale between keystrokes —
-            // the bridge never does.
+            // O(paragraph) bridge against live storage. Paragraph
+            // ranges come from the storage (always fresh); identity
+            // comes from `paragraphIndex`, kept current between syncs
+            // by the incremental `applyNonStructuralEdit` maintenance,
+            // with the `.blockID` probe as the structural-gap fallback.
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: textView.attributedText,
                 selectedRange: textView.selectedRange,
+                paragraphIndex: paragraphIndex,
                 pathIndex: pathIndex
             )
             if bridged != parent.selection {

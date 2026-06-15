@@ -1004,6 +1004,7 @@ final class TextKitEditorViewTests: XCTestCase {
         let bridged = TextKitEditorView.bridgeSelection(
             storage: result.attributed,
             selectedRange: NSRange(location: 11, length: 3),
+            paragraphIndex: ParagraphIndex(document: doc),
             pathIndex: pathIndex
         )
         XCTAssertEqual(bridged.path, [doc.blocks[1].id, listLeafID], "Path includes the list container, skips the ListItem id")
@@ -1024,6 +1025,7 @@ final class TextKitEditorViewTests: XCTestCase {
         let bridged = TextKitEditorView.bridgeSelection(
             storage: result.attributed,
             selectedRange: NSRange(location: 2, length: 8),
+            paragraphIndex: ParagraphIndex(document: doc),
             pathIndex: pathIndex
         )
         XCTAssertEqual(bridged.path, [doc.blocks[0].id])
@@ -1039,9 +1041,54 @@ final class TextKitEditorViewTests: XCTestCase {
         let bridged = TextKitEditorView.bridgeSelection(
             storage: result.attributed,
             selectedRange: NSRange(location: result.attributed.length, length: 0),
+            paragraphIndex: ParagraphIndex(document: doc),
             pathIndex: TextKitEditorView.leafPathIndex(doc)
         )
         XCTAssertTrue(bridged.isUnset, "Phantom line after the final \\n matches the old map-based bridge's unset contract")
+    }
+
+    /// Identity comes from `ParagraphIndex`, not the `.blockID`
+    /// attribute. Hand a divergent index (a different path for the same
+    /// range) and prove the bridge returns the INDEX's path — the
+    /// attribute is only consulted as a fallback.
+    func test_bridgeSelection_prefersParagraphIndexOverBlockIDAttribute() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let indexLeafID = UUID()
+        let index = ParagraphIndex(entries: [
+            .init(range: NSRange(location: 0, length: 5), blockPath: [indexLeafID], kind: .paragraph)
+        ])
+
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: result.attributed,
+            selectedRange: NSRange(location: 2, length: 0),
+            paragraphIndex: index,
+            pathIndex: TextKitEditorView.leafPathIndex(doc)  // maps the REAL .blockID
+        )
+        XCTAssertEqual(bridged.path, [indexLeafID], "Index identity wins over the .blockID attribute")
+        XCTAssertEqual(bridged.startUTF16, 2)
+    }
+
+    /// When the index can't name the paragraph (here: empty, as if a
+    /// structural edit hasn't been rebuilt yet), the bridge falls back
+    /// to the `.blockID` attribute probe and still resolves correctly.
+    func test_bridgeSelection_fallsBackToAttributeWhenIndexStale() {
+        let leafID = UUID()
+        let doc = RichTextDocument(blocks: [
+            Block(id: leafID, kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let result = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+
+        let bridged = TextKitEditorView.bridgeSelection(
+            storage: result.attributed,
+            selectedRange: NSRange(location: 2, length: 0),
+            paragraphIndex: ParagraphIndex(),  // stale/empty — no entry covers the caret
+            pathIndex: TextKitEditorView.leafPathIndex(doc)
+        )
+        XCTAssertEqual(bridged.path, [leafID], "Attribute fallback resolves the path when the index is stale")
+        XCTAssertEqual(bridged.startUTF16, 2)
     }
 
     func test_mapsFromStorage_matchesFlattenMapRanges() {

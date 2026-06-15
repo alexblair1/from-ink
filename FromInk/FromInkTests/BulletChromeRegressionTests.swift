@@ -202,6 +202,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         let bridged = TextKitEditorView.bridgeSelection(
             storage: textView.attributedText,
             selectedRange: textView.selectedRange,
+            paragraphIndex: coordinator.paragraphIndex,
             pathIndex: coordinator.pathIndex
         )
         XCTAssertEqual(mirror.selection, bridged, "Sync must re-mirror the bridged selection")
