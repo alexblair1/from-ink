@@ -172,6 +172,7 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         context.coordinator.textView = textView
+        context.coordinator.installAccessoryBar(on: textView)
 
         // Seed initial content from the document.
         let initial = Self.flatten(
@@ -1885,6 +1886,12 @@ struct TextKitEditorView: UIViewRepresentable {
         var parent: TextKitEditorView
         weak var textView: UITextView?
 
+        /// Retains the keyboard accessory bar's SwiftUI host so it lives
+        /// as long as the editor. The bar is the `inputAccessoryView`;
+        /// its buttons route through `textView.onEditorCommand` (the same
+        /// path the keyboard shortcuts use).
+        var accessoryBarHost: UIHostingController<AccessoryBarView>? = nil
+
         /// Last document the view rendered. Used as the diff key in
         /// `updateUIView` so we don't re-flatten on every render.
         var lastSyncedDocument: RichTextDocument
@@ -2092,6 +2099,49 @@ struct TextKitEditorView: UIViewRepresentable {
         /// True while a debounced sync is pending — the teardown path
         /// uses this to decide whether a final flush is needed.
         var hasPendingSync: Bool { syncTask != nil }
+
+        /// Build the keyboard accessory bar (EDD §14.4, default mode) and
+        /// install it as `textView.inputAccessoryView`. Each button routes
+        /// through `textView.onEditorCommand` — the same path the keyboard
+        /// shortcuts use — so the bar reuses all the existing command
+        /// handling (inline toggles via `applyInlineToggle`, lists via the
+        /// reducer). Undo/dismiss are direct textView actions.
+        ///
+        /// This slice ships the directly-actionable buttons; the leading
+        /// "Aa" format popover and the selection/insert modes follow.
+        func installAccessoryBar(on textView: BlockTreeTextView) {
+            func command(_ c: EditorCommand) -> () -> Void {
+                { [weak textView] in textView?.onEditorCommand?(c) }
+            }
+            typealias Bar = AccessoryBarView
+            let buttons: [Bar.Button] = [
+                Bar.Button(id: "bold", content: .symbol("bold"),
+                           accessibilityLabel: AppStrings.AccessoryBar.bold, onTap: command(.toggleBold)),
+                Bar.Button(id: "italic", content: .symbol("italic"),
+                           accessibilityLabel: AppStrings.AccessoryBar.italic, onTap: command(.toggleItalic)),
+                Bar.Button(id: "underline", content: .symbol("underline"),
+                           accessibilityLabel: AppStrings.AccessoryBar.underline, onTap: command(.toggleUnderline)),
+                Bar.Button(id: "bulleted", content: .symbol("list.bullet"),
+                           accessibilityLabel: AppStrings.AccessoryBar.bulletedList, onTap: command(.applyBulletedList)),
+                Bar.Button(id: "numbered", content: .symbol("list.number"),
+                           accessibilityLabel: AppStrings.AccessoryBar.numberedList, onTap: command(.applyNumberedList))
+            ]
+            let trailing: [Bar.Button] = [
+                Bar.Button(id: "undo", content: .symbol("arrow.uturn.backward"),
+                           accessibilityLabel: AppStrings.AccessoryBar.undo,
+                           onTap: { [weak textView] in textView?.undoManager?.undo() }),
+                Bar.Button(id: "dismiss", content: .symbol("keyboard.chevron.compact.down"),
+                           accessibilityLabel: AppStrings.AccessoryBar.dismissKeyboard,
+                           onTap: { [weak textView] in textView?.resignFirstResponder() })
+            ]
+            let model = Bar.Model(buttons: buttons, trailingButtons: trailing)
+            let host = UIHostingController(rootView: AccessoryBarView(model: model))
+            host.view.frame = CGRect(x: 0, y: 0, width: textView.bounds.width, height: 48)
+            host.view.autoresizingMask = .flexibleWidth
+            host.view.backgroundColor = UIColor.clear
+            accessoryBarHost = host
+            textView.inputAccessoryView = host.view
+        }
 
         /// Backspace at the start of an empty list item → outdent to a
         /// body paragraph via the reducer, mirroring the Enter→exitList
