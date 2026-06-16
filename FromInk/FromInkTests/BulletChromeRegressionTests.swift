@@ -609,6 +609,94 @@ final class BulletChromeRegressionTests: XCTestCase {
         XCTAssertEqual(style, NSUnderlineStyle.single.rawValue)
     }
 
+    /// Combined marks — Bold + Italic stacks correctly on the
+    /// typingAttributes font (Bold Italic). User should be able to
+    /// write in any permutation.
+    func test_applyInlineToggle_boldThenItalic_noSelection_combinesBoth() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.bold)
+        coordinator.applyInlineToggle(.italic)
+
+        let font = textView.typingAttributes[.font] as? UIFont
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false)
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false)
+    }
+
+    /// Underline stacks orthogonally with bold/italic.
+    func test_applyInlineToggle_boldAndUnderline_noSelection_combinesBoth() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.bold)
+        coordinator.applyInlineToggle(.underline)
+
+        let font = textView.typingAttributes[.font] as? UIFont
+        let underline = textView.typingAttributes[.underlineStyle] as? Int
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false)
+        XCTAssertEqual(underline, NSUnderlineStyle.single.rawValue)
+    }
+
+    // MARK: - Active-state probe (drives the accessory bar's chips)
+
+    /// Empty typingAttributes → no marks active.
+    func test_activeInlineFormats_initialState_isEmpty() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, _, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+
+        XCTAssertTrue(TextKitEditorView.activeInlineFormats(in: textView).isEmpty)
+    }
+
+    /// After flipping Bold at the caret, the active set contains .bold.
+    func test_activeInlineFormats_afterBoldToggle_containsBold() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.bold)
+
+        XCTAssertEqual(TextKitEditorView.activeInlineFormats(in: textView), [.bold])
+    }
+
+    /// Multiple marks stacked → all show as active.
+    func test_activeInlineFormats_boldAndItalic_bothActive() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.bold)
+        coordinator.applyInlineToggle(.italic)
+
+        let active = TextKitEditorView.activeInlineFormats(in: textView)
+        XCTAssertTrue(active.contains(.bold))
+        XCTAssertTrue(active.contains(.italic))
+    }
+
+    /// Underline + strikethrough probe.
+    func test_activeInlineFormats_underlineAndStrikethrough_bothActive() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.underline)
+        coordinator.applyInlineToggle(.strikethrough)
+
+        let active = TextKitEditorView.activeInlineFormats(in: textView)
+        XCTAssertTrue(active.contains(.underline))
+        XCTAssertTrue(active.contains(.strikethrough))
+    }
+
     /// Toggling the same mark twice with no selection returns
     /// typingAttributes to the un-marked state.
     func test_applyInlineToggle_bold_twice_noSelection_returnsToUnbold() {

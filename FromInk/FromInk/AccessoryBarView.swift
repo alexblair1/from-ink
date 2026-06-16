@@ -150,11 +150,13 @@ extension AccessoryBarView.Model {
         self.buttons = buttons
         self.trailingButtons = trailingButtons
 
-        self.height = 48
+        // 44pt tap target per Apple HIG. The bar height gives ~4pt
+        // breathing room around the button chips.
+        self.height = 52
         self.horizontalPadding = ds.spacing.sm
         self.buttonSpacing = ds.spacing.xxs
-        self.buttonMinWidth = 36
-        self.buttonMinHeight = 36
+        self.buttonMinWidth = 44
+        self.buttonMinHeight = 44
         self.buttonHorizontalPadding = ds.spacing.xs
         self.textButtonHorizontalPadding = ds.spacing.sm
         self.buttonCornerRadius = ds.cornerRadius.chip

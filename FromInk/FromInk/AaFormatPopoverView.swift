@@ -90,7 +90,7 @@ struct AaFormatPopoverView: View {
             }
             .foregroundStyle(row.isComingSoon ? model.ink3 : model.ink)
             .padding(.horizontal, model.contentHorizontalPadding)
-            .padding(.vertical, model.rowVerticalPadding)
+            .frame(minHeight: model.rowMinHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -105,8 +105,7 @@ struct AaFormatPopoverView: View {
                 Button(action: toggle.onTap) {
                     Image(systemName: toggle.icon)
                         .font(.system(size: model.inlineIconSize, weight: .medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, model.inlineToggleVerticalPadding)
+                        .frame(maxWidth: .infinity, minHeight: model.rowMinHeight)
                         .background(
                             RoundedRectangle(cornerRadius: model.inlineToggleCornerRadius, style: .continuous)
                                 .fill(toggle.isActive ? model.ink : Color.clear)
@@ -120,7 +119,7 @@ struct AaFormatPopoverView: View {
             }
         }
         .padding(.horizontal, model.contentHorizontalPadding)
-        .padding(.vertical, model.rowVerticalPadding)
+        .padding(.vertical, model.spacingBetweenSections)
     }
 
     private var rule: some View {
@@ -200,8 +199,13 @@ extension AaFormatPopoverView {
 
         let inlineToggleGap: CGFloat
         let inlineIconSize: CGFloat
-        let inlineToggleVerticalPadding: CGFloat
         let inlineToggleCornerRadius: CGFloat
+        /// Min row height — applies to block rows AND inline-toggle
+        /// chips. 44pt per Apple HIG so every row is a real tap target.
+        let rowMinHeight: CGFloat
+        /// Padding above the inline-toggle row separating it from the
+        /// rules above and below.
+        let spacingBetweenSections: CGFloat
 
         let paper: Color
         let ink: Color
@@ -245,8 +249,9 @@ extension AaFormatPopoverView.Model {
 
         self.inlineToggleGap = ds.spacing.xs
         self.inlineIconSize = 15
-        self.inlineToggleVerticalPadding = ds.spacing.xs
         self.inlineToggleCornerRadius = ds.cornerRadius.chip
+        self.rowMinHeight = 44
+        self.spacingBetweenSections = ds.spacing.xs
 
         self.paper = ds.colors.paper
         self.ink = ds.colors.ink

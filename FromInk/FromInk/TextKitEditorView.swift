@@ -1056,6 +1056,42 @@ struct TextKitEditorView: UIViewRepresentable {
         return RichTextDocument(blocks: topLevel)
     }
 
+    /// Inline-format marks currently "active" at the caret/selection,
+    /// derived from `textView.typingAttributes`. For a selection, UIKit
+    /// populates `typingAttributes` from the selection's first
+    /// character's attributes, so this naturally reflects "what marks
+    /// does the selected text already carry" without a separate
+    /// per-character probe. For a caret-only position, it reflects
+    /// "what marks will the next typed character get."
+    ///
+    /// Reads:
+    ///   - bold / italic from the font's symbolic traits
+    ///   - underline / strikethrough from the style keys
+    ///   - code from `.fromInkInlineCode` (parse-back's canonical
+    ///     "Mark.code" discriminator)
+    ///
+    /// Used by `refreshAccessoryBar` to keep the B/I/U/S chips' visual
+    /// active state in sync with the editor.
+    static func activeInlineFormats(in textView: UITextView) -> Set<TextEditingFeature.InlineFormat> {
+        var active: Set<TextEditingFeature.InlineFormat> = []
+        let typing = textView.typingAttributes
+        if let font = typing[.font] as? UIFont {
+            let traits = font.fontDescriptor.symbolicTraits
+            if traits.contains(.traitBold) { active.insert(.bold) }
+            if traits.contains(.traitItalic) { active.insert(.italic) }
+        }
+        if let underline = typing[.underlineStyle] as? Int, underline != 0 {
+            active.insert(.underline)
+        }
+        if let strikethrough = typing[.strikethroughStyle] as? Int, strikethrough != 0 {
+            active.insert(.strikethrough)
+        }
+        if let isCode = typing[.fromInkInlineCode] as? Bool, isCode {
+            active.insert(.code)
+        }
+        return active
+    }
+
     /// Count of paragraphs in `storage` — used as the
     /// index-vs-storage alignment check before
     /// `documentFromIndex`. A `\n`-terminated paragraph and a
@@ -2170,9 +2206,34 @@ struct TextKitEditorView: UIViewRepresentable {
         /// This slice ships the directly-actionable buttons; the leading
         /// "Aa" format popover and the selection/insert modes follow.
         func installAccessoryBar(on textView: BlockTreeTextView) {
+            let model = buildAccessoryBarModel(on: textView)
+            let host = UIHostingController(rootView: AccessoryBarView(model: model))
+            host.view.frame = CGRect(x: 0, y: 0, width: textView.bounds.width, height: model.height)
+            host.view.autoresizingMask = .flexibleWidth
+            host.view.backgroundColor = UIColor.clear
+            accessoryBarHost = host
+            textView.inputAccessoryView = host.view
+        }
+
+        /// Rebuild the accessory bar's Model from the current textView
+        /// state (inline-format active flags from `typingAttributes`)
+        /// and push it into the hosting controller. Called on selection
+        /// change AND after any inline toggle, so the B/I/U/S chips
+        /// reflect the user's current "what would the next char look
+        /// like?" exactly.
+        func refreshAccessoryBar() {
+            guard let textView = self.textView as? BlockTreeTextView,
+                  let host = accessoryBarHost else { return }
+            host.rootView = AccessoryBarView(model: buildAccessoryBarModel(on: textView))
+        }
+
+        /// Construct the accessory bar Model, threading the textView's
+        /// current inline-format active state into each toggle chip.
+        private func buildAccessoryBarModel(on textView: BlockTreeTextView) -> AccessoryBarView.Model {
             func command(_ c: EditorCommand) -> () -> Void {
                 { [weak textView] in textView?.onEditorCommand?(c) }
             }
+            let active = TextKitEditorView.activeInlineFormats(in: textView)
             typealias Bar = AccessoryBarView
             let aa = Bar.Button(
                 id: "aa", content: .text("Aa"),
@@ -2182,11 +2243,17 @@ struct TextKitEditorView: UIViewRepresentable {
             let buttons: [Bar.Button] = [
                 aa,
                 Bar.Button(id: "bold", content: .symbol("bold"),
-                           accessibilityLabel: AppStrings.AccessoryBar.bold, onTap: command(.toggleBold)),
+                           accessibilityLabel: AppStrings.AccessoryBar.bold,
+                           isActive: active.contains(.bold),
+                           onTap: command(.toggleBold)),
                 Bar.Button(id: "italic", content: .symbol("italic"),
-                           accessibilityLabel: AppStrings.AccessoryBar.italic, onTap: command(.toggleItalic)),
+                           accessibilityLabel: AppStrings.AccessoryBar.italic,
+                           isActive: active.contains(.italic),
+                           onTap: command(.toggleItalic)),
                 Bar.Button(id: "underline", content: .symbol("underline"),
-                           accessibilityLabel: AppStrings.AccessoryBar.underline, onTap: command(.toggleUnderline)),
+                           accessibilityLabel: AppStrings.AccessoryBar.underline,
+                           isActive: active.contains(.underline),
+                           onTap: command(.toggleUnderline)),
                 Bar.Button(id: "bulleted", content: .symbol("list.bullet"),
                            accessibilityLabel: AppStrings.AccessoryBar.bulletedList, onTap: command(.applyBulletedList)),
                 Bar.Button(id: "numbered", content: .symbol("list.number"),
@@ -2200,13 +2267,7 @@ struct TextKitEditorView: UIViewRepresentable {
                            accessibilityLabel: AppStrings.AccessoryBar.dismissKeyboard,
                            onTap: { [weak textView] in textView?.resignFirstResponder() })
             ]
-            let model = Bar.Model(buttons: buttons, trailingButtons: trailing)
-            let host = UIHostingController(rootView: AccessoryBarView(model: model))
-            host.view.frame = CGRect(x: 0, y: 0, width: textView.bounds.width, height: 48)
-            host.view.autoresizingMask = .flexibleWidth
-            host.view.backgroundColor = UIColor.clear
-            accessoryBarHost = host
-            textView.inputAccessoryView = host.view
+            return Bar.Model(buttons: buttons, trailingButtons: trailing)
         }
 
         /// Present the "Aa" formatting popover above the accessory bar
@@ -2246,11 +2307,15 @@ struct TextKitEditorView: UIViewRepresentable {
         /// `EditorCommand` cases land.
         private func aaPopoverModel() -> AaFormatPopoverView.Model {
             typealias Pop = AaFormatPopoverView
+            let active = textView.map { TextKitEditorView.activeInlineFormats(in: $0) } ?? []
             func block(_ id: String, _ icon: String, _ title: String, _ cmd: EditorCommand) -> Pop.Row {
                 Pop.Row(id: id, icon: icon, title: title, onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
-            func toggle(_ id: String, _ icon: String, _ label: String, _ cmd: EditorCommand) -> Pop.InlineToggle {
-                Pop.InlineToggle(id: id, icon: icon, accessibilityLabel: label, isActive: false,
+            func toggle(
+                _ id: String, _ icon: String, _ label: String,
+                _ cmd: EditorCommand, _ isActive: Bool
+            ) -> Pop.InlineToggle {
+                Pop.InlineToggle(id: id, icon: icon, accessibilityLabel: label, isActive: isActive,
                                  onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
             let blockRows: [Pop.Row] = [
@@ -2260,10 +2325,10 @@ struct TextKitEditorView: UIViewRepresentable {
                 block("body", "text.alignleft", AppStrings.AccessoryBar.body, .applyBody)
             ]
             let inlineToggles: [Pop.InlineToggle] = [
-                toggle("bold", "bold", AppStrings.AccessoryBar.bold, .toggleBold),
-                toggle("italic", "italic", AppStrings.AccessoryBar.italic, .toggleItalic),
-                toggle("underline", "underline", AppStrings.AccessoryBar.underline, .toggleUnderline),
-                toggle("strikethrough", "strikethrough", AppStrings.AccessoryBar.strikethrough, .toggleStrikethrough)
+                toggle("bold", "bold", AppStrings.AccessoryBar.bold, .toggleBold, active.contains(.bold)),
+                toggle("italic", "italic", AppStrings.AccessoryBar.italic, .toggleItalic, active.contains(.italic)),
+                toggle("underline", "underline", AppStrings.AccessoryBar.underline, .toggleUnderline, active.contains(.underline)),
+                toggle("strikethrough", "strikethrough", AppStrings.AccessoryBar.strikethrough, .toggleStrikethrough, active.contains(.strikethrough))
             ]
             let listRows: [Pop.Row] = [
                 block("bulleted", "list.bullet", AppStrings.AccessoryBar.bulletedList, .applyBulletedList),
@@ -2406,6 +2471,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 length: clampedEnd - sel.location
             )
             syncDocumentFromStorage(textView)
+            refreshAccessoryBar()
         }
 
         /// Flip `typingAttributes` so the next typed character carries
@@ -2469,6 +2535,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 }
             }
             textView.typingAttributes = typing
+            refreshAccessoryBar()
         }
 
         /// Toggle a single symbolic trait on a font, preserving every
@@ -2857,6 +2924,11 @@ struct TextKitEditorView: UIViewRepresentable {
             if bridged != parent.selection {
                 parent.selection = bridged
             }
+
+            // Refresh the accessory bar's B/I/U chips to reflect the
+            // new caret's typingAttributes — the user can now see
+            // which marks the next typed character will inherit.
+            refreshAccessoryBar()
         }
 
         // MARK: - UIScrollViewDelegate
