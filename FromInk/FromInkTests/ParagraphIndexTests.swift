@@ -614,5 +614,123 @@ final class ParagraphIndexTests: XCTestCase {
             XCTAssertEqual(entry.blockPath, mapEntry.blockPath)
         }
     }
+
+    // MARK: - applyEdit (the generalized structural-edit handler)
+
+    /// Pure within-paragraph edit: applyEdit matches applyNonStructuralEdit.
+    func test_applyEdit_pureNonStructural_growsHostShiftsLater() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "World")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+
+        index.applyEdit(replacing: NSRange(location: 5, length: 0), with: "!!")
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 7))
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "Host keeps identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 8, length: 5), "p2 shifts by +2")
+    }
+
+    /// Multi-line paste at caret mid-paragraph — host keeps identity,
+    /// extra paragraphs are fresh top-level body.
+    func test_applyEdit_multiLinePaste_atCaret_splitsIntoThree() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "Hello World")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1]))
+
+        index.applyEdit(replacing: NSRange(location: 5, length: 0), with: "ab\ncd\nef")
+
+        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 7), "Helloab")
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "First entry keeps identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 8, length: 2), "cd")
+        XCTAssertNotEqual(index.entries[1].blockPath, [p1.id], "Middle entry is fresh")
+        XCTAssertEqual(index.entries[2].range, NSRange(location: 11, length: 8), "ef + ' World'")
+        XCTAssertNotEqual(index.entries[2].blockPath, [p1.id], "Last entry is fresh")
+    }
+
+    /// Multi-line paste into a bullet list item: extra lines become
+    /// new bullet items in the same container.
+    func test_applyEdit_multiLinePaste_intoBulletList_makesNewItems() {
+        let para = Block(kind: .paragraph(inline: [Inline(text: "row")]))
+        let item = ListItem(content: [para])
+        let list = Block(kind: .bulletList(items: [item]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [list]))
+
+        index.applyEdit(replacing: NSRange(location: 3, length: 0), with: "A\nB")
+
+        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries[0].kind, .bulletListItem)
+        XCTAssertEqual(index.entries[1].kind, .bulletListItem, "Middle is a new bullet item")
+        XCTAssertEqual(index.entries[2].kind, .bulletListItem, "Last is a new bullet item")
+        XCTAssertEqual(index.entries[0].blockPath.first, list.id)
+        XCTAssertEqual(index.entries[1].blockPath.first, list.id, "Same container")
+        XCTAssertEqual(index.entries[2].blockPath.first, list.id, "Same container")
+    }
+
+    /// Multi-line paste into a heading: extra lines DEMOTE to body
+    /// (Notion / Apple Notes convention — heading split is one heading
+    /// + body paragraphs).
+    func test_applyEdit_multiLinePaste_intoHeading_demotesExtras() {
+        let h = Block(kind: .heading(level: 1, inline: [Inline(text: "Title")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [h]))
+
+        index.applyEdit(replacing: NSRange(location: 5, length: 0), with: "\nA\nB")
+
+        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries[0].kind, .heading(level: 1), "First half stays heading")
+        XCTAssertEqual(index.entries[1].kind, .paragraph, "Middle demotes to body")
+        XCTAssertEqual(index.entries[2].kind, .paragraph, "Last demotes to body")
+    }
+
+    /// Cross-paragraph delete spanning ONE `\n`: two paragraphs fuse
+    /// into one inheriting the predecessor's identity.
+    func test_applyEdit_crossParagraphDelete_oneBoundary_fusesTwo() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "World")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+        // Storage "Hello\nWorld". Delete range [3, 5) covers
+        // "lo\nWo" (5 chars). Result: "Hel" + "rld" = "Helrld" (6 chars).
+        index.applyEdit(replacing: NSRange(location: 3, length: 5), with: "")
+
+        XCTAssertEqual(index.entries.count, 1)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 6), "'Helrld' is 6 chars")
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "Predecessor's identity wins")
+    }
+
+    /// Multi-paragraph selection + Enter: the selection collapses, the
+    /// post-selection tail becomes a new top-level paragraph.
+    func test_applyEdit_multiParaSelectionPlusEnter_collapses() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "AB")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "CD")]))
+        let p3 = Block(kind: .paragraph(inline: [Inline(text: "EF")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2, p3]))
+        // Storage: "AB\nCD\nEF". Range [1, 6) covers "B\nCD\nE".
+        // Replace with "\n" → "A\nF".
+        index.applyEdit(replacing: NSRange(location: 1, length: 6), with: "\n")
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 1), "A")
+        XCTAssertEqual(index.entries[0].blockPath, [p1.id], "First keeps identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 2, length: 1), "F")
+        XCTAssertNotEqual(index.entries[1].blockPath, [p3.id], "Last is fresh")
+    }
+
+    /// Phantom-tail (edit past the addressable index range) is a no-op.
+    func test_applyEdit_pastLastParagraph_isNoOp() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "Hi")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+        let before = index.entries
+
+        index.applyEdit(replacing: NSRange(location: 99, length: 0), with: "X")
+
+        XCTAssertEqual(index.entries, before)
+    }
+
+    /// Empty index → no-op.
+    func test_applyEdit_emptyIndex_isNoOp() {
+        var index = ParagraphIndex()
+        index.applyEdit(replacing: NSRange(location: 0, length: 0), with: "X")
+        XCTAssertEqual(index.entries.count, 0)
+    }
 }
 #endif

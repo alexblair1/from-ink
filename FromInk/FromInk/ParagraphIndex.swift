@@ -375,6 +375,156 @@ struct ParagraphIndex: Equatable, Sendable {
         }
     }
 
+    /// Apply a single text edit — generalizes the
+    /// non-structural / structural distinction into one operation that
+    /// handles ANY `(range, replacement)` pair `shouldChangeTextIn`
+    /// captures: pure within-paragraph edits, single-`\n` insert (Enter,
+    /// selection + Enter), single-`\n` delete (backspace-merge),
+    /// multi-`\n` insert (multi-line paste), multi-`\n` delete
+    /// (cross-paragraph delete), and arbitrary replacements that
+    /// combine inserts and deletes.
+    ///
+    /// **Identity rules.** The FIRST result paragraph inherits the
+    /// host's identity (the paragraph the edit starts in). Every
+    /// additional result paragraph gets fresh identity per the same
+    /// split policy `applyStructuralSplit` uses:
+    ///   - inside a bullet list → new ListItem in the same container
+    ///   - inside an ordered list → new ListItem in the same container
+    ///   - inside a blockquote → new blockquote child
+    ///   - otherwise → top-level body paragraph (heading demotes)
+    ///
+    /// When `replacement` contains no `\n` AND the edit doesn't cross a
+    /// paragraph boundary in the pre-edit index, this collapses the
+    /// affected entries (just the host) into one entry inheriting the
+    /// host's identity — equivalent to an inline replacement.
+    ///
+    /// When `replacement` contains no `\n` BUT the edit CROSSES one or
+    /// more boundaries (cross-paragraph delete with non-empty
+    /// replacement), the affected entries fuse into one entry
+    /// inheriting the host's (first) identity.
+    ///
+    /// **Precondition.** `editedRange.location` must address a
+    /// paragraph in the index. No-op when it falls past the last
+    /// paragraph (the phantom-tail position) or when `entries` is empty.
+    mutating func applyEdit(
+        replacing editedRange: NSRange,
+        with replacement: String,
+        makeID: () -> UUID = { UUID() }
+    ) {
+        guard !entries.isEmpty else { return }
+        let editStart = editedRange.location
+        let editEnd = editedRange.location + editedRange.length
+        guard let firstIdx = entries.firstIndex(where: { e in
+            editStart >= e.range.location
+                && editStart <= e.range.location + e.range.length
+        }) else { return }
+        let lastIdx: Int
+        if editedRange.length == 0 {
+            lastIdx = firstIdx
+        } else if let idx = entries.firstIndex(where: { e in
+            editEnd >= e.range.location
+                && editEnd <= e.range.location + e.range.length
+        }) {
+            lastIdx = idx
+        } else {
+            return
+        }
+        let firstEntry = entries[firstIdx]
+        let lastEntry = entries[lastIdx]
+        let prefixLength = editStart - firstEntry.range.location
+        let suffixStart = editEnd - lastEntry.range.location
+        let suffixLength = lastEntry.range.length - suffixStart
+        guard prefixLength >= 0, suffixLength >= 0 else { return }
+
+        let nsReplacement = replacement as NSString
+        let replacementLength = nsReplacement.length
+        let segments = replacement.components(separatedBy: "\n")
+
+        // Container path for fresh entries — split policy keys off the
+        // host's container, matching `applyStructuralSplit`.
+        let container = Array(firstEntry.blockPath.dropLast())
+
+        func freshEntry(at location: Int, length: Int) -> Entry {
+            switch firstEntry.kind {
+            case .bulletListItem, .orderedListItem:
+                return Entry(
+                    range: NSRange(location: location, length: length),
+                    blockPath: container + [makeID()],
+                    kind: firstEntry.kind,
+                    listItemID: makeID()
+                )
+            case .blockquoteParagraph:
+                return Entry(
+                    range: NSRange(location: location, length: length),
+                    blockPath: container + [makeID()],
+                    kind: .blockquoteParagraph
+                )
+            case .paragraph, .heading, .codeBlock, .divider:
+                return Entry(
+                    range: NSRange(location: location, length: length),
+                    blockPath: [makeID()],
+                    kind: .paragraph
+                )
+            }
+        }
+
+        var newEntries: [Entry] = []
+        var cursor = firstEntry.range.location
+
+        if segments.count == 1 {
+            // No paragraph boundary introduced by the replacement.
+            // First through last entries collapse into ONE entry
+            // inheriting the host's identity — prefix + replacement +
+            // suffix.
+            let segLength = (segments[0] as NSString).length
+            let totalLength = prefixLength + segLength + suffixLength
+            newEntries.append(Entry(
+                range: NSRange(location: cursor, length: totalLength),
+                blockPath: firstEntry.blockPath,
+                kind: firstEntry.kind,
+                listItemID: firstEntry.listItemID,
+                languageHint: firstEntry.languageHint
+            ))
+            cursor += totalLength + 1
+        } else {
+            // First new paragraph: prefix + segments[0], inherits the
+            // host's identity.
+            let firstSegLength = (segments[0] as NSString).length
+            let firstNewLength = prefixLength + firstSegLength
+            newEntries.append(Entry(
+                range: NSRange(location: cursor, length: firstNewLength),
+                blockPath: firstEntry.blockPath,
+                kind: firstEntry.kind,
+                listItemID: firstEntry.listItemID,
+                languageHint: firstEntry.languageHint
+            ))
+            cursor += firstNewLength + 1
+            // Middle segments (if any): fresh paragraphs per the split
+            // policy.
+            if segments.count > 2 {
+                for i in 1..<(segments.count - 1) {
+                    let segLength = (segments[i] as NSString).length
+                    newEntries.append(freshEntry(at: cursor, length: segLength))
+                    cursor += segLength + 1
+                }
+            }
+            // Last new paragraph: segments[last] + suffix, fresh identity.
+            let lastSegLength = (segments[segments.count - 1] as NSString).length
+            let lastNewLength = lastSegLength + suffixLength
+            newEntries.append(freshEntry(at: cursor, length: lastNewLength))
+            cursor += lastNewLength + 1
+        }
+
+        entries.replaceSubrange(firstIdx...lastIdx, with: newEntries)
+
+        // Shift later (untouched) entries by the edit's net delta.
+        let netDelta = replacementLength - editedRange.length
+        let firstUntouchedIdx = firstIdx + newEntries.count
+        for i in entries.indices where i >= firstUntouchedIdx {
+            entries[i].range.location += netDelta
+        }
+    }
+
     /// Entry whose paragraph range contains `location`.
     ///
     /// **Boundary semantics.** Inclusive on both ends. At the position

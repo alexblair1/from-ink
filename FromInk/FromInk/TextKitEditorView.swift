@@ -2023,25 +2023,19 @@ struct TextKitEditorView: UIViewRepresentable {
         /// rebuild instead).
         var pendingNonStructuralEdit: (range: NSRange, newLength: Int)? = nil
 
-        /// A clean structural edit captured in `shouldChangeTextIn`.
-        /// `syncDocumentFromStorage` applies it to `paragraphIndex` and
-        /// re-stamps the storage's identity attributes from the result
-        /// (Path B) — healing the corruption UIKit's `typingAttributes`
-        /// inflicts across Enter. `nil` for complex edits (multi-`\n`
-        /// paste, cross-paragraph deletes), which fall back to the
-        /// legacy fixups + parse-back rebuild.
+        /// A structural edit captured in `shouldChangeTextIn`.
+        /// `syncDocumentFromStorage` applies it to `paragraphIndex` via
+        /// `ParagraphIndex.applyEdit(replacing:with:)` and re-stamps
+        /// the storage's identity attributes from the result.
         ///
-        /// Covers three Enter / Backspace shapes:
-        ///   - Pure Enter (`replacingLength == 0`): caret split.
-        ///   - Selection + Enter (`replacingLength > 0`): the selection
-        ///     was deleted and replaced by a `\n`. Captured ONLY when
-        ///     the selection lives in one paragraph (no `\n` crossed) —
-        ///     a multi-paragraph selection split is the complex case.
-        ///   - Backspace-merge: removes the `\n` between two adjacent
-        ///     paragraphs; the predecessor absorbs the merged text.
+        /// Covers EVERY structural shape `shouldChangeTextIn` can see:
+        /// pure Enter, selection + Enter (single- or multi-paragraph),
+        /// backspace-merge, cross-paragraph delete, multi-line paste,
+        /// and any combination. The `applyEdit` op generalizes
+        /// `applyStructuralSplit` + `applyStructuralMerge` over all
+        /// these inputs.
         enum StructuralEdit: Equatable {
-            case split(at: Int, replacingLength: Int)
-            case merge(atParagraphStart: Int)
+            case edit(range: NSRange, replacement: String)
         }
         var pendingStructuralEdit: StructuralEdit? = nil
 
@@ -2125,13 +2119,8 @@ struct TextKitEditorView: UIViewRepresentable {
             var healed = false
             if let structural = pendingStructuralEdit {
                 switch structural {
-                case .split(let location, let replacingLength):
-                    paragraphIndex.applyStructuralSplit(
-                        at: location,
-                        replacingLength: replacingLength
-                    )
-                case .merge(let location):
-                    paragraphIndex.applyStructuralMerge(atParagraphStart: location)
+                case .edit(let range, let replacement):
+                    paragraphIndex.applyEdit(replacing: range, with: replacement)
                 }
                 healed = TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
             }
@@ -2768,28 +2757,23 @@ struct TextKitEditorView: UIViewRepresentable {
             //
             // Capture the edit for the index maintainers. A non-structural
             // keystroke keeps `paragraphIndex`'s ranges current via
-            // `applyNonStructuralEdit`; a clean structural edit (Enter
-            // split, selection+Enter, backspace-join merge) is captured so
-            // the sync can update the index incrementally and re-stamp
-            // identity from it (Path B). Complex edits leave
-            // `pendingStructuralEdit` nil and fall back to legacy fixups.
+            // `applyNonStructuralEdit`; ANY structural edit (any insert
+            // containing `\n`, any delete spanning a `\n`) is captured
+            // as `.edit(range, replacement)` and applied to the index
+            // via `ParagraphIndex.applyEdit` in `syncDocumentFromStorage`.
+            // The generalized op subsumes the old single-`\n` split /
+            // merge primitives and handles multi-line paste,
+            // cross-paragraph delete, multi-paragraph selection + Enter,
+            // and any combination uniformly.
             let ns = textView.attributedText.string as NSString
-            if text == "\n", range.length == 0 {
-                pendingStructuralEdit = .split(at: range.location, replacingLength: 0)
-            } else if text == "\n", range.length > 0,
-                      range.location + range.length <= ns.length,
-                      !ns.substring(with: range).contains("\n") {
-                // Selection + Enter on a within-one-paragraph selection.
-                // Multi-paragraph selections (range crosses a `\n`) are
-                // structurally complex — fall through to parse-back.
-                pendingStructuralEdit = .split(
-                    at: range.location,
-                    replacingLength: range.length
-                )
-            } else if text.isEmpty, range.length == 1,
-                      range.location < ns.length,
-                      ns.substring(with: range) == "\n" {
-                pendingStructuralEdit = .merge(atParagraphStart: range.location + 1)
+            let rangeInBounds = range.length == 0
+                || range.location + range.length <= ns.length
+            let deletedText: String = (rangeInBounds && range.length > 0)
+                ? ns.substring(with: range)
+                : ""
+            let isStructural = text.contains("\n") || deletedText.contains("\n")
+            if isStructural {
+                pendingStructuralEdit = .edit(range: range, replacement: text)
             } else {
                 pendingStructuralEdit = nil
             }
