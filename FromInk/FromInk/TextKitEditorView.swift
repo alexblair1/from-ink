@@ -1882,7 +1882,7 @@ struct TextKitEditorView: UIViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIPopoverPresentationControllerDelegate {
         var parent: TextKitEditorView
         weak var textView: UITextView?
 
@@ -1891,6 +1891,10 @@ struct TextKitEditorView: UIViewRepresentable {
         /// its buttons route through `textView.onEditorCommand` (the same
         /// path the keyboard shortcuts use).
         var accessoryBarHost: UIHostingController<AccessoryBarView>? = nil
+
+        /// The presented "Aa" format popover, while open. Held so a row
+        /// tap can dismiss it after applying the command.
+        var aaPopoverHost: UIViewController? = nil
 
         /// Last document the view rendered. Used as the diff key in
         /// `updateUIView` so we don't re-flatten on every render.
@@ -2114,7 +2118,13 @@ struct TextKitEditorView: UIViewRepresentable {
                 { [weak textView] in textView?.onEditorCommand?(c) }
             }
             typealias Bar = AccessoryBarView
+            let aa = Bar.Button(
+                id: "aa", content: .text("Aa"),
+                accessibilityLabel: AppStrings.AccessoryBar.formatStyle,
+                onTap: { [weak self] in self?.presentAaFormatPopover() }
+            )
             let buttons: [Bar.Button] = [
+                aa,
                 Bar.Button(id: "bold", content: .symbol("bold"),
                            accessibilityLabel: AppStrings.AccessoryBar.bold, onTap: command(.toggleBold)),
                 Bar.Button(id: "italic", content: .symbol("italic"),
@@ -2141,6 +2151,94 @@ struct TextKitEditorView: UIViewRepresentable {
             host.view.backgroundColor = UIColor.clear
             accessoryBarHost = host
             textView.inputAccessoryView = host.view
+        }
+
+        /// Present the "Aa" formatting popover above the accessory bar
+        /// (EDD §14.4.2). Forced to stay a popover even in compact width
+        /// via the adaptive delegate, anchored to the bar's leading edge.
+        /// Rows route through `applyFromPopover` (dispatch + dismiss).
+        func presentAaFormatPopover() {
+            guard let textView, aaPopoverHost == nil,
+                  let barView = accessoryBarHost?.view,
+                  let presenter = Self.topmostViewController(from: textView.window?.rootViewController)
+            else { return }
+
+            let popover = UIHostingController(rootView: AaFormatPopoverView(model: aaPopoverModel()))
+            popover.modalPresentationStyle = .popover
+            popover.sizingOptions = [.preferredContentSize]
+            if let pop = popover.popoverPresentationController {
+                pop.delegate = self
+                pop.sourceView = barView
+                pop.sourceRect = CGRect(x: 30, y: 0, width: 1, height: 1)
+                pop.permittedArrowDirections = [.down]
+            }
+            aaPopoverHost = popover
+            presenter.present(popover, animated: true)
+        }
+
+        /// Dispatch a popover command through the shared editor command
+        /// path, then dismiss the popover.
+        private func applyFromPopover(_ command: EditorCommand) {
+            (textView as? BlockTreeTextView)?.onEditorCommand?(command)
+            aaPopoverHost?.dismiss(animated: true)
+            aaPopoverHost = nil
+        }
+
+        /// Build the Aa popover Model. This slice wires the rows backed by
+        /// the existing command vocabulary (headings, body, inline,
+        /// lists); Code / Block Quote / Divider follow once their
+        /// `EditorCommand` cases land.
+        private func aaPopoverModel() -> AaFormatPopoverView.Model {
+            typealias Pop = AaFormatPopoverView
+            func block(_ id: String, _ icon: String, _ title: String, _ cmd: EditorCommand) -> Pop.Row {
+                Pop.Row(id: id, icon: icon, title: title, onTap: { [weak self] in self?.applyFromPopover(cmd) })
+            }
+            func toggle(_ id: String, _ icon: String, _ label: String, _ cmd: EditorCommand) -> Pop.InlineToggle {
+                Pop.InlineToggle(id: id, icon: icon, accessibilityLabel: label, isActive: false,
+                                 onTap: { [weak self] in self?.applyFromPopover(cmd) })
+            }
+            let blockRows: [Pop.Row] = [
+                block("title", "textformat.size.larger", AppStrings.AccessoryBar.title, .applyHeading(level: 1)),
+                block("heading", "textformat.size", AppStrings.AccessoryBar.heading, .applyHeading(level: 2)),
+                block("subheading", "textformat.size.smaller", AppStrings.AccessoryBar.subheading, .applyHeading(level: 3)),
+                block("body", "text.alignleft", AppStrings.AccessoryBar.body, .applyBody)
+            ]
+            let inlineToggles: [Pop.InlineToggle] = [
+                toggle("bold", "bold", AppStrings.AccessoryBar.bold, .toggleBold),
+                toggle("italic", "italic", AppStrings.AccessoryBar.italic, .toggleItalic),
+                toggle("underline", "underline", AppStrings.AccessoryBar.underline, .toggleUnderline),
+                toggle("strikethrough", "strikethrough", AppStrings.AccessoryBar.strikethrough, .toggleStrikethrough)
+            ]
+            let listRows: [Pop.Row] = [
+                block("bulleted", "list.bullet", AppStrings.AccessoryBar.bulletedList, .applyBulletedList),
+                block("numbered", "list.number", AppStrings.AccessoryBar.numberedList, .applyNumberedList)
+            ]
+            return Pop.Model(blockRows: blockRows, inlineToggles: inlineToggles, listRows: listRows)
+        }
+
+        /// Walk to the frontmost presented view controller so a popover
+        /// presents from something actually in the window hierarchy.
+        private static func topmostViewController(from root: UIViewController?) -> UIViewController? {
+            var vc = root
+            while let presented = vc?.presentedViewController { vc = presented }
+            return vc
+        }
+
+        // MARK: - UIPopoverPresentationControllerDelegate
+
+        /// Force the Aa popover to stay a popover in compact width
+        /// (iPhone / iPad Slide Over) instead of adapting to a sheet.
+        func adaptivePresentationStyle(
+            for controller: UIPresentationController,
+            traitCollection: UITraitCollection
+        ) -> UIModalPresentationStyle {
+            .none
+        }
+
+        /// Clear our reference when the popover is dismissed by
+        /// tap-outside (not via a row tap).
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            aaPopoverHost = nil
         }
 
         /// Backspace at the start of an empty list item → outdent to a
