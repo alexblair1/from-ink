@@ -642,6 +642,70 @@ final class BulletChromeRegressionTests: XCTestCase {
         XCTAssertEqual(underline, NSUnderlineStyle.single.rawValue)
     }
 
+    // MARK: - Active block-kind probe (drives the list / heading chips)
+
+    /// Caret inside a bullet-list item → kind reads as `.bulletListItem`.
+    /// Drives the bulleted button's filled state on the accessory bar.
+    func test_activeParagraphKind_insideBulletList_isBulletListItem() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "row")]))])
+            ]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 1, length: 0)  // inside "row"
+
+        XCTAssertEqual(
+            TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: coordinator.paragraphIndex),
+            .bulletListItem
+        )
+    }
+
+    /// Same for ordered lists.
+    func test_activeParagraphKind_insideOrderedList_isOrderedListItem() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .orderedList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "row")]))])
+            ]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 1, length: 0)
+
+        XCTAssertEqual(
+            TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: coordinator.paragraphIndex),
+            .orderedListItem
+        )
+    }
+
+    /// Caret in a top-level body paragraph → no list kind. The
+    /// accessory bar's list buttons stay un-filled.
+    func test_activeParagraphKind_inBodyParagraph_isParagraph() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 2, length: 0)
+
+        XCTAssertEqual(
+            TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: coordinator.paragraphIndex),
+            .paragraph
+        )
+    }
+
+    /// Caret in a heading → kind carries the level.
+    func test_activeParagraphKind_inHeading_carriesLevel() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 2, inline: [Inline(text: "Title")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 0, length: 0)
+
+        XCTAssertEqual(
+            TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: coordinator.paragraphIndex),
+            .heading(level: 2)
+        )
+    }
+
     // MARK: - Active-state probe (drives the accessory bar's chips)
 
     /// Empty typingAttributes → no marks active.

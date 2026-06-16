@@ -1056,6 +1056,24 @@ struct TextKitEditorView: UIViewRepresentable {
         return RichTextDocument(blocks: topLevel)
     }
 
+    /// Paragraph kind at the caret/selection location — the block-level
+    /// counterpart to `activeInlineFormats`. Drives the bulleted /
+    /// numbered chips on the accessory bar (filled when the caret is
+    /// inside that list kind) and the checkmark next to the active
+    /// block-type row in the Aa popover.
+    ///
+    /// Identity comes from `ParagraphIndex` (the side-channel the
+    /// architecture pivot established) — `entry(containing:)` keyed by
+    /// the caret location. Returns nil when the caret sits past the
+    /// final newline (the phantom tail), matching the `bridgeSelection`
+    /// unset contract.
+    static func activeParagraphKind(
+        in textView: UITextView,
+        paragraphIndex: ParagraphIndex
+    ) -> ParagraphKind? {
+        paragraphIndex.entry(containing: textView.selectedRange.location)?.kind
+    }
+
     /// Inline-format marks currently "active" at the caret/selection,
     /// derived from `textView.typingAttributes`. For a selection, UIKit
     /// populates `typingAttributes` from the selection's first
@@ -2234,6 +2252,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 { [weak textView] in textView?.onEditorCommand?(c) }
             }
             let active = TextKitEditorView.activeInlineFormats(in: textView)
+            let blockKind = TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: paragraphIndex)
             typealias Bar = AccessoryBarView
             let aa = Bar.Button(
                 id: "aa", content: .text("Aa"),
@@ -2255,9 +2274,13 @@ struct TextKitEditorView: UIViewRepresentable {
                            isActive: active.contains(.underline),
                            onTap: command(.toggleUnderline)),
                 Bar.Button(id: "bulleted", content: .symbol("list.bullet"),
-                           accessibilityLabel: AppStrings.AccessoryBar.bulletedList, onTap: command(.applyBulletedList)),
+                           accessibilityLabel: AppStrings.AccessoryBar.bulletedList,
+                           isActive: blockKind == .bulletListItem,
+                           onTap: command(.applyBulletedList)),
                 Bar.Button(id: "numbered", content: .symbol("list.number"),
-                           accessibilityLabel: AppStrings.AccessoryBar.numberedList, onTap: command(.applyNumberedList))
+                           accessibilityLabel: AppStrings.AccessoryBar.numberedList,
+                           isActive: blockKind == .orderedListItem,
+                           onTap: command(.applyNumberedList))
             ]
             let trailing: [Bar.Button] = [
                 Bar.Button(id: "undo", content: .symbol("arrow.uturn.backward"),
@@ -2308,8 +2331,15 @@ struct TextKitEditorView: UIViewRepresentable {
         private func aaPopoverModel() -> AaFormatPopoverView.Model {
             typealias Pop = AaFormatPopoverView
             let active = textView.map { TextKitEditorView.activeInlineFormats(in: $0) } ?? []
-            func block(_ id: String, _ icon: String, _ title: String, _ cmd: EditorCommand) -> Pop.Row {
-                Pop.Row(id: id, icon: icon, title: title, onTap: { [weak self] in self?.applyFromPopover(cmd) })
+            let blockKind = textView.flatMap {
+                TextKitEditorView.activeParagraphKind(in: $0, paragraphIndex: paragraphIndex)
+            }
+            func row(
+                _ id: String, _ icon: String, _ title: String,
+                _ cmd: EditorCommand, _ isActive: Bool = false
+            ) -> Pop.Row {
+                Pop.Row(id: id, icon: icon, title: title, isActive: isActive,
+                        onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
             func toggle(
                 _ id: String, _ icon: String, _ label: String,
@@ -2318,11 +2348,22 @@ struct TextKitEditorView: UIViewRepresentable {
                 Pop.InlineToggle(id: id, icon: icon, accessibilityLabel: label, isActive: isActive,
                                  onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
+            // "Body" covers paragraph + list items + blockquote — the
+            // caret is in a body-style paragraph for all of them. The
+            // checkmark next to a heading row indicates THAT level
+            // specifically (Notion / Apple Notes convention).
+            let isHeading1: Bool = { if case .heading(let l) = blockKind { return l == 1 }; return false }()
+            let isHeading2: Bool = { if case .heading(let l) = blockKind { return l == 2 }; return false }()
+            let isHeading3: Bool = { if case .heading(let l) = blockKind { return l == 3 }; return false }()
+            let isBody = blockKind == .paragraph
+                || blockKind == .bulletListItem
+                || blockKind == .orderedListItem
+                || blockKind == .blockquoteParagraph
             let blockRows: [Pop.Row] = [
-                block("title", "textformat.size.larger", AppStrings.AccessoryBar.title, .applyHeading(level: 1)),
-                block("heading", "textformat.size", AppStrings.AccessoryBar.heading, .applyHeading(level: 2)),
-                block("subheading", "textformat.size.smaller", AppStrings.AccessoryBar.subheading, .applyHeading(level: 3)),
-                block("body", "text.alignleft", AppStrings.AccessoryBar.body, .applyBody)
+                row("title", "textformat.size.larger", AppStrings.AccessoryBar.title, .applyHeading(level: 1), isHeading1),
+                row("heading", "textformat.size", AppStrings.AccessoryBar.heading, .applyHeading(level: 2), isHeading2),
+                row("subheading", "textformat.size.smaller", AppStrings.AccessoryBar.subheading, .applyHeading(level: 3), isHeading3),
+                row("body", "text.alignleft", AppStrings.AccessoryBar.body, .applyBody, isBody)
             ]
             let inlineToggles: [Pop.InlineToggle] = [
                 toggle("bold", "bold", AppStrings.AccessoryBar.bold, .toggleBold, active.contains(.bold)),
@@ -2331,8 +2372,10 @@ struct TextKitEditorView: UIViewRepresentable {
                 toggle("strikethrough", "strikethrough", AppStrings.AccessoryBar.strikethrough, .toggleStrikethrough, active.contains(.strikethrough))
             ]
             let listRows: [Pop.Row] = [
-                block("bulleted", "list.bullet", AppStrings.AccessoryBar.bulletedList, .applyBulletedList),
-                block("numbered", "list.number", AppStrings.AccessoryBar.numberedList, .applyNumberedList)
+                row("bulleted", "list.bullet", AppStrings.AccessoryBar.bulletedList, .applyBulletedList,
+                    blockKind == .bulletListItem),
+                row("numbered", "list.number", AppStrings.AccessoryBar.numberedList, .applyNumberedList,
+                    blockKind == .orderedListItem)
             ]
             return Pop.Model(blockRows: blockRows, inlineToggles: inlineToggles, listRows: listRows)
         }
