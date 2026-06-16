@@ -40,8 +40,8 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(result.attributed.string, "Hello\n")
         let attrs = result.attributed.attributes(at: 0, effectiveRange: nil)
         XCTAssertEqual(attrs[.paragraphKind] as? Int, ParagraphKind.paragraph.attributeValue)
-        XCTAssertEqual(attrs[.blockID] as? UUID, id)
         XCTAssertNil(attrs[.groupID], "Top-level paragraph has no group id")
+        _ = id
     }
 
     func test_flatten_heading_emitsCorrectChrome() {
@@ -115,99 +115,11 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(attrs[.paragraphKind] as? Int, ParagraphKind.divider.attributeValue)
     }
 
-    // MARK: - Parse-back — reconstructs structure
-
-    func test_parseBack_simpleParagraph_roundTrips() {
-        let id = UUID()
-        let doc = RichTextDocument(blocks: [
-            Block(id: id, kind: .paragraph(inline: [Inline(text: "Hello")]))
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        XCTAssertEqual(recovered.blocks.count, 1)
-        guard case .paragraph(let inline) = recovered.blocks[0].kind else {
-            XCTFail("Expected paragraph")
-            return
-        }
-        XCTAssertEqual(inline.first?.text, "Hello")
-        XCTAssertEqual(recovered.blocks[0].id, id, "Block id preserved through flatten/parse-back")
-    }
-
-    func test_parseBack_heading_recoversLevel() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .heading(level: 3, inline: [Inline(text: "H3")]))
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        guard case .heading(let level, let inline) = recovered.blocks[0].kind else {
-            XCTFail("Expected heading")
-            return
-        }
-        XCTAssertEqual(level, 3)
-        XCTAssertEqual(inline.first?.text, "H3")
-    }
-
-    func test_parseBack_bulletList_regroupsContainers() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .bulletList(items: [
-                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "A")]))]),
-                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "B")]))])
-            ]))
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        XCTAssertEqual(recovered.blocks.count, 1, "Two bullet items must re-group into one bulletList container")
-        guard case .bulletList(let items) = recovered.blocks[0].kind else {
-            XCTFail("Expected bulletList")
-            return
-        }
-        XCTAssertEqual(items.count, 2)
-    }
-
-    func test_parseBack_orderedList_regroupsContainers() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .orderedList(items: [
-                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "1st")]))]),
-                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "2nd")]))])
-            ]))
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        guard case .orderedList(let items) = recovered.blocks[0].kind else {
-            XCTFail("Expected orderedList")
-            return
-        }
-        XCTAssertEqual(items.count, 2)
-    }
-
-    func test_parseBack_codeBlock_emitsCodeBlock() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .codeBlock(text: "let x = 1", languageHint: nil))
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        guard case .codeBlock(let text, _) = recovered.blocks[0].kind else {
-            XCTFail("Expected codeBlock")
-            return
-        }
-        XCTAssertEqual(text, "let x = 1")
-    }
-
-    func test_parseBack_divider_emitsDivider() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .divider)
-        ])
-        let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
-        // Note: parse-back currently builds the divider as
-        // `Block(kind: .divider)`; the leading "\u{00A0}" anchor is
-        // recovered as the divider block.
-        if case .divider = recovered.blocks[0].kind {
-            // ok
-        } else {
-            XCTFail("Expected divider")
-        }
-    }
+    // MARK: - Parse-back tests deleted in Chunk 9 — parse-back itself
+    // is gone, replaced by `documentFromIndex`. The `test_documentFromIndex_*`
+    // suite below covers the equivalent round-trip shapes (paragraph,
+    // heading, bullet list, ordered list, blockquote, code block,
+    // divider, full-tree identity).
 
     // MARK: - documentFromIndex — the index-authoritative document builder
 
@@ -438,7 +350,10 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         guard case .paragraph(let inline) = recovered.blocks[0].kind else {
             XCTFail("Expected paragraph")
             return
@@ -491,36 +406,10 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(bridged.endUTF16, 2)
     }
 
-    // MARK: - B1 — parse-back dedupes colliding block IDs
-
-    func test_parseBack_duplicateBlockIDs_areDeduped() {
-        // Build an NSAttributedString manually with TWO paragraphs
-        // carrying the same .blockID — the shape UITextView produces
-        // after Enter (the new paragraph inherits the prior one's
-        // typingAttributes including blockID).
-        let sharedID = UUID()
-        let mutable = NSMutableAttributedString()
-
-        let paraAttrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 17),
-            .foregroundColor: UIColor.label,
-            .paragraphKind: ParagraphKind.paragraph.attributeValue,
-            .blockID: sharedID
-        ]
-        mutable.append(NSAttributedString(string: "First", attributes: paraAttrs))
-        mutable.append(NSAttributedString(string: "\n", attributes: paraAttrs))
-        mutable.append(NSAttributedString(string: "Second", attributes: paraAttrs))
-
-        let recovered = TextKitEditorView.parseBack(mutable)
-        XCTAssertEqual(recovered.blocks.count, 2)
-        XCTAssertNotEqual(
-            recovered.blocks[0].id,
-            recovered.blocks[1].id,
-            "Duplicate block IDs must be de-duplicated — the second paragraph gets a fresh UUID"
-        )
-        // The first paragraph keeps the original id.
-        XCTAssertEqual(recovered.blocks[0].id, sharedID)
-    }
+    // MARK: - B1 — parse-back dedupes colliding block IDs (DELETED in
+    // Chunk 9). `.blockID` attribute writes are gone, so duplicate ids
+    // can no longer appear in storage; identity lives in the side-
+    // channel `ParagraphIndex` UIKit can't touch.
 
     // MARK: - B2 — highlight + code marks round-trip
 
@@ -533,7 +422,10 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         guard case .paragraph(let inline) = recovered.blocks[0].kind else {
             XCTFail("Expected paragraph")
             return
@@ -555,7 +447,10 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         guard case .paragraph(let inline) = recovered.blocks[0].kind else {
             XCTFail("Expected paragraph")
             return
@@ -575,7 +470,10 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         XCTAssertEqual(recovered.blocks.count, 1)
         guard case .blockquote(let children) = recovered.blocks[0].kind else {
             XCTFail("Blockquote container must survive round-trip (B7)")
@@ -597,7 +495,10 @@ final class TextKitEditorViewTests: XCTestCase {
             ]))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         guard case .blockquote(let children) = recovered.blocks[0].kind else {
             XCTFail("Expected blockquote")
             return
@@ -612,7 +513,10 @@ final class TextKitEditorViewTests: XCTestCase {
             Block(kind: .codeBlock(text: "let x = 1", languageHint: "swift"))
         ])
         let flattened = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let recovered = TextKitEditorView.parseBack(flattened.attributed)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc),
+            storage: flattened.attributed
+        )
         guard case .codeBlock(let text, let hint) = recovered.blocks[0].kind else {
             XCTFail("Expected codeBlock")
             return
@@ -1050,9 +954,9 @@ final class TextKitEditorViewTests: XCTestCase {
             bodyColor: bodyColor
         )
         XCTAssertEqual(attrs?[.paragraphKind] as? Int, ParagraphKind.bulletListItem.attributeValue)
-        XCTAssertEqual(attrs?[.blockID] as? UUID, leafID)
         XCTAssertNotNil(attrs?[.groupID] as? UUID,
-                        "List-container chrome must carry a groupID so parse-back groups consecutive items")
+                        "List-container kind must carry a groupID so the layout manager numbers ordered items correctly")
+        _ = leafID
     }
 
     func test_typingAttributesFromDocument_orderedListItemLeaf_returnsOrderedChrome() {
@@ -1304,79 +1208,16 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertTrue(bridged.isUnset, "Stale index returns unset — no attribute fallback")
     }
 
-    // MARK: - Paragraph identity hygiene
-
-    /// Append a paragraph to flatten output the way native typing
-    /// does: text + trailing newline inheriting the LAST paragraph's
-    /// attributes (the typingAttributes carry-forward that produces
-    /// duplicate blockIDs after Enter).
-    private func appendInheritedParagraph(
-        _ text: String,
-        to attributed: NSAttributedString,
-        terminated: Bool = true
-    ) -> NSMutableAttributedString {
-        let mutable = NSMutableAttributedString(attributedString: attributed)
-        let inherited = attributed.attributes(at: attributed.length - 1, effectiveRange: nil)
-        mutable.append(NSAttributedString(string: terminated ? text + "\n" : text, attributes: inherited))
-        return mutable
-    }
-
-    func test_paragraphIdentityFixups_duplicateHeading_demotesAndMintsFreshID() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .heading(level: 2, inline: [Inline(text: "Heading")]))
-        ])
-        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        // Simulate Enter-at-end-of-heading + typing: a second
-        // paragraph carrying the SAME blockID + heading chrome.
-        let storage = appendInheritedParagraph("body", to: flat.attributed)
-
-        let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
-        XCTAssertEqual(fixups.count, 1)
-        let fixup = fixups[0]
-        XCTAssertTrue(fixup.demoteToParagraph, "Duplicate heading paragraph demotes to body — Enter on a heading drops to body text")
-        XCTAssertNil(fixup.freshListItemID)
-        XCTAssertNotEqual(fixup.freshBlockID, doc.blocks[0].id)
-        // The fixup covers the SECOND paragraph (including its \n).
-        XCTAssertEqual(fixup.range, NSRange(location: 8, length: 5), "Range covers 'body\\n' after 'Heading\\n'")
-    }
-
-    func test_paragraphIdentityFixups_duplicateListItem_keepsChromeMintsFreshItemID() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .bulletList(items: [
-                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "first")]))])
-            ]))
-        ])
-        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        let storage = appendInheritedParagraph("second", to: flat.attributed)
-
-        let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
-        XCTAssertEqual(fixups.count, 1)
-        let fixup = fixups[0]
-        XCTAssertFalse(fixup.demoteToParagraph, "List rows keep their chrome — Enter continues the list")
-        XCTAssertNotNil(fixup.freshListItemID, "The new row needs its own ListItem identity")
-    }
-
-    func test_paragraphIdentityFixups_uniqueIDs_noFixups() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .paragraph(inline: [Inline(text: "one")])),
-            Block(kind: .paragraph(inline: [Inline(text: "two")]))
-        ])
-        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        XCTAssertTrue(TextKitEditorView.paragraphIdentityFixups(in: flat.attributed).isEmpty)
-    }
-
-    func test_tailParagraphNeedsIdentityFixup_detectsPhantomLineTyping() {
-        let doc = RichTextDocument(blocks: [
-            Block(kind: .paragraph(inline: [Inline(text: "para")]))
-        ])
-        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
-        XCTAssertFalse(TextKitEditorView.tailParagraphNeedsIdentityFixup(in: flat.attributed))
-
-        // Typing on the phantom line after the final \n — inherited
-        // attrs, NO trailing newline, newline count unchanged.
-        let typed = appendInheritedParagraph("x", to: flat.attributed, terminated: false)
-        XCTAssertTrue(TextKitEditorView.tailParagraphNeedsIdentityFixup(in: typed))
-    }
+    // MARK: - Paragraph identity hygiene (DELETED in Chunk 9)
+    //
+    // `paragraphIdentityFixups`, `applyParagraphIdentityFixups`, and
+    // `tailParagraphNeedsIdentityFixup` are gone. Their job was to
+    // detect duplicate `.blockID` storage attributes and mint fresh
+    // ids — a workaround for the `typingAttributes` corruption that
+    // the side-channel ParagraphIndex architecture made structurally
+    // impossible. `ParagraphIndex.applyEdit` is the sole identity
+    // arbiter now, and the index's entries can't have duplicates by
+    // construction.
 
     // MARK: - Storage-side exit-list + slash filter
 

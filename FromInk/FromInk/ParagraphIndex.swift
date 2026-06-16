@@ -414,6 +414,16 @@ struct ParagraphIndex: Equatable, Sendable {
         guard !entries.isEmpty else { return }
         let editStart = editedRange.location
         let editEnd = editedRange.location + editedRange.length
+        // `editEnd` can land on the phantom-tail position (past the
+        // last entry's text end) when the user select-alls or extends
+        // a selection past the document's final `\n`. Clamp it to the
+        // last entry's text end so the lookup below still resolves;
+        // the trailing `\n` itself isn't in any entry's range, so the
+        // shift math below uses the ORIGINAL `editedRange.length` to
+        // account for the chars actually removed from storage.
+        let lastEntryEnd = entries[entries.count - 1].range.location
+            + entries[entries.count - 1].range.length
+        let clampedEditEnd = min(editEnd, lastEntryEnd)
         guard let firstIdx = entries.firstIndex(where: { e in
             editStart >= e.range.location
                 && editStart <= e.range.location + e.range.length
@@ -422,8 +432,8 @@ struct ParagraphIndex: Equatable, Sendable {
         if editedRange.length == 0 {
             lastIdx = firstIdx
         } else if let idx = entries.firstIndex(where: { e in
-            editEnd >= e.range.location
-                && editEnd <= e.range.location + e.range.length
+            clampedEditEnd >= e.range.location
+                && clampedEditEnd <= e.range.location + e.range.length
         }) {
             lastIdx = idx
         } else {
@@ -432,7 +442,7 @@ struct ParagraphIndex: Equatable, Sendable {
         let firstEntry = entries[firstIdx]
         let lastEntry = entries[lastIdx]
         let prefixLength = editStart - firstEntry.range.location
-        let suffixStart = editEnd - lastEntry.range.location
+        let suffixStart = clampedEditEnd - lastEntry.range.location
         let suffixLength = lastEntry.range.length - suffixStart
         guard prefixLength >= 0, suffixLength >= 0 else { return }
 

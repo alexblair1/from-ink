@@ -141,10 +141,11 @@ final class BulletChromeRegressionTests: XCTestCase {
             paragraphKind(at: 0, in: textView), .bulletListItem,
             "Typed character must carry the bullet chrome — its absence is the disappearing-bullet bug"
         )
-        XCTAssertNotNil(
-            textView.attributedText.attribute(.blockID, at: 0, effectiveRange: nil),
-            "Typed character must carry the paragraph's blockID for selection bridging + parse-back"
-        )
+        // `.blockID` was the per-paragraph identity attribute UIKit's
+        // `typingAttributes` machinery kept stripping; Chunk 9 removed
+        // it in favor of the side-channel `ParagraphIndex`. The bullet-
+        // rendering check above is the load-bearing invariant for this
+        // bug class.
     }
 
     func test_typingMidParagraph_afterArrowMove_keepsChromeOfHostParagraph() {
@@ -168,11 +169,14 @@ final class BulletChromeRegressionTests: XCTestCase {
         }
     }
 
-    func test_parseBack_afterTypingIntoEmptyBulletItem_preservesListStructure() {
+    func test_documentBuild_afterTypingIntoEmptyBulletItem_preservesListStructure() {
         let (textView, coordinator, _) = makeEditorRig(document: emptyBulletDoc())
         moveCaretAndType("a", at: 0, textView: textView, coordinator: coordinator)
 
-        let parsed = TextKitEditorView.parseBack(textView.attributedText)
+        let parsed = TextKitEditorView.documentFromIndex(
+            coordinator.paragraphIndex,
+            storage: textView.attributedText
+        )
         guard case .bulletList(let items) = parsed.blocks.first?.kind else {
             XCTFail("List dissolved to \(String(describing: parsed.blocks.first?.kind)) — the downstream symptom of chromeless typing")
             return

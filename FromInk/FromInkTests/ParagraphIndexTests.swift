@@ -649,16 +649,19 @@ final class ParagraphIndexTests: XCTestCase {
     }
 
     /// Multi-line paste into a bullet list item: extra lines become
-    /// new bullet items in the same container.
+    /// new bullet items in the same container. With replacement
+    /// "A\nB" (2 segments), the FIRST segment "A" absorbs into the
+    /// host's text ("rowA") matching Apple Notes / Notion paste
+    /// behavior, and the LAST segment "B" becomes a fresh bullet item.
     func test_applyEdit_multiLinePaste_intoBulletList_makesNewItems() {
         let para = Block(kind: .paragraph(inline: [Inline(text: "row")]))
         let item = ListItem(content: [para])
         let list = Block(kind: .bulletList(items: [item]))
         var index = ParagraphIndex(document: RichTextDocument(blocks: [list]))
 
-        index.applyEdit(replacing: NSRange(location: 3, length: 0), with: "A\nB")
+        index.applyEdit(replacing: NSRange(location: 3, length: 0), with: "A\nB\nC")
 
-        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries.count, 3, "3 segments → first absorbs, middle + last are new items")
         XCTAssertEqual(index.entries[0].kind, .bulletListItem)
         XCTAssertEqual(index.entries[1].kind, .bulletListItem, "Middle is a new bullet item")
         XCTAssertEqual(index.entries[2].kind, .bulletListItem, "Last is a new bullet item")

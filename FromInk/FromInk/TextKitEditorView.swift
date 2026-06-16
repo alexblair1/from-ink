@@ -335,11 +335,10 @@ struct TextKitEditorView: UIViewRepresentable {
             let attrs = textView.attributedText.attributes(at: loc, effectiveRange: nil)
             if let kindRaw = attrs[.paragraphKind] as? Int,
                let kind = ParagraphKind(attributeValue: kindRaw) {
-                let blockID = (attrs[.blockID] as? UUID) ?? UUID()
                 let groupID = attrs[.groupID] as? UUID
                 textView.typingAttributes = Self.typingAttributes(
                     for: kind,
-                    blockID: blockID,
+                    blockID: UUID(),  // unused after Chunk 9 — keep signature for callers
                     groupID: groupID,
                     bodyFont: bodyFont,
                     bodyColor: bodyColor
@@ -685,11 +684,13 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         // Apply paragraph-level attributes (font fallback,
-        // paragraphStyle, paragraphKind + blockID + groupID).
+        // paragraphStyle, paragraphKind + groupID — `.groupID` is the
+        // only identity attribute that survives Chunk 9 because the
+        // layout manager's ordered-list ordinal walks preceding
+        // paragraphs by groupID).
         var paragraphAttrs: [NSAttributedString.Key: Any] = [
             .paragraphStyle: paragraphStyle,
-            .paragraphKind: kind.attributeValue,
-            .blockID: blockID
+            .paragraphKind: kind.attributeValue
         ]
         if let groupID {
             paragraphAttrs[.groupID] = groupID
@@ -697,9 +698,8 @@ struct TextKitEditorView: UIViewRepresentable {
         if let languageHint {
             paragraphAttrs[.fromInkLanguageHint] = languageHint
         }
-        if let listItemID {
-            paragraphAttrs[.fromInkListItemID] = listItemID
-        }
+        _ = blockID
+        _ = listItemID
         // Apply paragraph attrs only to characters that DON'T already
         // carry a font (so inline-mark-induced fonts persist).
         let fullRange = NSRange(location: 0, length: mutable.length)
@@ -763,17 +763,13 @@ struct TextKitEditorView: UIViewRepresentable {
             .font: font,
             .foregroundColor: foreground,
             .paragraphStyle: paragraphStyle,
-            .paragraphKind: kind.attributeValue,
-            .blockID: blockID
+            .paragraphKind: kind.attributeValue
         ]
         if let groupID {
             newlineAttrs[.groupID] = groupID
         }
         if let languageHint {
             newlineAttrs[.fromInkLanguageHint] = languageHint
-        }
-        if let listItemID {
-            newlineAttrs[.fromInkListItemID] = listItemID
         }
         newline.addAttributes(newlineAttrs, range: NSRange(location: 0, length: 1))
         mutable.append(newline)
@@ -930,12 +926,12 @@ struct TextKitEditorView: UIViewRepresentable {
             .font: font(for: kind, bodyFont: bodyFont),
             .foregroundColor: foregroundColor(for: kind, bodyColor: bodyColor),
             .paragraphStyle: paragraphStyle(for: kind),
-            .paragraphKind: kind.attributeValue,
-            .blockID: blockID
+            .paragraphKind: kind.attributeValue
         ]
         if let groupID {
             attrs[.groupID] = groupID
         }
+        _ = blockID
         return attrs
     }
 
@@ -1129,91 +1125,7 @@ struct TextKitEditorView: UIViewRepresentable {
         return count
     }
 
-    // MARK: - Parse-back: NSAttributedString → RichTextDocument
-
-    static func parseBack(_ attributed: NSAttributedString) -> RichTextDocument {
-        // Walk paragraphs, emit blocks, group consecutive same-group
-        // paragraphs into containers.
-        let paragraphs = splitParagraphs(attributed)
-
-        var topLevel: [Block] = []
-        // Track emitted block IDs to detect collisions caused by
-        // Enter inheriting the prior paragraph's .blockID via
-        // typingAttributes (fix B1). A duplicate gets a fresh UUID.
-        var seenBlockIDs: Set<UUID> = []
-
-        var pendingGroupID: UUID? = nil
-        var pendingGroupKind: ParagraphKind? = nil
-        var pendingGroupBlocks: [Block] = []
-        var pendingGroupItemIDs: [UUID?] = []  // listItemID per emitted block (for bullet/ordered lists)
-
-        func flushPendingGroup() {
-            guard let kind = pendingGroupKind, !pendingGroupBlocks.isEmpty else {
-                pendingGroupID = nil
-                pendingGroupKind = nil
-                pendingGroupBlocks = []
-                pendingGroupItemIDs = []
-                return
-            }
-            switch kind {
-            case .bulletListItem:
-                let items = zip(pendingGroupBlocks, pendingGroupItemIDs).map { block, itemID in
-                    ListItem(id: itemID ?? UUID(), content: [block])
-                }
-                topLevel.append(Block(kind: .bulletList(items: items)))
-            case .orderedListItem:
-                let items = zip(pendingGroupBlocks, pendingGroupItemIDs).map { block, itemID in
-                    ListItem(id: itemID ?? UUID(), content: [block])
-                }
-                topLevel.append(Block(kind: .orderedList(items: items)))
-            case .blockquoteParagraph:
-                topLevel.append(Block(kind: .blockquote(children: pendingGroupBlocks)))
-            default:
-                topLevel.append(contentsOf: pendingGroupBlocks)
-            }
-            pendingGroupID = nil
-            pendingGroupKind = nil
-            pendingGroupBlocks = []
-            pendingGroupItemIDs = []
-        }
-
-        for paragraph in paragraphs {
-            let kind = paragraph.kind
-            let groupID = paragraph.groupID
-
-            // Fix B1: dedupe collisions BEFORE building the leaf so
-            // the resulting Block.id is unique.
-            var effectiveID = paragraph.blockID
-            if seenBlockIDs.contains(effectiveID) {
-                effectiveID = UUID()
-            }
-            seenBlockIDs.insert(effectiveID)
-            let leafBlock = buildLeafBlock(from: paragraph, overrideID: effectiveID)
-
-            // Group-handling: bullets, ordered, blockquote children.
-            switch kind {
-            case .bulletListItem, .orderedListItem, .blockquoteParagraph:
-                if pendingGroupID != nil, pendingGroupID == groupID, pendingGroupKind == kind {
-                    pendingGroupBlocks.append(leafBlock)
-                    pendingGroupItemIDs.append(paragraph.listItemID)
-                } else {
-                    flushPendingGroup()
-                    pendingGroupID = groupID
-                    pendingGroupKind = kind
-                    pendingGroupBlocks = [leafBlock]
-                    pendingGroupItemIDs = [paragraph.listItemID]
-                }
-            default:
-                flushPendingGroup()
-                topLevel.append(leafBlock)
-            }
-        }
-        flushPendingGroup()
-
-        return RichTextDocument(blocks: topLevel)
-    }
-
-    // MARK: - Identity re-stamp (Path B: heal attributes from the index)
+    // MARK: - Identity re-stamp (paragraph-kind heal from the index)
 
     /// Re-stamp per-paragraph identity attributes onto `storage` FROM the
     /// authoritative `index`, matching the i-th paragraph (split on `\n`)
@@ -1248,11 +1160,10 @@ struct TextKitEditorView: UIViewRepresentable {
         for (range, entry) in zip(paraRanges, index.entries) {
             let kind = entry.kind
             storage.addAttribute(.paragraphKind, value: kind.attributeValue, range: range)
-            if let leafID = entry.blockPath.last {
-                storage.addAttribute(.blockID, value: leafID, range: range)
-            }
-            // groupID is the container id for grouped kinds (so parseBack
-            // re-groups them into one list/quote); absent otherwise.
+            // `.groupID` survives Chunk 9 — the layout manager's
+            // ordered-list ordinal walks preceding paragraphs by
+            // groupID, so two adjacent ordered lists number from 1
+            // independently. Container id comes from the index.
             let container: UUID?
             switch kind {
             case .bulletListItem, .orderedListItem, .blockquoteParagraph:
@@ -1265,11 +1176,6 @@ struct TextKitEditorView: UIViewRepresentable {
             } else {
                 storage.removeAttribute(.groupID, range: range)
             }
-            if let itemID = entry.listItemID {
-                storage.addAttribute(.fromInkListItemID, value: itemID, range: range)
-            } else {
-                storage.removeAttribute(.fromInkListItemID, range: range)
-            }
             if let hint = entry.languageHint {
                 storage.addAttribute(.fromInkLanguageHint, value: hint, range: range)
             } else {
@@ -1278,69 +1184,6 @@ struct TextKitEditorView: UIViewRepresentable {
             storage.addAttribute(.paragraphStyle, value: paragraphStyle(for: kind), range: range)
         }
         return true
-    }
-
-    private struct ParagraphSlice {
-        let nsRange: NSRange
-        let text: String
-        let kind: ParagraphKind
-        let blockID: UUID
-        let groupID: UUID?
-        let languageHint: String?
-        let listItemID: UUID?
-        let inlineRuns: [Inline]
-    }
-
-    private static func splitParagraphs(_ attributed: NSAttributedString) -> [ParagraphSlice] {
-        let full = attributed.string as NSString
-        var slices: [ParagraphSlice] = []
-        var cursor = 0
-        while cursor < full.length {
-            let nlRange = full.range(of: "\n", options: [], range: NSRange(location: cursor, length: full.length - cursor))
-            let paragraphEnd = nlRange.location != NSNotFound ? nlRange.location : full.length
-            let paragraphRange = NSRange(location: cursor, length: paragraphEnd - cursor)
-            if paragraphRange.length > 0 || cursor == 0 || cursor > 0 {
-                // Read paragraph metadata from the first character —
-                // which for an EMPTY paragraph is its own trailing
-                // `\n` at `location` (always within bounds here since
-                // `cursor < length`). The previous `location - 1`
-                // fallback probed the PRECEDING paragraph's
-                // terminator, giving empty paragraphs the wrong
-                // blockID: parsed ids diverged from storage ids,
-                // the path index missed the caret's real block, and
-                // exitList's `path.count >= 2` guard swallowed
-                // Return on every multi-item list. Hygiene, the
-                // selection bridge, and drawBackground all probe the
-                // own-terminator convention — parse-back now matches.
-                let metaLocation = paragraphRange.location
-                let attrs = attributed.attributes(at: metaLocation, effectiveRange: nil)
-                let kindRaw = (attrs[.paragraphKind] as? Int) ?? ParagraphKind.paragraph.attributeValue
-                let kind = ParagraphKind(attributeValue: kindRaw) ?? .paragraph
-                let blockID = (attrs[.blockID] as? UUID) ?? UUID()
-                let groupID = attrs[.groupID] as? UUID
-                let languageHint = attrs[.fromInkLanguageHint] as? String
-                let listItemID = attrs[.fromInkListItemID] as? UUID
-                let paragraphText = full.substring(with: paragraphRange)
-                let inlineRuns = parseInlineRuns(
-                    attributed: attributed,
-                    range: paragraphRange,
-                    kind: kind
-                )
-                slices.append(ParagraphSlice(
-                    nsRange: paragraphRange,
-                    text: paragraphText,
-                    kind: kind,
-                    blockID: blockID,
-                    groupID: groupID,
-                    languageHint: languageHint,
-                    listItemID: listItemID,
-                    inlineRuns: inlineRuns
-                ))
-            }
-            if nlRange.location == NSNotFound { break }
-            cursor = paragraphEnd + 1
-        }
-        return slices
     }
 
     private static func parseInlineRuns(
@@ -1403,22 +1246,6 @@ struct TextKitEditorView: UIViewRepresentable {
             marks.append(.highlight(kind))
         }
         return marks
-    }
-
-    private static func buildLeafBlock(from slice: ParagraphSlice, overrideID: UUID) -> Block {
-        switch slice.kind {
-        case .paragraph, .bulletListItem, .orderedListItem, .blockquoteParagraph:
-            return Block(id: overrideID, kind: .paragraph(inline: slice.inlineRuns))
-        case .heading(let level):
-            // Storage clamps to 1...3 via `ParagraphKind.attributeValue`,
-            // so by the time we read it back here level is already in
-            // that range — preserved as the associated value.
-            return Block(id: overrideID, kind: .heading(level: level, inline: slice.inlineRuns))
-        case .codeBlock:
-            return Block(id: overrideID, kind: .codeBlock(text: slice.text, languageHint: slice.languageHint))
-        case .divider:
-            return Block(id: overrideID, kind: .divider)
-        }
     }
 
     // MARK: - Selection bridge
@@ -1741,8 +1568,12 @@ struct TextKitEditorView: UIViewRepresentable {
 
         var merged = derived
         let paragraphAttrs = storage.attributes(at: probe, effectiveRange: nil)
+        // After Chunk 9, only `.paragraphKind`, `.groupID`, and
+        // `.fromInkLanguageHint` remain as paragraph-scoped attributes;
+        // identity (`.blockID` / `.fromInkListItemID`) lives in the
+        // side-channel `ParagraphIndex` instead.
         let identityKeys: [NSAttributedString.Key] = [
-            .paragraphKind, .blockID, .groupID, .fromInkListItemID, .fromInkLanguageHint
+            .paragraphKind, .groupID, .fromInkLanguageHint
         ]
         for key in identityKeys {
             merged[key] = paragraphAttrs[key]
@@ -1804,91 +1635,15 @@ struct TextKitEditorView: UIViewRepresentable {
         return merged
     }
 
-    /// Typing on the phantom tail line (the caret position AFTER the
-    /// document's final `\n`) creates a new paragraph whose
-    /// `.blockID` duplicates its predecessor's via `typingAttributes`
-    /// — WITHOUT changing the newline count, so the structural
-    /// detector doesn't fire. O(1) probe of the tail paragraph
-    /// against its predecessor; when true, the caller runs the same
-    /// identity fixups a structural edit would.
-    static func tailParagraphNeedsIdentityFixup(in storage: NSAttributedString) -> Bool {
-        let ns = storage.string as NSString
-        guard ns.length > 0, ns.character(at: ns.length - 1) != 0x0A else { return false }
-        let (tail, probe) = paragraphSlice(at: ns.length - 1, in: storage)
-        guard tail.location > 0,
-              let probe, probe < storage.length,
-              let tailID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID,
-              let prevID = storage.attribute(.blockID, at: tail.location - 1, effectiveRange: nil) as? UUID
-        else { return false }
-        return tailID == prevID
-    }
-
-    // MARK: - Paragraph identity hygiene (structural edits)
-
-    /// One planned attribute fix for a paragraph whose `.blockID`
-    /// duplicates an earlier paragraph's — the inheritance artifact of
-    /// `typingAttributes` carrying the prior paragraph's identity
-    /// across a native Enter (or an in-app rich paste). Detection is
-    /// pure so it can be unit-tested without a UITextView.
-    struct ParagraphIdentityFixup: Equatable {
-        /// Paragraph range INCLUDING the trailing `\n` (the newline
-        /// carries the paragraph attrs and must be retagged too).
-        let range: NSRange
-        let freshBlockID: UUID
-        /// Non-nil when the duplicate must also change chrome —
-        /// heading split demotes the second half to body (matches
-        /// Notion / Bear / Apple Notes and the reducer's
-        /// `insertParagraphAtCursor`).
-        let demoteToParagraph: Bool
-        /// Non-nil when the duplicate is a list item — the new row
-        /// needs its own ListItem identity while staying in the same
-        /// group.
-        let freshListItemID: UUID?
-    }
-
-    /// Detect duplicate-`.blockID` paragraphs after a structural edit.
-    /// The FIRST paragraph carrying an id keeps it (it's the original
-    /// — Enter splits leave the first half in place); each subsequent
-    /// duplicate gets a fresh id, plus a chrome demotion when the
-    /// duplicate is a heading (Enter-on-heading drops to body) and a
-    /// fresh ListItem id when it's a list row.
-    static func paragraphIdentityFixups(
-        in storage: NSAttributedString
-    ) -> [ParagraphIdentityFixup] {
-        let ns = storage.string as NSString
-        var seen: Set<UUID> = []
-        var fixups: [ParagraphIdentityFixup] = []
-        var cursor = 0
-        while cursor < ns.length {
-            let (textRange, probe) = paragraphSlice(at: cursor, in: storage)
-            let hasTrailingNewline = textRange.location + textRange.length < ns.length
-            let fullRange = NSRange(
-                location: textRange.location,
-                length: textRange.length + (hasTrailingNewline ? 1 : 0)
-            )
-            if let probe, probe < storage.length {
-                let attrs = storage.attributes(at: probe, effectiveRange: nil)
-                if let blockID = attrs[.blockID] as? UUID {
-                    if seen.contains(blockID) {
-                        let kind = (attrs[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:))
-                        let isHeading: Bool
-                        if case .heading = kind { isHeading = true } else { isHeading = false }
-                        let isListItem = kind == .bulletListItem || kind == .orderedListItem
-                        fixups.append(ParagraphIdentityFixup(
-                            range: fullRange,
-                            freshBlockID: UUID(),
-                            demoteToParagraph: isHeading,
-                            freshListItemID: isListItem ? UUID() : nil
-                        ))
-                    } else {
-                        seen.insert(blockID)
-                    }
-                }
-            }
-            cursor = fullRange.location + max(fullRange.length, 1)
-        }
-        return fixups
-    }
+    // MARK: - Paragraph identity hygiene (DELETED in Chunk 9)
+    //
+    // `paragraphIdentityFixups` + `ParagraphIdentityFixup` +
+    // `tailParagraphNeedsIdentityFixup` + the `applyParagraphIdentityFixups`
+    // Coordinator method — all gone. They detected duplicate `.blockID`
+    // storage attributes (the typingAttributes corruption artifact) and
+    // minted fresh ids. `.blockID` writes are gone too, so duplicates
+    // can no longer appear in storage. Identity is in `paragraphIndex`,
+    // arbited by `ParagraphIndex.applyEdit`.
 
     // MARK: - Slash trigger evaluation (pure, testable)
 
@@ -2106,55 +1861,35 @@ struct TextKitEditorView: UIViewRepresentable {
             // bridge resolves the caret to the WRONG leaf (the
             // exit-wrong-item / vanishing-text bug).
             // Path B: when we captured a clean structural edit, update
-            // the index incrementally and re-stamp the storage's identity
-            // attributes FROM the index — healing the corruption UIKit's
-            // typingAttributes inflicts across Enter (lost bullets/numbers,
-            // restarting numbering). The re-stamp is count-guarded; if the
-            // index and storage disagree (a complex/untracked edit) it
-            // no-ops and we fall back to the legacy duplicate-blockID
-            // fixups, so behaviour is never worse than before.
-            let needsLegacyFixups =
-                TextKitEditorView.newlineCount(in: textView.text as NSString) != lastNewlineCount
-                || TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText)
-            var healed = false
+            // the index incrementally and re-stamp the storage's
+            // `.paragraphKind` / `.paragraphStyle` attributes FROM the
+            // index — healing the rendering-attribute corruption UIKit's
+            // `typingAttributes` inflicts across Enter (lost bullets/
+            // numbers / restarting numbering). The legacy duplicate-
+            // `.blockID` fixup fallback is gone (Chunk 9) — the index
+            // is the sole identity arbiter now.
             if let structural = pendingStructuralEdit {
                 switch structural {
                 case .edit(let range, let replacement):
                     paragraphIndex.applyEdit(replacing: range, with: replacement)
                 }
-                healed = TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
+                TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
             }
             pendingStructuralEdit = nil
-            if !healed, needsLegacyFixups {
-                applyParagraphIdentityFixups(textView)
-            }
-            // Index-aligned path: build the document directly from the
-            // ParagraphIndex (Commit 5). When the index's paragraph
-            // count agrees with the storage's, the index is current —
-            // every entry maps 1:1 to a storage paragraph, identity
-            // comes straight from `entry.blockPath` / `entry.listItemID`,
-            // and no attribute-probe dedupe is needed. The legacy
-            // parse-back path remains as a fallback for complex edits
-            // the incremental ops don't yet cover (multi-`\n` paste,
-            // cross-paragraph delete) — when alignment fails we rebuild
-            // the document from storage attributes and re-derive the
-            // index from that.
-            let parsed: RichTextDocument
-            let storageParagraphs = TextKitEditorView.paragraphCount(in: textView.attributedText)
-            if storageParagraphs == paragraphIndex.entries.count {
-                parsed = TextKitEditorView.documentFromIndex(
-                    paragraphIndex,
-                    storage: textView.attributedText
-                )
-            } else {
-                parsed = TextKitEditorView.parseBack(textView.attributedText)
-                paragraphIndex = ParagraphIndex(document: parsed)
-            }
-            // Re-stamp the storage's identity attributes from the
-            // freshly-aligned index so storage and document NEVER
-            // diverge on identity — anything that reads identity from
-            // the storage (the parse-back safety net, the slash trigger
-            // path) sees the same leaf ids the document carries.
+            // Index-authoritative path. With `ParagraphIndex.applyEdit`
+            // covering EVERY structural shape `shouldChangeTextIn`
+            // captures, the index is always aligned with storage — no
+            // parse-back fallback needed.
+            let parsed = TextKitEditorView.documentFromIndex(
+                paragraphIndex,
+                storage: textView.attributedText
+            )
+            // Re-stamp the storage's paragraph-kind / paragraph-style
+            // attributes from the index so the layout manager paints
+            // correctly even if `typingAttributes` corrupted them
+            // mid-edit. Identity attributes (`.blockID` / `.groupID` /
+            // `.fromInkListItemID`) are no longer written or read —
+            // identity lives in `paragraphIndex.entries.blockPath`.
             TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
             lastNewlineCount = TextKitEditorView.newlineCount(in: textView.text as NSString)
             lastSyncedDocument = parsed
@@ -2470,8 +2205,7 @@ struct TextKitEditorView: UIViewRepresentable {
             let attrs = storage.attributes(at: probe, effectiveRange: nil)
             guard let kindRaw = attrs[.paragraphKind] as? Int,
                   let kind = ParagraphKind(attributeValue: kindRaw),
-                  kind != .codeBlock, kind != .divider,
-                  let blockID = attrs[.blockID] as? UUID else { return }
+                  kind != .codeBlock, kind != .divider else { return }
 
             let runs = TextKitEditorView.parseInlineRuns(
                 attributed: storage,
@@ -2485,13 +2219,17 @@ struct TextKitEditorView: UIViewRepresentable {
                 startUTF16: sel.location - paraRange.location,
                 endUTF16: clampedEnd - paraRange.location
             )
+            // `.blockID` / `.fromInkListItemID` no longer travel with
+            // storage (Chunk 9); paragraphContent's `blockID` /
+            // `listItemID` parameters are unused but kept for signature
+            // stability — pass throwaway UUIDs.
             let replacement = TextKitEditorView.paragraphContent(
                 runs: rebuilt,
                 kind: kind,
-                blockID: blockID,
+                blockID: UUID(),
                 groupID: attrs[.groupID] as? UUID,
                 languageHint: attrs[.fromInkLanguageHint] as? String,
-                listItemID: attrs[.fromInkListItemID] as? UUID,
+                listItemID: nil,
                 bodyFont: parent.bodyFont,
                 bodyColor: parent.bodyColor
             )
@@ -2583,97 +2321,12 @@ struct TextKitEditorView: UIViewRepresentable {
             return UIFont(descriptor: descriptor, size: 0)
         }
 
-        /// Apply the post-structural-edit identity fixups (fresh
-        /// blockIDs on duplicate paragraphs, heading→body demotion,
-        /// fresh ListItem ids) with undo registered per fixup —
-        /// attribute restoration joins the native edit's undo group
-        /// (same runloop), so ⌘Z of an Enter restores both the text
-        /// AND the identity attributes.
-        func applyParagraphIdentityFixups(_ textView: UITextView) {
-            let storage: NSTextStorage = textView.textStorage
-            let fixups = TextKitEditorView.paragraphIdentityFixups(in: storage)
-            guard !fixups.isEmpty else { return }
-            for fixup in fixups {
-                let snapshotBefore = storage.attributedSubstring(from: fixup.range)
-                storage.addAttribute(.blockID, value: fixup.freshBlockID, range: fixup.range)
-                if let freshItemID = fixup.freshListItemID {
-                    storage.addAttribute(.fromInkListItemID, value: freshItemID, range: fixup.range)
-                }
-                if fixup.demoteToParagraph {
-                    demoteToBodyParagraph(storage: storage, range: fixup.range)
-                }
-                registerAttributeRestore(
-                    snapshotBefore,
-                    at: fixup.range.location,
-                    in: textView
-                )
-            }
-            // The caret usually sits inside a just-fixed paragraph —
-            // refresh typingAttributes so the next keystroke inherits
-            // the fixed identity, not the pre-split one.
-            TextKitEditorView.refreshTypingAttributes(
-                textView: textView,
-                document: lastSyncedDocument,
-                selection: parent.selection,
-                bodyFont: parent.bodyFont,
-                bodyColor: parent.bodyColor
-            )
-        }
-
-        /// Demote a heading paragraph to body chrome in place: kind
-        /// + paragraph style + per-run font retargeting that preserves
-        /// bold/italic traits (inline marks survive the demotion, the
-        /// heading typography doesn't).
-        private func demoteToBodyParagraph(storage: NSTextStorage, range: NSRange) {
-            storage.addAttribute(.paragraphKind, value: ParagraphKind.paragraph.attributeValue, range: range)
-            storage.addAttribute(
-                .paragraphStyle,
-                value: TextKitEditorView.paragraphStyle(for: .paragraph),
-                range: range
-            )
-            let bodyFont = parent.bodyFont
-            storage.enumerateAttribute(.font, in: range, options: []) { value, runRange, _ in
-                guard let oldFont = value as? UIFont else {
-                    storage.addAttribute(.font, value: bodyFont, range: runRange)
-                    return
-                }
-                let oldTraits = oldFont.fontDescriptor.symbolicTraits
-                var newTraits = bodyFont.fontDescriptor.symbolicTraits
-                if oldTraits.contains(.traitBold) { newTraits.insert(.traitBold) }
-                if oldTraits.contains(.traitItalic) { newTraits.insert(.traitItalic) }
-                let retargeted = bodyFont.fontDescriptor.withSymbolicTraits(newTraits)
-                    .map { UIFont(descriptor: $0, size: 0) } ?? bodyFont
-                storage.addAttribute(.font, value: retargeted, range: runRange)
-            }
-        }
-
-        /// Register a self-inverting attribute-restore undo op: undo
-        /// re-applies `snapshot`'s attributes over the same range and
-        /// registers the inverse again so redo works symmetrically.
-        private func registerAttributeRestore(
-            _ snapshot: NSAttributedString,
-            at location: Int,
-            in textView: UITextView
-        ) {
-            textView.undoManager?.registerUndo(withTarget: self) { coordinator in
-                guard let tv = coordinator.textView else { return }
-                let storage = tv.textStorage
-                let range = NSRange(location: location, length: snapshot.length)
-                guard range.location + range.length <= storage.length else { return }
-                let current = storage.attributedSubstring(from: range)
-                snapshot.enumerateAttributes(
-                    in: NSRange(location: 0, length: snapshot.length),
-                    options: []
-                ) { attrs, runRange, _ in
-                    storage.setAttributes(
-                        attrs,
-                        range: NSRange(location: location + runRange.location, length: runRange.length)
-                    )
-                }
-                coordinator.registerAttributeRestore(current, at: location, in: tv)
-                coordinator.syncDocumentFromStorage(tv)
-            }
-        }
+        // applyParagraphIdentityFixups, demoteToBodyParagraph,
+        // registerAttributeRestore — deleted in Chunk 9. They were the
+        // workaround for the `typingAttributes` corruption that
+        // duplicated `.blockID` storage attributes. With identity in
+        // the side-channel `ParagraphIndex` and `applyEdit` arbitrating
+        // every structural edit, duplicates can't appear.
 
         // MARK: - UITextViewDelegate
 
@@ -2808,14 +2461,6 @@ struct TextKitEditorView: UIViewRepresentable {
             // keystroke (EDD §22.4.1).
             let newlines = TextKitEditorView.newlineCount(in: textView.text as NSString)
             let isStructural = newlines != lastNewlineCount
-            // Typing past the final `\n` mints a new paragraph
-            // without moving the newline count — same identity
-            // problem, same fixups.
-            let needsTailFixup = !isStructural
-                && TextKitEditorView.tailParagraphNeedsIdentityFixup(in: textView.attributedText)
-            if isStructural || needsTailFixup {
-                applyParagraphIdentityFixups(textView)
-            }
 
             // While the palette is open (or a trigger is pending),
             // every keystroke syncs immediately — a palette command
@@ -2823,7 +2468,7 @@ struct TextKitEditorView: UIViewRepresentable {
             // never act on a document missing the last few hundred
             // ms of typing.
             let paletteInteraction = pinnedSlashLocation != nil || pendingSlashLocation != nil
-            if isStructural || needsTailFixup || paletteInteraction {
+            if isStructural || paletteInteraction {
                 syncDocumentFromStorage(textView)
             } else {
                 // Non-structural keystroke: no paragraph added, removed,
@@ -3112,19 +2757,13 @@ extension NSAttributedString.Key {
     /// above level 3).
     static let paragraphKind = NSAttributedString.Key("fromInk.paragraphKind")
 
-    /// UUID of the source `Block`. The parse-back path uses this to
-    /// preserve block IDs across edits where possible. New paragraphs
-    /// from Enter get a fresh UUID at parse-back time, and the
-    /// parse-back path dedupes collisions (Enter inherits the prior
-    /// paragraph's blockID via typingAttributes — the duplicate gets
-    /// a fresh UUID).
-    static let blockID = NSAttributedString.Key("fromInk.blockID")
-
     /// Shared identifier for paragraphs that belong to the same
-    /// parent container (bulletList items, orderedList items,
-    /// blockquote children). The parse-back groups consecutive
-    /// paragraphs with the SAME `groupID` AND the same chrome into a
-    /// single container block.
+    /// parent container (bullet items, ordered items, blockquote
+    /// children). The ONLY identity attribute that survived Chunk 9 —
+    /// the layout manager's ordered-list ordinal walks preceding
+    /// paragraphs by `.groupID` so two adjacent ordered lists each
+    /// number from 1 (storage-only path; the document side reads
+    /// container ids from `ParagraphIndex.entries[i].blockPath`).
     static let groupID = NSAttributedString.Key("fromInk.groupID")
 
     /// `HighlightKind.rawValue` (a `String`) for inline runs that
@@ -3148,11 +2787,6 @@ extension NSAttributedString.Key {
     /// recovered by parse-back into `Block.codeBlock(languageHint:)`.
     static let fromInkLanguageHint = NSAttributedString.Key("fromInk.languageHint")
 
-    /// `UUID` of the source `ListItem` that this paragraph belongs to,
-    /// for list-item identity preservation across round-trips.
-    /// Currently unused by parse-back (which rebuilds list items with
-    /// fresh ids) but flattened for future use.
-    static let fromInkListItemID = NSAttributedString.Key("fromInk.listItemID")
 }
 
 // MARK: - BlockDecoratingLayoutManager
