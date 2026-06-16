@@ -81,6 +81,24 @@ extension AppStrings {
             comment: "Aa popover inline toggle — strikethrough."
         )
 
+        // MARK: - Bar buttons (accessibility labels)
+
+        static let formatStyle = NSLocalizedString(
+            "accessoryBar.button.formatStyle",
+            value: "Text style",
+            comment: "Accessory bar button that opens the Aa formatting popover."
+        )
+        static let undo = NSLocalizedString(
+            "accessoryBar.button.undo",
+            value: "Undo",
+            comment: "Accessory bar undo button."
+        )
+        static let dismissKeyboard = NSLocalizedString(
+            "accessoryBar.button.dismissKeyboard",
+            value: "Hide keyboard",
+            comment: "Accessory bar button that dismisses the keyboard."
+        )
+
         // MARK: - Chrome
 
         static let comingSoonBadge = NSLocalizedString(
