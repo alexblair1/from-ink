@@ -10,7 +10,7 @@ import XCTest
 /// `UITextView.typingAttributes` on EVERY selection change — tap,
 /// arrow key, programmatic `selectedRange` set — and the derived
 /// dictionary carries ONLY standard attributes. The custom keys
-/// (`.blockChrome`, `.blockID`, `.groupID`, …) were silently dropped,
+/// (`.paragraphKind`, `.blockID`, `.groupID`, …) were silently dropped,
 /// so the first character typed after any caret move landed
 /// chromeless: the paragraph probed as a body paragraph, the
 /// bullet/number/quote chrome vanished, and parse-back dissolved the
@@ -69,7 +69,7 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         let flat = TextKitEditorView.flatten(document: document, bodyFont: bodyFont, bodyColor: bodyColor)
         textView.attributedText = flat.attributed
-        coordinator.pathIndex = TextKitEditorView.leafPathIndex(document)
+        coordinator.paragraphIndex = ParagraphIndex(document: document)
         coordinator.lastNewlineCount = TextKitEditorView.newlineCount(in: flat.attributed.string as NSString)
         return (textView, coordinator, mirror)
     }
@@ -82,10 +82,10 @@ final class BulletChromeRegressionTests: XCTestCase {
         ])
     }
 
-    private func chrome(at location: Int, in textView: UITextView) -> BlockChrome? {
+    private func paragraphKind(at location: Int, in textView: UITextView) -> ParagraphKind? {
         guard location < textView.attributedText.length else { return nil }
         let attrs = textView.attributedText.attributes(at: location, effectiveRange: nil)
-        return (attrs[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
+        return (attrs[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:))
     }
 
     /// Mirror the real input-system event sequence for a caret move +
@@ -121,7 +121,7 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         XCTAssertEqual(textView.attributedText.string, "a\n")
         XCTAssertEqual(
-            chrome(at: 0, in: textView), .bulletListItem,
+            paragraphKind(at: 0, in: textView), .bulletListItem,
             "Typed character must carry the bullet chrome — its absence is the disappearing-bullet bug"
         )
         XCTAssertNotNil(
@@ -145,7 +145,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         XCTAssertEqual(textView.attributedText.string, "itXem\n")
         for location in 0..<5 {
             XCTAssertEqual(
-                chrome(at: location, in: textView), .bulletListItem,
+                paragraphKind(at: location, in: textView), .bulletListItem,
                 "Char at \(location) lost bullet chrome after mid-paragraph typing"
             )
         }
@@ -194,7 +194,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         // Caret is on the new (second) line.
         XCTAssertEqual(textView.selectedRange, NSRange(location: 4, length: 0))
         XCTAssertEqual(textView.attributedText.string, "abc\n\n")
-        XCTAssertEqual(chrome(at: 4, in: textView), .bulletListItem, "New line keeps the bullet chrome")
+        XCTAssertEqual(paragraphKind(at: 4, in: textView), .bulletListItem, "New line keeps the bullet chrome")
 
         // The reducer's mirrored selection must agree with the
         // storage's post-hygiene identity (fresh second-item id, NOT
@@ -202,8 +202,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         let bridged = TextKitEditorView.bridgeSelection(
             storage: textView.attributedText,
             selectedRange: textView.selectedRange,
-            paragraphIndex: coordinator.paragraphIndex,
-            pathIndex: coordinator.pathIndex
+            paragraphIndex: coordinator.paragraphIndex
         )
         XCTAssertEqual(mirror.selection, bridged, "Sync must re-mirror the bridged selection")
         XCTAssertNotEqual(mirror.selection.path.last, originalLeafID, "Selection names the NEW line's fresh id")
@@ -212,7 +211,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         // selection maps back to exactly the textView's current caret.
         let nsRange = TextKitEditorView.nsRange(
             for: mirror.selection,
-            flattenIDMap: coordinator.flattenIDMap,
+            paragraphIndex: coordinator.paragraphIndex,
             totalLength: textView.attributedText.length
         )
         XCTAssertEqual(nsRange, textView.selectedRange, "Reducer selection round-trips to the current caret — no jump")
@@ -301,8 +300,8 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         XCTAssertEqual(textView.attributedText.length, 0)
         let typing = textView.typingAttributes
-        let chrome = (typing[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
-        XCTAssertNotEqual(chrome, .bulletListItem, "Empty document must not keep list chrome in typing attributes")
+        let kind = (typing[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:))
+        XCTAssertNotEqual(kind, .bulletListItem, "Empty document must not keep list kind in typing attributes")
         let style = typing[.paragraphStyle] as? NSParagraphStyle
         XCTAssertEqual(style?.headIndent ?? 0, 0, "List indentation must not survive into an empty document")
         XCTAssertEqual(style?.firstLineHeadIndent ?? 0, 0)
@@ -324,9 +323,9 @@ final class BulletChromeRegressionTests: XCTestCase {
             "UIKit's derived standard attributes (inline continuation) must survive the merge"
         )
         XCTAssertEqual(
-            (merged[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:)),
+            (merged[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:)),
             .bulletListItem,
-            "Custom chrome key re-asserted from the paragraph probe"
+            "Custom paragraphKind re-asserted from the paragraph probe"
         )
     }
 
@@ -340,7 +339,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         let derived: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
             .paragraphStyle: staleListStyle,
-            .blockChrome: BlockChrome.bulletListItem.rawValue
+            .paragraphKind: ParagraphKind.bulletListItem.attributeValue
         ]
         let merged = TextKitEditorView.typingAttributesPreservingChrome(
             derived: derived,
@@ -350,7 +349,7 @@ final class BulletChromeRegressionTests: XCTestCase {
             bodyColor: bodyColor
         )
         XCTAssertEqual(
-            (merged[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:)),
+            (merged[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:)),
             .paragraph,
             "Empty storage resets to body-paragraph typing attributes"
         )

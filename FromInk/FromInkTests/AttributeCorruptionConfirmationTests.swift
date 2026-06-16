@@ -9,7 +9,7 @@ import XCTest
 /// the exact dependency the `ParagraphIndex` authority flip removes.
 ///
 /// `parseBack` derives list structure ENTIRELY from per-paragraph
-/// `.blockChrome` / `.groupID` attributes. UIKit's `typingAttributes`
+/// `.paragraphKind` / `.groupID` attributes. UIKit's `typingAttributes`
 /// strips or desyncs those custom keys on the paragraph created by Enter
 /// (documented behaviour the editor fights with re-assert dances). When
 /// that preservation fails, the attributes are corrupt and the list
@@ -53,7 +53,7 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         // Strip identity keys from items 2 and 3 — simulate the
         // typingAttributes custom-key loss on Enter-created lines.
         for range in [flat.flattenMap[1].nsRange, flat.flattenMap[2].nsRange] {
-            mutable.removeAttribute(.blockChrome, range: range)
+            mutable.removeAttribute(.paragraphKind, range: range)
             mutable.removeAttribute(.groupID, range: range)
         }
         let recovered = TextKitEditorView.parseBack(mutable)
@@ -88,7 +88,7 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         XCTAssertEqual(lists.count, 2, "A desynced groupID splits one list into two → numbering restarts at 1")
     }
 
-    /// The rendering half: a list paragraph whose `.blockChrome` was
+    /// The rendering half: a list paragraph whose `.paragraphKind` was
     /// stripped reads back as `nil` at its probe location, so the layout
     /// manager paints NO marker even though the paragraph still carries
     /// the list's indent paragraph style. That mismatch (indented, no
@@ -99,9 +99,9 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         )
         let mutable = NSMutableAttributedString(attributedString: flat.attributed)
         let item2 = flat.flattenMap[1].nsRange
-        mutable.removeAttribute(.blockChrome, range: item2)
+        mutable.removeAttribute(.paragraphKind, range: item2)
 
-        let chrome = mutable.attribute(.blockChrome, at: item2.location, effectiveRange: nil)
+        let chrome = mutable.attribute(.paragraphKind, at: item2.location, effectiveRange: nil)
         XCTAssertNil(chrome, "No chrome to probe → drawBackground paints no marker for this line")
         // …yet the indent paragraph style survives, so the line still
         // sits indented — exactly the indented-but-unnumbered rows.
@@ -119,7 +119,7 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
         let mutable = NSMutableAttributedString(attributedString: flat.attributed)
         for range in [flat.flattenMap[1].nsRange, flat.flattenMap[2].nsRange] {
-            mutable.removeAttribute(.blockChrome, range: range)
+            mutable.removeAttribute(.paragraphKind, range: range)
             mutable.removeAttribute(.groupID, range: range)
         }
         // Sanity: corrupted storage fragments the list (the bug).
@@ -138,20 +138,20 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         XCTAssertEqual(items.count, 3, "All three items back in one list → numbering 1,2,3")
     }
 
-    /// The re-stamp also restores the `.blockChrome` the layout manager
+    /// The re-stamp also restores the `.paragraphKind` the layout manager
     /// probes, so the markers paint again.
     func test_reStampFromIndex_restoresChromeProbe() {
         let doc = Self.threeItemOrderedList()
         let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
         let mutable = NSMutableAttributedString(attributedString: flat.attributed)
         let item2 = flat.flattenMap[1].nsRange
-        mutable.removeAttribute(.blockChrome, range: item2)
-        XCTAssertNil(mutable.attribute(.blockChrome, at: item2.location, effectiveRange: nil))
+        mutable.removeAttribute(.paragraphKind, range: item2)
+        XCTAssertNil(mutable.attribute(.paragraphKind, at: item2.location, effectiveRange: nil))
 
         TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex(document: doc))
 
-        let chrome = mutable.attribute(.blockChrome, at: item2.location, effectiveRange: nil) as? Int
-        XCTAssertEqual(chrome, BlockChrome.orderedListItem.rawValue, "Marker chrome restored from the index")
+        let kindRaw = mutable.attribute(.paragraphKind, at: item2.location, effectiveRange: nil) as? Int
+        XCTAssertEqual(kindRaw, ParagraphKind.orderedListItem.attributeValue, "Marker kind restored from the index")
     }
 
     /// Count mismatch (index not yet aligned with the storage) → no-op,
@@ -173,16 +173,16 @@ final class AttributeCorruptionConfirmationTests: XCTestCase {
         let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
         let font0 = flat.attributed.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
         XCTAssertEqual(font0?.pointSize, 28, "flatten gives H1 its 28pt font")
-        let chrome0 = flat.attributed.attribute(.blockChrome, at: 0, effectiveRange: nil) as? Int
-        XCTAssertEqual(chrome0, BlockChrome.heading1.rawValue)
+        let kindRaw0 = flat.attributed.attribute(.paragraphKind, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(kindRaw0, ParagraphKind.heading(level: 1).attributeValue)
 
         let mutable = NSMutableAttributedString(attributedString: flat.attributed)
         TextKitEditorView.reStampIdentity(on: mutable, from: ParagraphIndex(document: doc))
 
         let font1 = mutable.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
         XCTAssertEqual(font1?.pointSize, 28, "re-stamp preserves the heading font")
-        let chrome1 = mutable.attribute(.blockChrome, at: 0, effectiveRange: nil) as? Int
-        XCTAssertEqual(chrome1, BlockChrome.heading1.rawValue, "re-stamp preserves heading chrome")
+        let kindRaw1 = mutable.attribute(.paragraphKind, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(kindRaw1, ParagraphKind.heading(level: 1).attributeValue, "re-stamp preserves heading kind")
     }
 
     private static func threeItemOrderedList() -> RichTextDocument {

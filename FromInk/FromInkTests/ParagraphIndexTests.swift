@@ -427,6 +427,89 @@ final class ParagraphIndexTests: XCTestCase {
         XCTAssertEqual(index.entries, before)
     }
 
+    // MARK: - Structural split with replacingLength (selection + Enter)
+
+    /// Selection + Enter in a single paragraph: the selected chars are
+    /// deleted and replaced by a `\n`. First half keeps the original
+    /// paragraph's identity; second half is a fresh body paragraph
+    /// holding the unselected trailing text.
+    func test_split_replacingMidSelection_dropsSelectedChars() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "ABCxxxDEF")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+        // Select "xxx" at positions [3, 3) and press Enter.
+        index.applyStructuralSplit(at: 3, replacingLength: 3)
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 3), "First half: 'ABC'")
+        XCTAssertEqual(index.entries[0].blockPath, [p.id], "Original keeps its identity")
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 4, length: 3), "Second half: 'DEF'")
+        XCTAssertNotEqual(index.entries[1].blockPath, [p.id], "Second half gets a fresh id")
+    }
+
+    /// Selection + Enter still shifts later paragraphs by the net delta
+    /// (`+1` for the inserted `\n` minus the selection's length).
+    func test_split_replacing_shiftsLaterParagraphs() {
+        let p1 = Block(kind: .paragraph(inline: [Inline(text: "ABCxxxDEF")]))
+        let p2 = Block(kind: .paragraph(inline: [Inline(text: "GHI")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p1, p2]))
+        // Pre-edit: p1(0,9) p2(10,3). Selection [3, 3) replaced by `\n`
+        // → "ABC\nDEF\nGHI": p1.first(0,3) p1.second(4,3) p2(8,3).
+        // Later-shift = 1 - 3 = -2.
+        index.applyStructuralSplit(at: 3, replacingLength: 3)
+
+        XCTAssertEqual(index.entries.count, 3)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 3))
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 4, length: 3))
+        XCTAssertEqual(index.entries[2].range, NSRange(location: 8, length: 3))
+        XCTAssertEqual(index.entries[2].blockPath, [p2.id], "p2 identity unchanged")
+    }
+
+    /// Selection + Enter inside a list item: both halves are list items
+    /// in the same container (matching pure-Enter list-item split).
+    func test_split_replacing_listItem_secondHalfNewListItem() {
+        let para = Block(kind: .paragraph(inline: [Inline(text: "ABCxxxDEF")]))
+        let item = ListItem(content: [para])
+        let list = Block(kind: .bulletList(items: [item]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [list]))
+
+        index.applyStructuralSplit(at: 3, replacingLength: 3)
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].kind, .bulletListItem)
+        XCTAssertEqual(index.entries[1].kind, .bulletListItem, "Selection+Enter inside a list adds a new list item")
+        XCTAssertEqual(index.entries[0].blockPath.first, list.id)
+        XCTAssertEqual(index.entries[1].blockPath.first, list.id, "New item lives in the same list container")
+        XCTAssertNotEqual(index.entries[1].listItemID, index.entries[0].listItemID, "Fresh ListItem id")
+    }
+
+    /// Selecting the entire paragraph and pressing Enter leaves an
+    /// empty first half (the original) and an empty second half (the
+    /// fresh paragraph).
+    func test_split_replacing_entireParagraph_leavesTwoEmptyEntries() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "ABC")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+
+        index.applyStructuralSplit(at: 0, replacingLength: 3)
+
+        XCTAssertEqual(index.entries.count, 2)
+        XCTAssertEqual(index.entries[0].range, NSRange(location: 0, length: 0))
+        XCTAssertEqual(index.entries[1].range, NSRange(location: 1, length: 0))
+    }
+
+    /// Defensive: a `replacingLength` larger than the host paragraph's
+    /// remaining text leaves the index unchanged. The caller is
+    /// expected to have clamped the selection to one paragraph before
+    /// dispatching the split, so this guard is a backstop.
+    func test_split_replacing_overrun_isNoOp() {
+        let p = Block(kind: .paragraph(inline: [Inline(text: "ABC")]))
+        var index = ParagraphIndex(document: RichTextDocument(blocks: [p]))
+        let before = index.entries
+
+        index.applyStructuralSplit(at: 1, replacingLength: 99)
+
+        XCTAssertEqual(index.entries, before)
+    }
+
     // MARK: - Structural merge (backspace join)
 
     func test_merge_twoParagraphs_predecessorAbsorbsAndKeepsIdentity() {

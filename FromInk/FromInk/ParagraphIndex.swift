@@ -272,23 +272,40 @@ struct ParagraphIndex: Equatable, Sendable {
     ///   - blockquote paragraph → second half is another blockquote
     ///     paragraph in the same container
     ///
-    /// A `\n` is inserted at `location`, so the first half's terminator
-    /// becomes that newline and every paragraph after the split shifts
-    /// by one. `makeID` mints fresh ids (injectable for deterministic
-    /// tests). No-op when `location` falls outside every entry (the
-    /// phantom tail).
+    /// `replacingLength` covers the **selection + Enter** case: if a
+    /// non-zero selection at `[location, location + replacingLength)`
+    /// is being replaced by the `\n`, the host paragraph loses those
+    /// chars before the split. Default `0` is the pure Enter case
+    /// (caret at `location`, no chars deleted).
+    ///
+    /// A `\n` lives at `location` after the edit; the first half's
+    /// terminator becomes that newline. Every paragraph after the new
+    /// second half shifts by `(1 - replacingLength)` — `+1` for the
+    /// inserted `\n`, minus the chars the selection deleted. `makeID`
+    /// mints fresh ids (injectable for deterministic tests). No-op when
+    /// `location` falls outside every entry (the phantom tail), or when
+    /// the host paragraph isn't long enough to absorb the deletion
+    /// (defensive — the caller is expected to have verified the range
+    /// stays within one paragraph).
     ///
     /// Code blocks are treated as a top-level paragraph split for now —
     /// Enter inside a code block (an internal newline, not a block
     /// split) is a separate case the editor doesn't yet route here.
-    mutating func applyStructuralSplit(at location: Int, makeID: () -> UUID = { UUID() }) {
+    mutating func applyStructuralSplit(
+        at location: Int,
+        replacingLength: Int = 0,
+        makeID: () -> UUID = { UUID() }
+    ) {
         guard let i = entries.firstIndex(where: { entry in
             location >= entry.range.location
                 && location <= entry.range.location + entry.range.length
         }) else { return }
         let original = entries[i]
         let firstLength = location - original.range.location
-        let secondLength = original.range.length - firstLength
+        // The host loses `replacingLength` chars to the selection
+        // delete; only the remainder lands in the second half.
+        let secondLength = original.range.length - firstLength - replacingLength
+        guard secondLength >= 0 else { return }
 
         // First half keeps identity; shrink to the pre-split portion.
         // Its terminator is now the inserted `\n` at `location`.
@@ -321,9 +338,11 @@ struct ParagraphIndex: Equatable, Sendable {
         }
         entries.insert(second, at: i + 1)
 
-        // Everything after the new second half shifts by the inserted `\n`.
+        // Everything after the new second half shifts by the net delta:
+        // `+1` for the inserted `\n`, minus the deleted selection chars.
+        let shift = 1 - replacingLength
         for j in entries.indices where j > i + 1 {
-            entries[j].range.location += 1
+            entries[j].range.location += shift
         }
     }
 

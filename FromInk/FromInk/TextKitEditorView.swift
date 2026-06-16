@@ -30,8 +30,8 @@ import UIKit
 ///
 /// **Flatten format.** One paragraph per leaf block:
 ///
-///   - Each paragraph carries `.blockChrome` (an `Int` rawValue of
-///     `BlockChrome`) — the layout manager's discriminator for
+///   - Each paragraph carries `.paragraphKind` (an `Int` encoding of
+///     `ParagraphKind`) — the layout manager's discriminator for
 ///     drawing chrome.
 ///   - Each paragraph carries `.blockID` (the `UUID` of the source
 ///     leaf) — the parse-back path needs this to preserve block IDs
@@ -119,6 +119,12 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.textContainer.lineFragmentPadding = 0
         textView.autocorrectionType = .default
         textView.spellCheckingType = .default
+        // Suppress system formatting duplicates — our accessory bar owns this UI.
+        // Clears the QuickType bar's leading (undo/redo/paste) and trailing
+        // (B/I/U + Aa) groups; predictive suggestions, autocorrect, spell-check,
+        // and dictation are unaffected.
+        textView.inputAssistantItem.leadingBarButtonGroups = []
+        textView.inputAssistantItem.trailingBarButtonGroups = []
         textView.delegate = context.coordinator
         textView.onEditorCommand = { [weak coordinator = context.coordinator] command in
             guard let coord = coordinator else { return }
@@ -182,9 +188,6 @@ struct TextKitEditorView: UIViewRepresentable {
         )
         context.coordinator.isApplyingBindingUpdate = true
         textView.attributedText = initial.attributed
-        context.coordinator.flattenMap = initial.flattenMap
-        context.coordinator.flattenIDMap = initial.flattenIDMap
-        context.coordinator.pathIndex = Self.leafPathIndex(document)
         context.coordinator.paragraphIndex = ParagraphIndex(document: document)
         context.coordinator.lastNewlineCount = Self.newlineCount(in: initial.attributed.string as NSString)
         // Default typing attributes for an empty document.
@@ -226,9 +229,6 @@ struct TextKitEditorView: UIViewRepresentable {
             // Restore caret to a valid position (clamp).
             let clampedLocation = min(priorSelection.location, flattened.attributed.length)
             textView.selectedRange = NSRange(location: clampedLocation, length: 0)
-            context.coordinator.flattenMap = flattened.flattenMap
-            context.coordinator.flattenIDMap = flattened.flattenIDMap
-            context.coordinator.pathIndex = Self.leafPathIndex(document)
             context.coordinator.paragraphIndex = ParagraphIndex(document: document)
             context.coordinator.lastNewlineCount = Self.newlineCount(in: flattened.attributed.string as NSString)
             context.coordinator.lastSyncedDocument = document
@@ -265,13 +265,12 @@ struct TextKitEditorView: UIViewRepresentable {
         let bridgedCurrent = Self.bridgeSelection(
             storage: textView.attributedText,
             selectedRange: textView.selectedRange,
-            paragraphIndex: context.coordinator.paragraphIndex,
-            pathIndex: context.coordinator.pathIndex
+            paragraphIndex: context.coordinator.paragraphIndex
         )
         if selection != bridgedCurrent,
            let nsRange = Self.nsRange(
                for: selection,
-               flattenIDMap: context.coordinator.flattenIDMap,
+               paragraphIndex: context.coordinator.paragraphIndex,
                totalLength: textView.attributedText.length
            ), nsRange != textView.selectedRange {
             context.coordinator.isApplyingBindingUpdate = true
@@ -334,12 +333,12 @@ struct TextKitEditorView: UIViewRepresentable {
         let loc = textView.selectedRange.location
         if loc < textView.attributedText.length {
             let attrs = textView.attributedText.attributes(at: loc, effectiveRange: nil)
-            if let chromeRaw = attrs[.blockChrome] as? Int,
-               let chrome = BlockChrome(rawValue: chromeRaw) {
+            if let kindRaw = attrs[.paragraphKind] as? Int,
+               let kind = ParagraphKind(attributeValue: kindRaw) {
                 let blockID = (attrs[.blockID] as? UUID) ?? UUID()
                 let groupID = attrs[.groupID] as? UUID
                 textView.typingAttributes = Self.typingAttributes(
-                    for: chrome,
+                    for: kind,
                     blockID: blockID,
                     groupID: groupID,
                     bodyFont: bodyFont,
@@ -361,7 +360,7 @@ struct TextKitEditorView: UIViewRepresentable {
     }
 
     /// Resolve `typingAttributes` from the document at the
-    /// selection path. The chrome reflects the leaf's container
+    /// selection path. The kind reflects the leaf's container
     /// (list → `bulletListItem` / `orderedListItem`, blockquote →
     /// `blockquoteParagraph`) or the leaf's own kind for top-level
     /// blocks. `groupID` is freshly generated — the only thing
@@ -377,7 +376,7 @@ struct TextKitEditorView: UIViewRepresentable {
         guard let leafID = selection.path.last,
               let leaf = document.block(at: selection.path) else { return nil }
 
-        var chrome: BlockChrome = chromeForLeafKind(leaf.kind)
+        var kind = ParagraphKind(leafKind: leaf.kind)
         var groupID: UUID? = nil
 
         if selection.path.count >= 2 {
@@ -385,13 +384,13 @@ struct TextKitEditorView: UIViewRepresentable {
             if let container = document.block(at: containerPath) {
                 switch container.kind {
                 case .bulletList:
-                    chrome = .bulletListItem
+                    kind = .bulletListItem
                     groupID = UUID()
                 case .orderedList:
-                    chrome = .orderedListItem
+                    kind = .orderedListItem
                     groupID = UUID()
                 case .blockquote:
-                    chrome = .blockquoteParagraph
+                    kind = .blockquoteParagraph
                     groupID = UUID()
                 default:
                     break
@@ -400,31 +399,12 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         return Self.typingAttributes(
-            for: chrome,
+            for: kind,
             blockID: leafID,
             groupID: groupID,
             bodyFont: bodyFont,
             bodyColor: bodyColor
         )
-    }
-
-    /// Chrome for a leaf based on its own kind only (ignores any
-    /// list / blockquote container above it — those override at
-    /// the caller).
-    private static func chromeForLeafKind(_ kind: Block.Kind) -> BlockChrome {
-        switch kind {
-        case .paragraph:                return .paragraph
-        case .heading(let level, _):
-            switch level {
-            case 1: return .heading1
-            case 2: return .heading2
-            default: return .heading3
-            }
-        case .codeBlock:                return .codeBlock
-        case .divider:                  return .divider
-        case .bulletList, .orderedList, .blockquote:
-            return .paragraph
-        }
     }
 
     // MARK: - Viewport-space caret rect
@@ -527,11 +507,11 @@ struct TextKitEditorView: UIViewRepresentable {
                 blockID: block.id,
                 path: path,
                 // Fix B7: paragraphs inside a blockquote container
-                // emit `.blockquoteParagraph` chrome so parse-back's
-                // grouping switch recognizes them as a blockquote
-                // container's children. Without this, blockquote
-                // round-trips degrade to flat top-level paragraphs.
-                chrome: inBlockquote ? .blockquoteParagraph : .paragraph,
+                // emit `.blockquoteParagraph` so parse-back's grouping
+                // switch recognizes them as a blockquote container's
+                // children. Without this, blockquote round-trips
+                // degrade to flat top-level paragraphs.
+                kind: inBlockquote ? .blockquoteParagraph : .paragraph,
                 groupID: groupID,
                 into: mutable,
                 map: &map,
@@ -540,17 +520,14 @@ struct TextKitEditorView: UIViewRepresentable {
             )
 
         case .heading(let level, let inline):
-            let chrome: BlockChrome
-            switch level {
-            case 1: chrome = .heading1
-            case 2: chrome = .heading2
-            default: chrome = .heading3
-            }
+            // Storage clamps level to 1...3 (see
+            // `ParagraphKind.attributeValue`); typography is identical
+            // above level 3.
             appendLeaf(
                 runs: inline,
                 blockID: block.id,
                 path: path,
-                chrome: chrome,
+                kind: .heading(level: level),
                 groupID: groupID,
                 into: mutable,
                 map: &map,
@@ -565,7 +542,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 runs: runs,
                 blockID: block.id,
                 path: path,
-                chrome: .codeBlock,
+                kind: .codeBlock,
                 groupID: groupID,
                 into: mutable,
                 map: &map,
@@ -582,7 +559,7 @@ struct TextKitEditorView: UIViewRepresentable {
                 runs: runs,
                 blockID: block.id,
                 path: path,
-                chrome: .divider,
+                kind: .divider,
                 groupID: groupID,
                 into: mutable,
                 map: &map,
@@ -592,7 +569,7 @@ struct TextKitEditorView: UIViewRepresentable {
 
         case .bulletList(let items):
             // Each list item's paragraph emits as its own line with
-            // .bulletListItem chrome + the SAME groupID so parse-back
+            // .bulletListItem kind + the SAME groupID so parse-back
             // can re-group.
             let listGroupID = UUID()
             for item in items {
@@ -602,7 +579,7 @@ struct TextKitEditorView: UIViewRepresentable {
                             runs: inline,
                             blockID: child.id,
                             path: path + [child.id],
-                            chrome: .bulletListItem,
+                            kind: .bulletListItem,
                             groupID: listGroupID,
                             into: mutable,
                             map: &map,
@@ -636,7 +613,7 @@ struct TextKitEditorView: UIViewRepresentable {
                             runs: inline,
                             blockID: child.id,
                             path: path + [child.id],
-                            chrome: .orderedListItem,
+                            kind: .orderedListItem,
                             groupID: listGroupID,
                             into: mutable,
                             map: &map,
@@ -677,14 +654,14 @@ struct TextKitEditorView: UIViewRepresentable {
 
     /// Build a single paragraph's attributed content — inline runs
     /// rendered with their mark attributes, paragraph-level attrs
-    /// (chrome / blockID / groupID / style) applied across, WITHOUT
+    /// (kind / blockID / groupID / style) applied across, WITHOUT
     /// the trailing newline. Shared by `appendLeaf` (full-document
     /// flatten) and the Coordinator's paragraph-local surgery
     /// (inline-format toggles), so the two paths can't drift apart
     /// in attribute composition.
     static func paragraphContent(
         runs: [Inline],
-        chrome: BlockChrome,
+        kind: ParagraphKind,
         blockID: UUID,
         groupID: UUID?,
         languageHint: String? = nil,
@@ -693,9 +670,9 @@ struct TextKitEditorView: UIViewRepresentable {
         bodyColor: UIColor
     ) -> NSMutableAttributedString {
         let mutable = NSMutableAttributedString()
-        let font = font(for: chrome, bodyFont: bodyFont)
-        let paragraphStyle = paragraphStyle(for: chrome)
-        let foreground = foregroundColor(for: chrome, bodyColor: bodyColor)
+        let font = font(for: kind, bodyFont: bodyFont)
+        let paragraphStyle = paragraphStyle(for: kind)
+        let foreground = foregroundColor(for: kind, bodyColor: bodyColor)
 
         // Build the paragraph text by concatenating inline runs.
         for run in runs {
@@ -708,10 +685,10 @@ struct TextKitEditorView: UIViewRepresentable {
         }
 
         // Apply paragraph-level attributes (font fallback,
-        // paragraphStyle, blockChrome + blockID + groupID).
+        // paragraphStyle, paragraphKind + blockID + groupID).
         var paragraphAttrs: [NSAttributedString.Key: Any] = [
             .paragraphStyle: paragraphStyle,
-            .blockChrome: chrome.rawValue,
+            .paragraphKind: kind.attributeValue,
             .blockID: blockID
         ]
         if let groupID {
@@ -744,7 +721,7 @@ struct TextKitEditorView: UIViewRepresentable {
         runs: [Inline],
         blockID: UUID,
         path: [UUID],
-        chrome: BlockChrome,
+        kind: ParagraphKind,
         groupID: UUID?,
         into mutable: NSMutableAttributedString,
         map: inout FlattenMap,
@@ -754,13 +731,13 @@ struct TextKitEditorView: UIViewRepresentable {
         listItemID: UUID? = nil
     ) {
         let startLocation = mutable.length
-        let font = font(for: chrome, bodyFont: bodyFont)
-        let paragraphStyle = paragraphStyle(for: chrome)
-        let foreground = foregroundColor(for: chrome, bodyColor: bodyColor)
+        let font = font(for: kind, bodyFont: bodyFont)
+        let paragraphStyle = paragraphStyle(for: kind)
+        let foreground = foregroundColor(for: kind, bodyColor: bodyColor)
 
         let content = paragraphContent(
             runs: runs,
-            chrome: chrome,
+            kind: kind,
             blockID: blockID,
             groupID: groupID,
             languageHint: languageHint,
@@ -786,7 +763,7 @@ struct TextKitEditorView: UIViewRepresentable {
             .font: font,
             .foregroundColor: foreground,
             .paragraphStyle: paragraphStyle,
-            .blockChrome: chrome.rawValue,
+            .paragraphKind: kind.attributeValue,
             .blockID: blockID
         ]
         if let groupID {
@@ -871,16 +848,21 @@ struct TextKitEditorView: UIViewRepresentable {
 
     // MARK: - Per-chrome typography
 
-    private static func font(for chrome: BlockChrome, bodyFont: UIFont) -> UIFont {
-        switch chrome {
+    private static func font(for kind: ParagraphKind, bodyFont: UIFont) -> UIFont {
+        switch kind {
         case .paragraph, .bulletListItem, .orderedListItem, .divider:
             return bodyFont
-        case .heading1:
-            return makeSerif(size: 28, weight: .semibold, fallback: UIFont.systemFont(ofSize: 28, weight: .semibold))
-        case .heading2:
-            return makeSerif(size: 22, weight: .semibold, fallback: UIFont.systemFont(ofSize: 22, weight: .semibold))
-        case .heading3:
-            return makeSerif(size: 18, weight: .semibold, fallback: UIFont.systemFont(ofSize: 18, weight: .semibold))
+        case .heading(let level):
+            switch level {
+            case 1:
+                return makeSerif(size: 28, weight: .semibold, fallback: UIFont.systemFont(ofSize: 28, weight: .semibold))
+            case 2:
+                return makeSerif(size: 22, weight: .semibold, fallback: UIFont.systemFont(ofSize: 22, weight: .semibold))
+            default:
+                // Level 3+ all render at H3 size (matches the storage
+                // clamp in `ParagraphKind.attributeValue`).
+                return makeSerif(size: 18, weight: .semibold, fallback: UIFont.systemFont(ofSize: 18, weight: .semibold))
+            }
         case .codeBlock:
             return UIFont.monospacedSystemFont(ofSize: bodyFont.pointSize, weight: .regular)
         case .blockquoteParagraph:
@@ -900,8 +882,8 @@ struct TextKitEditorView: UIViewRepresentable {
         return fallback
     }
 
-    private static func foregroundColor(for chrome: BlockChrome, bodyColor: UIColor) -> UIColor {
-        switch chrome {
+    private static func foregroundColor(for kind: ParagraphKind, bodyColor: UIColor) -> UIColor {
+        switch kind {
         case .codeBlock:
             return bodyColor.withAlphaComponent(0.85)
         default:
@@ -909,12 +891,12 @@ struct TextKitEditorView: UIViewRepresentable {
         }
     }
 
-    private static func paragraphStyle(for chrome: BlockChrome) -> NSParagraphStyle {
+    private static func paragraphStyle(for kind: ParagraphKind) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.paragraphSpacing = 4
         style.paragraphSpacingBefore = 4
-        switch chrome {
-        case .heading1, .heading2, .heading3:
+        switch kind {
+        case .heading:
             style.paragraphSpacingBefore = 10
             style.paragraphSpacing = 6
         case .bulletListItem, .orderedListItem:
@@ -938,23 +920,159 @@ struct TextKitEditorView: UIViewRepresentable {
     /// inserted characters inherit. Must be reset after every block-
     /// format change so the user's next keystroke keeps the styling.
     static func typingAttributes(
-        for chrome: BlockChrome,
+        for kind: ParagraphKind,
         blockID: UUID,
         groupID: UUID?,
         bodyFont: UIFont,
         bodyColor: UIColor
     ) -> [NSAttributedString.Key: Any] {
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: font(for: chrome, bodyFont: bodyFont),
-            .foregroundColor: foregroundColor(for: chrome, bodyColor: bodyColor),
-            .paragraphStyle: paragraphStyle(for: chrome),
-            .blockChrome: chrome.rawValue,
+            .font: font(for: kind, bodyFont: bodyFont),
+            .foregroundColor: foregroundColor(for: kind, bodyColor: bodyColor),
+            .paragraphStyle: paragraphStyle(for: kind),
+            .paragraphKind: kind.attributeValue,
             .blockID: blockID
         ]
         if let groupID {
             attrs[.groupID] = groupID
         }
         return attrs
+    }
+
+    // MARK: - Document build: ParagraphIndex + storage → RichTextDocument
+
+    /// Build a `RichTextDocument` directly from `paragraphIndex` — the
+    /// authoritative side-channel for paragraph identity — using
+    /// `storage` only to harvest inline-mark runs (bold, italic, code,
+    /// highlight, link) inside each paragraph's text range.
+    ///
+    /// **Why this exists.** The previous `parseBack` walked
+    /// `splitParagraphs(storage)` and reconstructed identity from
+    /// per-paragraph `.blockID` / `.groupID` / `.fromInkListItemID`
+    /// attribute probes — the exact reads UIKit's `typingAttributes`
+    /// corruption on Enter would invalidate, requiring a dedupe pass
+    /// over fresh UUIDs. `documentFromIndex` reads identity from the
+    /// index instead: every `Entry` already carries the leaf id, the
+    /// container id, and the `ListItem` id stamped by the structural
+    /// ops or the flatten-time builder. No dedupe, no heuristics.
+    ///
+    /// **Container ids are stable across rebuilds.** Grouped kinds
+    /// (`bulletListItem`, `orderedListItem`, `blockquoteParagraph`)
+    /// take their container id from `entry.blockPath.dropLast().last` —
+    /// the same id `flatten` and `ParagraphIndex(document:)` use, so a
+    /// document → flatten → documentFromIndex round trip preserves
+    /// every Block.id including containers.
+    ///
+    /// **Precondition.** The caller must have aligned the index with
+    /// the storage's paragraph count first (the typical guarantee
+    /// `syncDocumentFromStorage` provides via the incremental
+    /// structural ops + the alignment fallback). When they disagree,
+    /// `parseBack` remains the safety net for the legacy path.
+    static func documentFromIndex(
+        _ paragraphIndex: ParagraphIndex,
+        storage: NSAttributedString
+    ) -> RichTextDocument {
+        var topLevel: [Block] = []
+        var pendingContainerID: UUID? = nil
+        var pendingKind: ParagraphKind? = nil
+        var pendingItems: [(block: Block, listItemID: UUID?)] = []
+
+        func flushPending() {
+            defer {
+                pendingContainerID = nil
+                pendingKind = nil
+                pendingItems = []
+            }
+            guard let kind = pendingKind, !pendingItems.isEmpty else { return }
+            let containerID = pendingContainerID ?? UUID()
+            switch kind {
+            case .bulletListItem:
+                let items = pendingItems.map { item in
+                    ListItem(id: item.listItemID ?? UUID(), content: [item.block])
+                }
+                topLevel.append(Block(id: containerID, kind: .bulletList(items: items)))
+            case .orderedListItem:
+                let items = pendingItems.map { item in
+                    ListItem(id: item.listItemID ?? UUID(), content: [item.block])
+                }
+                topLevel.append(Block(id: containerID, kind: .orderedList(items: items)))
+            case .blockquoteParagraph:
+                topLevel.append(Block(
+                    id: containerID,
+                    kind: .blockquote(children: pendingItems.map(\.block))
+                ))
+            default:
+                topLevel.append(contentsOf: pendingItems.map(\.block))
+            }
+        }
+
+        for entry in paragraphIndex.entries {
+            let leafID = entry.blockPath.last ?? UUID()
+            let containerID: UUID? = {
+                switch entry.kind {
+                case .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                    return entry.blockPath.dropLast().last
+                default:
+                    return nil
+                }
+            }()
+            // Harvest inline runs from the paragraph's text range —
+            // bold/italic/code/highlight/link survive the round trip
+            // exactly as they did under `parseBack`.
+            let runs = parseInlineRuns(attributed: storage, range: entry.range, kind: entry.kind)
+            let leafBlock: Block
+            switch entry.kind {
+            case .paragraph, .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                leafBlock = Block(id: leafID, kind: .paragraph(inline: runs))
+            case .heading(let level):
+                leafBlock = Block(id: leafID, kind: .heading(level: level, inline: runs))
+            case .codeBlock:
+                let text = (storage.string as NSString).substring(with: entry.range)
+                leafBlock = Block(
+                    id: leafID,
+                    kind: .codeBlock(text: text, languageHint: entry.languageHint)
+                )
+            case .divider:
+                leafBlock = Block(id: leafID, kind: .divider)
+            }
+
+            switch entry.kind {
+            case .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                if pendingKind == entry.kind, pendingContainerID == containerID {
+                    pendingItems.append((leafBlock, entry.listItemID))
+                } else {
+                    flushPending()
+                    pendingContainerID = containerID
+                    pendingKind = entry.kind
+                    pendingItems = [(leafBlock, entry.listItemID)]
+                }
+            default:
+                flushPending()
+                topLevel.append(leafBlock)
+            }
+        }
+        flushPending()
+
+        return RichTextDocument(blocks: topLevel)
+    }
+
+    /// Count of paragraphs in `storage` — used as the
+    /// index-vs-storage alignment check before
+    /// `documentFromIndex`. A `\n`-terminated paragraph and a
+    /// non-`\n`-terminated tail paragraph each count once; an
+    /// empty storage counts zero.
+    static func paragraphCount(in storage: NSAttributedString) -> Int {
+        let ns = storage.string as NSString
+        guard ns.length > 0 else { return 0 }
+        var count = 0
+        var cursor = 0
+        while cursor < ns.length {
+            let nl = ns.range(of: "\n", options: [], range: NSRange(location: cursor, length: ns.length - cursor))
+            count += 1
+            if nl.location == NSNotFound { break }
+            cursor = nl.location + 1
+        }
+        return count
     }
 
     // MARK: - Parse-back: NSAttributedString → RichTextDocument
@@ -971,19 +1089,19 @@ struct TextKitEditorView: UIViewRepresentable {
         var seenBlockIDs: Set<UUID> = []
 
         var pendingGroupID: UUID? = nil
-        var pendingGroupChrome: BlockChrome? = nil
+        var pendingGroupKind: ParagraphKind? = nil
         var pendingGroupBlocks: [Block] = []
         var pendingGroupItemIDs: [UUID?] = []  // listItemID per emitted block (for bullet/ordered lists)
 
         func flushPendingGroup() {
-            guard let chrome = pendingGroupChrome, !pendingGroupBlocks.isEmpty else {
+            guard let kind = pendingGroupKind, !pendingGroupBlocks.isEmpty else {
                 pendingGroupID = nil
-                pendingGroupChrome = nil
+                pendingGroupKind = nil
                 pendingGroupBlocks = []
                 pendingGroupItemIDs = []
                 return
             }
-            switch chrome {
+            switch kind {
             case .bulletListItem:
                 let items = zip(pendingGroupBlocks, pendingGroupItemIDs).map { block, itemID in
                     ListItem(id: itemID ?? UUID(), content: [block])
@@ -1000,13 +1118,13 @@ struct TextKitEditorView: UIViewRepresentable {
                 topLevel.append(contentsOf: pendingGroupBlocks)
             }
             pendingGroupID = nil
-            pendingGroupChrome = nil
+            pendingGroupKind = nil
             pendingGroupBlocks = []
             pendingGroupItemIDs = []
         }
 
         for paragraph in paragraphs {
-            let chrome = paragraph.chrome
+            let kind = paragraph.kind
             let groupID = paragraph.groupID
 
             // Fix B1: dedupe collisions BEFORE building the leaf so
@@ -1019,15 +1137,15 @@ struct TextKitEditorView: UIViewRepresentable {
             let leafBlock = buildLeafBlock(from: paragraph, overrideID: effectiveID)
 
             // Group-handling: bullets, ordered, blockquote children.
-            switch chrome {
+            switch kind {
             case .bulletListItem, .orderedListItem, .blockquoteParagraph:
-                if pendingGroupID != nil, pendingGroupID == groupID, pendingGroupChrome == chrome {
+                if pendingGroupID != nil, pendingGroupID == groupID, pendingGroupKind == kind {
                     pendingGroupBlocks.append(leafBlock)
                     pendingGroupItemIDs.append(paragraph.listItemID)
                 } else {
                     flushPendingGroup()
                     pendingGroupID = groupID
-                    pendingGroupChrome = chrome
+                    pendingGroupKind = kind
                     pendingGroupBlocks = [leafBlock]
                     pendingGroupItemIDs = [paragraph.listItemID]
                 }
@@ -1047,7 +1165,7 @@ struct TextKitEditorView: UIViewRepresentable {
     /// authoritative `index`, matching the i-th paragraph (split on `\n`)
     /// to the i-th entry. This heals the corruption UIKit's
     /// `typingAttributes` inflicts across Enter — instead of relying on
-    /// the fragile preservation dances, we overwrite `.blockChrome`,
+    /// the fragile preservation dances, we overwrite `.paragraphKind`,
     /// `.blockID`, `.groupID`, `.fromInkListItemID`,
     /// `.fromInkLanguageHint`, and `.paragraphStyle` with the values the
     /// index says are correct, so `parseBack` and `drawBackground` read
@@ -1074,15 +1192,15 @@ struct TextKitEditorView: UIViewRepresentable {
         guard paraRanges.count == index.entries.count else { return false }
 
         for (range, entry) in zip(paraRanges, index.entries) {
-            let chrome = BlockChrome(entry.kind)
-            storage.addAttribute(.blockChrome, value: chrome.rawValue, range: range)
+            let kind = entry.kind
+            storage.addAttribute(.paragraphKind, value: kind.attributeValue, range: range)
             if let leafID = entry.blockPath.last {
                 storage.addAttribute(.blockID, value: leafID, range: range)
             }
             // groupID is the container id for grouped kinds (so parseBack
             // re-groups them into one list/quote); absent otherwise.
             let container: UUID?
-            switch entry.kind {
+            switch kind {
             case .bulletListItem, .orderedListItem, .blockquoteParagraph:
                 container = entry.blockPath.dropLast().last
             default:
@@ -1103,7 +1221,7 @@ struct TextKitEditorView: UIViewRepresentable {
             } else {
                 storage.removeAttribute(.fromInkLanguageHint, range: range)
             }
-            storage.addAttribute(.paragraphStyle, value: paragraphStyle(for: chrome), range: range)
+            storage.addAttribute(.paragraphStyle, value: paragraphStyle(for: kind), range: range)
         }
         return true
     }
@@ -1111,7 +1229,7 @@ struct TextKitEditorView: UIViewRepresentable {
     private struct ParagraphSlice {
         let nsRange: NSRange
         let text: String
-        let chrome: BlockChrome
+        let kind: ParagraphKind
         let blockID: UUID
         let groupID: UUID?
         let languageHint: String?
@@ -1142,8 +1260,8 @@ struct TextKitEditorView: UIViewRepresentable {
                 // own-terminator convention — parse-back now matches.
                 let metaLocation = paragraphRange.location
                 let attrs = attributed.attributes(at: metaLocation, effectiveRange: nil)
-                let chromeRaw = (attrs[.blockChrome] as? Int) ?? BlockChrome.paragraph.rawValue
-                let chrome = BlockChrome(rawValue: chromeRaw) ?? .paragraph
+                let kindRaw = (attrs[.paragraphKind] as? Int) ?? ParagraphKind.paragraph.attributeValue
+                let kind = ParagraphKind(attributeValue: kindRaw) ?? .paragraph
                 let blockID = (attrs[.blockID] as? UUID) ?? UUID()
                 let groupID = attrs[.groupID] as? UUID
                 let languageHint = attrs[.fromInkLanguageHint] as? String
@@ -1152,12 +1270,12 @@ struct TextKitEditorView: UIViewRepresentable {
                 let inlineRuns = parseInlineRuns(
                     attributed: attributed,
                     range: paragraphRange,
-                    chrome: chrome
+                    kind: kind
                 )
                 slices.append(ParagraphSlice(
                     nsRange: paragraphRange,
                     text: paragraphText,
-                    chrome: chrome,
+                    kind: kind,
                     blockID: blockID,
                     groupID: groupID,
                     languageHint: languageHint,
@@ -1174,10 +1292,10 @@ struct TextKitEditorView: UIViewRepresentable {
     private static func parseInlineRuns(
         attributed: NSAttributedString,
         range: NSRange,
-        chrome: BlockChrome
+        kind: ParagraphKind
     ) -> [Inline] {
         guard range.length > 0 else { return [] }
-        if chrome == .codeBlock || chrome == .divider {
+        if kind == .codeBlock || kind == .divider {
             // codeBlock has no marks; divider's anchor character is
             // discarded by the leaf builder.
             return [Inline(
@@ -1234,15 +1352,14 @@ struct TextKitEditorView: UIViewRepresentable {
     }
 
     private static func buildLeafBlock(from slice: ParagraphSlice, overrideID: UUID) -> Block {
-        switch slice.chrome {
+        switch slice.kind {
         case .paragraph, .bulletListItem, .orderedListItem, .blockquoteParagraph:
             return Block(id: overrideID, kind: .paragraph(inline: slice.inlineRuns))
-        case .heading1:
-            return Block(id: overrideID, kind: .heading(level: 1, inline: slice.inlineRuns))
-        case .heading2:
-            return Block(id: overrideID, kind: .heading(level: 2, inline: slice.inlineRuns))
-        case .heading3:
-            return Block(id: overrideID, kind: .heading(level: 3, inline: slice.inlineRuns))
+        case .heading(let level):
+            // Storage clamps to 1...3 via `ParagraphKind.attributeValue`,
+            // so by the time we read it back here level is already in
+            // that range — preserved as the associated value.
+            return Block(id: overrideID, kind: .heading(level: level, inline: slice.inlineRuns))
         case .codeBlock:
             return Block(id: overrideID, kind: .codeBlock(text: slice.text, languageHint: slice.languageHint))
         case .divider:
@@ -1253,28 +1370,40 @@ struct TextKitEditorView: UIViewRepresentable {
     // MARK: - Selection bridge
 
     /// Find the BlockTreeSelection's NSRange in the flattened
-    /// attributedText. Uses the leaf-id dictionary for O(1) lookup.
-    /// Returns nil if the path no longer resolves or the offsets
-    /// exceed the leaf's text length.
+    /// attributedText by looking up the selection's leaf in
+    /// `paragraphIndex`. Returns nil if the leaf no longer resolves
+    /// (its paragraph was removed by a reducer-driven edit before the
+    /// index caught up) or the offsets exceed the leaf's text length.
+    ///
+    /// **Why ParagraphIndex, not `.blockID` attribute reads.** The
+    /// previous `flattenIDMap` was a `[UUID: FlattenEntry]` dictionary
+    /// built from per-paragraph `.blockID` attribute reads on the
+    /// storage. UIKit's `typingAttributes` corruption on Enter could
+    /// duplicate that key across two paragraphs — and the dictionary
+    /// silently kept whichever paragraph wrote second, mapping the
+    /// reducer's selection to the wrong position. The side-channel
+    /// index UIKit can't touch removes that whole failure mode.
     static func nsRange(
         for selection: BlockTreeSelection,
-        flattenIDMap: FlattenIDMap,
+        paragraphIndex: ParagraphIndex,
         totalLength: Int
     ) -> NSRange? {
         guard let leafID = selection.path.last,
-              let entry = flattenIDMap[leafID] else { return nil }
+              let entry = paragraphIndex.entry(forLeafID: leafID) else { return nil }
         // Clamp offsets to the leaf's text length so out-of-range
-        // values from a stale selection don't return invalid NSRange.
-        let start = max(0, min(selection.startUTF16, entry.nsRange.length))
-        let end = max(start, min(selection.endUTF16, entry.nsRange.length))
-        let location = entry.nsRange.location + start
+        // values from a stale selection don't return an invalid NSRange.
+        let start = max(0, min(selection.startUTF16, entry.range.length))
+        let end = max(start, min(selection.endUTF16, entry.range.length))
+        let location = entry.range.location + start
         let length = end - start
         guard location + length <= totalLength else { return nil }
         return NSRange(location: location, length: length)
     }
 
     /// Convert a UITextView NSRange into a BlockTreeSelection by
-    /// finding which paragraph entry the range falls in.
+    /// looking up the paragraph entry that contains the range's start.
+    /// Reads from `paragraphIndex` — the same single source of truth
+    /// `bridgeSelection` uses for the storage-aware path.
     ///
     /// **Multi-paragraph selections (fix S2).** If the NSRange spans
     /// two or more paragraphs (start in paragraph A, end in paragraph
@@ -1285,15 +1414,12 @@ struct TextKitEditorView: UIViewRepresentable {
     /// selection model — is a separate piece of work.
     static func selection(
         forNSRange nsRange: NSRange,
-        flattenMap: FlattenMap
+        paragraphIndex: ParagraphIndex
     ) -> BlockTreeSelection {
-        guard let entry = flattenMap.first(where: { entry in
-            entry.nsRange.location <= nsRange.location
-                && nsRange.location <= entry.nsRange.location + entry.nsRange.length
-        }) else {
+        guard let entry = paragraphIndex.entry(containing: nsRange.location) else {
             return BlockTreeSelection()
         }
-        let startLocal = nsRange.location - entry.nsRange.location
+        let startLocal = nsRange.location - entry.range.location
         let endLocal = startLocal + nsRange.length
         return BlockTreeSelection(
             path: entry.blockPath,
@@ -1301,34 +1427,11 @@ struct TextKitEditorView: UIViewRepresentable {
             // Clamp end to the host leaf's text length so a multi-
             // paragraph drag doesn't produce a selection that
             // overruns the leaf — see method doc.
-            endUTF16: max(startLocal, min(endLocal, entry.nsRange.length))
+            endUTF16: max(startLocal, min(endLocal, entry.range.length))
         )
     }
 
     // MARK: - Storage-side bridging (pure, testable)
-
-    /// Leaf-id → full block path for every leaf in `document`. Rebuilt
-    /// once per document sync (NOT per keystroke); the selection
-    /// bridge reads it so caret moves cost O(paragraph), never a
-    /// full-document walk. Path convention matches
-    /// `RichTextDocument.block(at:)` — container ids included,
-    /// ListItem ids skipped.
-    static func leafPathIndex(_ document: RichTextDocument) -> [UUID: [UUID]] {
-        var index: [UUID: [UUID]] = [:]
-        func walk(_ block: Block, prefix: [UUID]) {
-            let path = prefix + [block.id]
-            if block.isLeaf {
-                index[block.id] = path
-            }
-            for child in block.descendants {
-                walk(child, prefix: path)
-            }
-        }
-        for block in document.blocks {
-            walk(block, prefix: [])
-        }
-        return index
-    }
 
     /// The paragraph's text range (EXCLUDING the trailing `\n`)
     /// containing `location`, plus the probe location that carries the
@@ -1370,17 +1473,19 @@ struct TextKitEditorView: UIViewRepresentable {
     /// `ParagraphIndex` — the single source of truth UIKit's
     /// `typingAttributes` can't strip or duplicate. O(paragraph).
     ///
-    /// **Identity resolution.** Primary source is `paragraphIndex`,
-    /// keyed by the caret's location. It's trusted only when its entry
-    /// range matches the live paragraph slice exactly — that equality
-    /// is the proof the index's ranges are current (the incremental
-    /// `applyNonStructuralEdit` maintenance keeps them so between
-    /// debounced syncs). When the index hasn't caught up to a
-    /// structural edit yet (its rebuild is deferred to the next
-    /// runloop), the ranges disagree and we FALL BACK to the `.blockID`
-    /// attribute probe, which rides along with the live text and is
-    /// always correct. The attribute keys stay in storage as this
-    /// safety net until every reader has migrated off them.
+    /// **Identity resolution.** Trusts the index when its entry range
+    /// matches the live paragraph slice exactly — that equality is the
+    /// proof the index is current for this paragraph (the incremental
+    /// `applyNonStructuralEdit` maintenance keeps it so between
+    /// debounced syncs, and structural edits force an immediate sync).
+    /// When the ranges disagree (the brief window during a complex edit
+    /// the incremental ops don't yet cover), the bridge returns the
+    /// unset selection rather than probing `.blockID` attributes — the
+    /// caller's semantic gate treats unset as "no override," so the
+    /// caret stays where UIKit placed it until the next sync rebuilds
+    /// the index. The attribute-probe fallback that used to handle this
+    /// case was removed in Commit 6 of the imperative-boundary refactor;
+    /// the typingAttributes drift class of bugs went with it.
     ///
     /// Contract parity with the map-based bridge:
     ///   - Multi-paragraph ranges clamp `endUTF16` to the host
@@ -1391,8 +1496,7 @@ struct TextKitEditorView: UIViewRepresentable {
     static func bridgeSelection(
         storage: NSAttributedString,
         selectedRange: NSRange,
-        paragraphIndex: ParagraphIndex,
-        pathIndex: [UUID: [UUID]]
+        paragraphIndex: ParagraphIndex
     ) -> BlockTreeSelection {
         let ns = storage.string as NSString
         guard ns.length > 0 else { return BlockTreeSelection() }
@@ -1402,81 +1506,25 @@ struct TextKitEditorView: UIViewRepresentable {
            ns.character(at: ns.length - 1) == 0x0A {
             return BlockTreeSelection()
         }
-        let (textRange, probe) = paragraphSlice(at: selectedRange.location, in: storage)
-        guard let path = hostPath(
-            forCaretAt: selectedRange.location,
-            textRange: textRange,
-            probe: probe,
-            storage: storage,
-            paragraphIndex: paragraphIndex,
-            pathIndex: pathIndex
-        ) else {
+        let (textRange, _) = paragraphSlice(at: selectedRange.location, in: storage)
+        // Trust the index only when its entry range matches the live
+        // paragraph slice exactly. Disagreement means the index is in a
+        // transient stale window from a complex structural edit
+        // (incremental ops don't yet cover multi-`\n` paste / cross-
+        // paragraph delete); return unset and let the caller's semantic
+        // gate hold the caret until the next sync.
+        guard let entry = paragraphIndex.entry(containing: selectedRange.location),
+              entry.range == textRange else {
             return BlockTreeSelection()
         }
         let start = max(0, selectedRange.location - textRange.location)
         let absoluteEnd = min(selectedRange.location + selectedRange.length, textRange.location + textRange.length)
         let end = max(start, absoluteEnd - textRange.location)
         return BlockTreeSelection(
-            path: path,
+            path: entry.blockPath,
             startUTF16: min(start, textRange.length),
             endUTF16: min(end, textRange.length)
         )
-    }
-
-    /// The caret paragraph's block path, resolved index-first with an
-    /// attribute-probe fallback. See `bridgeSelection` for the identity
-    /// resolution contract. `nil` when neither source can name the
-    /// paragraph (empty/torn-down storage).
-    private static func hostPath(
-        forCaretAt location: Int,
-        textRange: NSRange,
-        probe: Int?,
-        storage: NSAttributedString,
-        paragraphIndex: ParagraphIndex,
-        pathIndex: [UUID: [UUID]]
-    ) -> [UUID]? {
-        // Primary: ParagraphIndex. Trusted only when its entry range
-        // matches the live paragraph slice — equal ranges prove the
-        // index is current for this paragraph.
-        if let entry = paragraphIndex.entry(containing: location),
-           entry.range == textRange {
-            return entry.blockPath
-        }
-        // Fallback: `.blockID` attribute, which rides the live text and
-        // never goes stale. Top-level path when `pathIndex` hasn't seen
-        // this leaf yet (brand-new paragraph typed since the last sync;
-        // the next sync creates the block with this id).
-        guard let probe, probe < storage.length,
-              let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID else {
-            return nil
-        }
-        return pathIndex[blockID] ?? [blockID]
-    }
-
-    /// Rebuild the flatten maps by walking the STORAGE's paragraphs
-    /// and resolving paths through `pathIndex` — no throwaway
-    /// re-flatten of the whole document. Ranges exclude each
-    /// paragraph's trailing `\n`, matching `flatten`'s map contract.
-    static func maps(
-        fromStorage storage: NSAttributedString,
-        pathIndex: [UUID: [UUID]]
-    ) -> (flattenMap: FlattenMap, flattenIDMap: FlattenIDMap) {
-        let ns = storage.string as NSString
-        var map: FlattenMap = []
-        var idMap: FlattenIDMap = [:]
-        var cursor = 0
-        while cursor < ns.length {
-            let (textRange, probe) = paragraphSlice(at: cursor, in: storage)
-            if let probe, probe < storage.length,
-               let blockID = storage.attribute(.blockID, at: probe, effectiveRange: nil) as? UUID {
-                let path = pathIndex[blockID] ?? [blockID]
-                let entry = FlattenEntry(nsRange: textRange, blockPath: path)
-                map.append(entry)
-                idMap[blockID] = entry
-            }
-            cursor = textRange.location + textRange.length + 1  // skip the \n
-        }
-        return (map, idMap)
     }
 
     /// Count of `\n` characters — the structural-change discriminator.
@@ -1543,14 +1591,14 @@ struct TextKitEditorView: UIViewRepresentable {
               let probe, probe == textRange.location, probe < storage.length else { return false }
         // Kind from ParagraphIndex (primary), trusted only when its
         // entry range matches the live empty-paragraph slice; otherwise
-        // fall back to the `.blockChrome` probe — the same identity
+        // fall back to the `.paragraphKind` probe — the same identity
         // resolution contract `bridgeSelection` uses.
         if let entry = paragraphIndex.entry(containing: range.location), entry.range == textRange {
             return entry.kind == .bulletListItem || entry.kind == .orderedListItem
         }
-        guard let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
-              let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
-        return chrome == .bulletListItem || chrome == .orderedListItem
+        guard let kindRaw = storage.attribute(.paragraphKind, at: probe, effectiveRange: nil) as? Int,
+              let kind = ParagraphKind(attributeValue: kindRaw) else { return false }
+        return kind == .bulletListItem || kind == .orderedListItem
     }
 
     /// Backspace at the START of an EMPTY list-item paragraph should
@@ -1558,7 +1606,7 @@ struct TextKitEditorView: UIViewRepresentable {
     /// not no-op (a lone empty item at the document top — where the
     /// caret sits visually indented by the list's 28pt
     /// `firstLineHeadIndent` and the user is otherwise stuck) and not
-    /// merge upward. Pure for unit testing; reads emptiness + chrome
+    /// merge upward. Pure for unit testing; reads emptiness + kind
     /// from the storage like `shouldExitList`.
     ///
     /// **Empty-only by design.** Backspace on a NON-empty list item
@@ -1576,15 +1624,15 @@ struct TextKitEditorView: UIViewRepresentable {
         guard textRange.length == 0,
               selectedRange.location == textRange.location,
               let probe, probe == textRange.location, probe < storage.length else { return false }
-        // Kind: ParagraphIndex primary, `.blockChrome` fallback — the
+        // Kind: ParagraphIndex primary, `.paragraphKind` fallback — the
         // same resolution contract `shouldExitList` / `bridgeSelection`
         // use.
         if let entry = paragraphIndex.entry(containing: selectedRange.location), entry.range == textRange {
             return entry.kind == .bulletListItem || entry.kind == .orderedListItem
         }
-        guard let chromeRaw = storage.attribute(.blockChrome, at: probe, effectiveRange: nil) as? Int,
-              let chrome = BlockChrome(rawValue: chromeRaw) else { return false }
-        return chrome == .bulletListItem || chrome == .orderedListItem
+        guard let kindRaw = storage.attribute(.paragraphKind, at: probe, effectiveRange: nil) as? Int,
+              let kind = ParagraphKind(attributeValue: kindRaw) else { return false }
+        return kind == .bulletListItem || kind == .orderedListItem
     }
 
     /// Merge From Ink's custom keys back into UIKit-derived typing
@@ -1596,7 +1644,7 @@ struct TextKitEditorView: UIViewRepresentable {
     /// dictionary contains ONLY standard attributes; custom keys are
     /// dropped (verified empirically 2026-06-10 on the iOS 26
     /// simulator). The first character typed after any caret move
-    /// therefore carried no `.blockChrome` / `.blockID`, the
+    /// therefore carried no `.paragraphKind` / `.blockID`, the
     /// paragraph probed as chromeless, the bullet/number/quote chrome
     /// vanished, and parse-back dissolved the block to a body
     /// paragraph.
@@ -1604,7 +1652,7 @@ struct TextKitEditorView: UIViewRepresentable {
     /// The merge keeps UIKit's derived standard attributes (correct
     /// inline continuation — bold keeps flowing after bold text) and
     /// re-asserts:
-    ///   - paragraph-identity keys (`.blockChrome`, `.blockID`,
+    ///   - paragraph-identity keys (`.paragraphKind`, `.blockID`,
     ///     `.groupID`, `.fromInkListItemID`, `.fromInkLanguageHint`)
     ///     from the caret paragraph's probe character, and
     ///   - custom inline-mark keys (`.fromInkInlineCode`,
@@ -1640,7 +1688,7 @@ struct TextKitEditorView: UIViewRepresentable {
         var merged = derived
         let paragraphAttrs = storage.attributes(at: probe, effectiveRange: nil)
         let identityKeys: [NSAttributedString.Key] = [
-            .blockChrome, .blockID, .groupID, .fromInkListItemID, .fromInkLanguageHint
+            .paragraphKind, .blockID, .groupID, .fromInkListItemID, .fromInkLanguageHint
         ]
         for key in identityKeys {
             merged[key] = paragraphAttrs[key]
@@ -1653,23 +1701,23 @@ struct TextKitEditorView: UIViewRepresentable {
             ? storage.attributes(at: precedingLocation, effectiveRange: nil)
             : nil
 
-        // Chromes with a DISTINCT base font (heading sizes, monospace
-        // code, italic quote) need the font set from the chrome:
+        // Kinds with a DISTINCT base font (heading sizes, monospace
+        // code, italic quote) need the font set from the kind:
         // `derived` gets it wrong on an EMPTY such line — UIKit has no
         // preceding glyph to inherit the 28pt heading font from, so the
         // caret looks heading-sized (the line's `\n` carries the heading
         // font) but typed text comes out body. Bold/italic continuation
         // is preserved by folding the derived + preceding-character
-        // traits onto the chrome's base font.
+        // traits onto the kind's base font.
         //
-        // Body-font chromes (paragraph, lists, divider) are left ALONE:
+        // Body-font kinds (paragraph, lists, divider) are left ALONE:
         // `derived` already carries the correct font incl. UIKit's
         // inline-mark continuation — the proven behaviour.
-        if let chromeRaw = paragraphAttrs[.blockChrome] as? Int,
-           let chrome = BlockChrome(rawValue: chromeRaw) {
-            switch chrome {
-            case .heading1, .heading2, .heading3, .codeBlock, .blockquoteParagraph:
-                var base = font(for: chrome, bodyFont: bodyFont)
+        if let kindRaw = paragraphAttrs[.paragraphKind] as? Int,
+           let kind = ParagraphKind(attributeValue: kindRaw) {
+            switch kind {
+            case .heading, .codeBlock, .blockquoteParagraph:
+                var base = font(for: kind, bodyFont: bodyFont)
                 var traits: UIFontDescriptor.SymbolicTraits = []
                 if let f = derived[.font] as? UIFont {
                     traits.formUnion(f.fontDescriptor.symbolicTraits.intersection([.traitBold, .traitItalic]))
@@ -1682,8 +1730,8 @@ struct TextKitEditorView: UIViewRepresentable {
                     base = UIFont(descriptor: descriptor, size: 0)
                 }
                 merged[.font] = base
-                merged[.paragraphStyle] = paragraphStyle(for: chrome)
-                merged[.foregroundColor] = foregroundColor(for: chrome, bodyColor: bodyColor)
+                merged[.paragraphStyle] = paragraphStyle(for: kind)
+                merged[.foregroundColor] = foregroundColor(for: kind, bodyColor: bodyColor)
             case .paragraph, .bulletListItem, .orderedListItem, .divider:
                 break
             }
@@ -1768,9 +1816,10 @@ struct TextKitEditorView: UIViewRepresentable {
                 let attrs = storage.attributes(at: probe, effectiveRange: nil)
                 if let blockID = attrs[.blockID] as? UUID {
                     if seen.contains(blockID) {
-                        let chrome = (attrs[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
-                        let isHeading = chrome == .heading1 || chrome == .heading2 || chrome == .heading3
-                        let isListItem = chrome == .bulletListItem || chrome == .orderedListItem
+                        let kind = (attrs[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:))
+                        let isHeading: Bool
+                        if case .heading = kind { isHeading = true } else { isHeading = false }
+                        let isListItem = kind == .bulletListItem || kind == .orderedListItem
                         fixups.append(ParagraphIdentityFixup(
                             range: fullRange,
                             freshBlockID: UUID(),
@@ -1900,29 +1949,15 @@ struct TextKitEditorView: UIViewRepresentable {
         /// `updateUIView` so we don't re-flatten on every render.
         var lastSyncedDocument: RichTextDocument
 
-        /// Latest flatten map — kept in sync with `textView.attributedText`.
-        var flattenMap: FlattenMap = []
-
-        /// O(1) leaf-id → flatten entry. Updated alongside `flattenMap`;
-        /// `lastSyncedDocument` is the document both were computed from
-        /// (invariant: all three move together).
-        var flattenIDMap: FlattenIDMap = [:]
-
-        /// Leaf-id → full block path, rebuilt at every document sync.
-        /// The per-keystroke selection bridge reads this so caret
-        /// moves cost O(paragraph) instead of a map scan over a
-        /// freshly re-flattened document.
-        var pathIndex: [UUID: [UUID]] = [:]
-
         /// Side-channel paragraph identity — the single source of truth
         /// for paragraph→block-path mapping that UIKit's
         /// `typingAttributes` can't touch. Rebuilt in full at every
-        /// document sync (alongside `flattenMap` and `pathIndex`) and
-        /// maintained incrementally between debounced syncs via
-        /// `applyNonStructuralEdit` so its ranges stay live for readers.
-        /// Read by `bridgeSelection` (identity resolution); further
-        /// readers migrate off the attribute-based paths in subsequent
-        /// commits.
+        /// document sync and maintained incrementally between debounced
+        /// syncs via `applyNonStructuralEdit` so its ranges stay live
+        /// for readers. Reads: the selection bridge
+        /// (`bridgeSelection`/`nsRange(for:)`/`selection(forNSRange:)`),
+        /// `shouldExitList`, `shouldOutdentOnBackspace`, the slash
+        /// trigger path.
         var paragraphIndex: ParagraphIndex = .init()
 
         /// The storage text edit captured in `shouldChangeTextIn`,
@@ -1934,15 +1969,24 @@ struct TextKitEditorView: UIViewRepresentable {
         /// rebuild instead).
         var pendingNonStructuralEdit: (range: NSRange, newLength: Int)? = nil
 
-        /// A clean single-`\n` structural edit captured in
-        /// `shouldChangeTextIn` (Enter split / backspace-join merge).
+        /// A clean structural edit captured in `shouldChangeTextIn`.
         /// `syncDocumentFromStorage` applies it to `paragraphIndex` and
         /// re-stamps the storage's identity attributes from the result
         /// (Path B) — healing the corruption UIKit's `typingAttributes`
         /// inflicts across Enter. `nil` for complex edits (multi-`\n`
-        /// paste, range deletes), which fall back to the legacy fixups.
+        /// paste, cross-paragraph deletes), which fall back to the
+        /// legacy fixups + parse-back rebuild.
+        ///
+        /// Covers three Enter / Backspace shapes:
+        ///   - Pure Enter (`replacingLength == 0`): caret split.
+        ///   - Selection + Enter (`replacingLength > 0`): the selection
+        ///     was deleted and replaced by a `\n`. Captured ONLY when
+        ///     the selection lives in one paragraph (no `\n` crossed) —
+        ///     a multi-paragraph selection split is the complex case.
+        ///   - Backspace-merge: removes the `\n` between two adjacent
+        ///     paragraphs; the predecessor absorbs the merged text.
         enum StructuralEdit: Equatable {
-            case split(at: Int)
+            case split(at: Int, replacingLength: Int)
             case merge(atParagraphStart: Int)
         }
         var pendingStructuralEdit: StructuralEdit? = nil
@@ -2027,8 +2071,11 @@ struct TextKitEditorView: UIViewRepresentable {
             var healed = false
             if let structural = pendingStructuralEdit {
                 switch structural {
-                case .split(let location):
-                    paragraphIndex.applyStructuralSplit(at: location)
+                case .split(let location, let replacingLength):
+                    paragraphIndex.applyStructuralSplit(
+                        at: location,
+                        replacingLength: replacingLength
+                    )
                 case .merge(let location):
                     paragraphIndex.applyStructuralMerge(atParagraphStart: location)
                 }
@@ -2038,24 +2085,34 @@ struct TextKitEditorView: UIViewRepresentable {
             if !healed, needsLegacyFixups {
                 applyParagraphIdentityFixups(textView)
             }
-            let parsed = TextKitEditorView.parseBack(textView.attributedText)
-            pathIndex = TextKitEditorView.leafPathIndex(parsed)
-            paragraphIndex = ParagraphIndex(document: parsed)
-            // Re-stamp the storage's identity attributes from the parsed
-            // document so storage and document NEVER diverge on identity.
-            // parseBack mints fresh ids for deduped/corrupt paragraphs in
-            // the parsed tree only; without this, the storage keeps the
-            // stale ids and anything that reads identity from the storage
-            // (the selection bridge → the slash trigger path) hands the
-            // reducer a leaf id that no longer exists, so block-format
-            // commands silently no-op (the "headings do nothing" bug).
+            // Index-aligned path: build the document directly from the
+            // ParagraphIndex (Commit 5). When the index's paragraph
+            // count agrees with the storage's, the index is current —
+            // every entry maps 1:1 to a storage paragraph, identity
+            // comes straight from `entry.blockPath` / `entry.listItemID`,
+            // and no attribute-probe dedupe is needed. The legacy
+            // parse-back path remains as a fallback for complex edits
+            // the incremental ops don't yet cover (multi-`\n` paste,
+            // cross-paragraph delete) — when alignment fails we rebuild
+            // the document from storage attributes and re-derive the
+            // index from that.
+            let parsed: RichTextDocument
+            let storageParagraphs = TextKitEditorView.paragraphCount(in: textView.attributedText)
+            if storageParagraphs == paragraphIndex.entries.count {
+                parsed = TextKitEditorView.documentFromIndex(
+                    paragraphIndex,
+                    storage: textView.attributedText
+                )
+            } else {
+                parsed = TextKitEditorView.parseBack(textView.attributedText)
+                paragraphIndex = ParagraphIndex(document: parsed)
+            }
+            // Re-stamp the storage's identity attributes from the
+            // freshly-aligned index so storage and document NEVER
+            // diverge on identity — anything that reads identity from
+            // the storage (the parse-back safety net, the slash trigger
+            // path) sees the same leaf ids the document carries.
             TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
-            let rebuilt = TextKitEditorView.maps(
-                fromStorage: textView.attributedText,
-                pathIndex: pathIndex
-            )
-            flattenMap = rebuilt.flattenMap
-            flattenIDMap = rebuilt.flattenIDMap
             lastNewlineCount = TextKitEditorView.newlineCount(in: textView.text as NSString)
             lastSyncedDocument = parsed
             if parsed != parent.document {
@@ -2068,13 +2125,12 @@ struct TextKitEditorView: UIViewRepresentable {
             // naming the OLD block. updateUIView's semantic gate
             // would then "correct" the caret back to the old
             // paragraph — the caret-jumps-to-previous-line bug.
-            // Bridging against the freshly rebuilt pathIndex keeps
+            // Bridging against the freshly rebuilt ParagraphIndex keeps
             // the reducer's mirror agreeing with storage identity.
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: textView.attributedText,
                 selectedRange: textView.selectedRange,
-                paragraphIndex: paragraphIndex,
-                pathIndex: pathIndex
+                paragraphIndex: paragraphIndex
             )
             if bridged != parent.selection {
                 parent.selection = bridged
@@ -2306,15 +2362,15 @@ struct TextKitEditorView: UIViewRepresentable {
             let (paraRange, probe) = TextKitEditorView.paragraphSlice(at: sel.location, in: storage)
             guard paraRange.length > 0, let probe, probe < storage.length else { return }
             let attrs = storage.attributes(at: probe, effectiveRange: nil)
-            guard let chromeRaw = attrs[.blockChrome] as? Int,
-                  let chrome = BlockChrome(rawValue: chromeRaw),
-                  chrome != .codeBlock, chrome != .divider,
+            guard let kindRaw = attrs[.paragraphKind] as? Int,
+                  let kind = ParagraphKind(attributeValue: kindRaw),
+                  kind != .codeBlock, kind != .divider,
                   let blockID = attrs[.blockID] as? UUID else { return }
 
             let runs = TextKitEditorView.parseInlineRuns(
                 attributed: storage,
                 range: paraRange,
-                chrome: chrome
+                kind: kind
             )
             let clampedEnd = min(sel.location + sel.length, paraRange.location + paraRange.length)
             let (rebuilt, _) = TextEditingFeature.applyMarkToInlineRuns(
@@ -2325,7 +2381,7 @@ struct TextKitEditorView: UIViewRepresentable {
             )
             let replacement = TextKitEditorView.paragraphContent(
                 runs: rebuilt,
-                chrome: chrome,
+                kind: kind,
                 blockID: blockID,
                 groupID: attrs[.groupID] as? UUID,
                 languageHint: attrs[.fromInkLanguageHint] as? String,
@@ -2380,12 +2436,12 @@ struct TextKitEditorView: UIViewRepresentable {
             )
         }
 
-        /// Demote a heading paragraph to body chrome in place: chrome
+        /// Demote a heading paragraph to body chrome in place: kind
         /// + paragraph style + per-run font retargeting that preserves
         /// bold/italic traits (inline marks survive the demotion, the
         /// heading typography doesn't).
         private func demoteToBodyParagraph(storage: NSTextStorage, range: NSRange) {
-            storage.addAttribute(.blockChrome, value: BlockChrome.paragraph.rawValue, range: range)
+            storage.addAttribute(.paragraphKind, value: ParagraphKind.paragraph.attributeValue, range: range)
             storage.addAttribute(
                 .paragraphStyle,
                 value: TextKitEditorView.paragraphStyle(for: .paragraph),
@@ -2517,14 +2573,24 @@ struct TextKitEditorView: UIViewRepresentable {
             //
             // Capture the edit for the index maintainers. A non-structural
             // keystroke keeps `paragraphIndex`'s ranges current via
-            // `applyNonStructuralEdit`; a clean single-`\n` structural edit
-            // (Enter split, backspace-join merge) is captured so the sync
-            // can update the index incrementally and re-stamp identity from
-            // it (Path B). Complex edits leave `pendingStructuralEdit` nil
-            // and fall back to the legacy fixups.
+            // `applyNonStructuralEdit`; a clean structural edit (Enter
+            // split, selection+Enter, backspace-join merge) is captured so
+            // the sync can update the index incrementally and re-stamp
+            // identity from it (Path B). Complex edits leave
+            // `pendingStructuralEdit` nil and fall back to legacy fixups.
             let ns = textView.attributedText.string as NSString
             if text == "\n", range.length == 0 {
-                pendingStructuralEdit = .split(at: range.location)
+                pendingStructuralEdit = .split(at: range.location, replacingLength: 0)
+            } else if text == "\n", range.length > 0,
+                      range.location + range.length <= ns.length,
+                      !ns.substring(with: range).contains("\n") {
+                // Selection + Enter on a within-one-paragraph selection.
+                // Multi-paragraph selections (range crosses a `\n`) are
+                // structurally complex — fall through to parse-back.
+                pendingStructuralEdit = .split(
+                    at: range.location,
+                    replacingLength: range.length
+                )
             } else if text.isEmpty, range.length == 1,
                       range.location < ns.length,
                       ns.substring(with: range) == "\n" {
@@ -2624,8 +2690,7 @@ struct TextKitEditorView: UIViewRepresentable {
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: attributedText,
                 selectedRange: NSRange(location: slashLocation, length: 0),
-                paragraphIndex: paragraphIndex,
-                pathIndex: pathIndex
+                paragraphIndex: paragraphIndex
             )
             guard !bridged.path.isEmpty else { return }
 
@@ -2697,14 +2762,12 @@ struct TextKitEditorView: UIViewRepresentable {
             guard !isApplyingBindingUpdate else { return }
             // O(paragraph) bridge against live storage. Paragraph
             // ranges come from the storage (always fresh); identity
-            // comes from `paragraphIndex`, kept current between syncs
-            // by the incremental `applyNonStructuralEdit` maintenance,
-            // with the `.blockID` probe as the structural-gap fallback.
+            // comes from `paragraphIndex`, kept current between syncs by
+            // the incremental `applyNonStructuralEdit` maintenance.
             let bridged = TextKitEditorView.bridgeSelection(
                 storage: textView.attributedText,
                 selectedRange: textView.selectedRange,
-                paragraphIndex: paragraphIndex,
-                pathIndex: pathIndex
+                paragraphIndex: paragraphIndex
             )
             if bridged != parent.selection {
                 parent.selection = bridged
@@ -2848,54 +2911,22 @@ final class BlockTreeTextView: UITextView {
     }
 }
 
-// MARK: - BlockChrome — paragraph-level discriminator
-
-/// Discriminator the `BlockDecoratingLayoutManager` reads off each
-/// paragraph's `.blockChrome` attribute. Determines which (if any)
-/// background chrome to draw, and what typography the paragraph
-/// uses.
-enum BlockChrome: Int {
-    case paragraph
-    case heading1
-    case heading2
-    case heading3
-    case bulletListItem
-    case orderedListItem
-    case blockquoteParagraph
-    case codeBlock
-    case divider
-}
-
-extension BlockChrome {
-    /// The chrome a `ParagraphKind` flattens to — the inverse of the
-    /// kind a paragraph parses back to. Used by the index → storage
-    /// re-stamp to write the authoritative kind onto the storage's
-    /// `.blockChrome` attribute. Heading levels follow flatten's
-    /// mapping (1/2 explicit, 3+ → heading3).
-    init(_ kind: ParagraphKind) {
-        switch kind {
-        case .paragraph:            self = .paragraph
-        case .heading(let level):
-            switch level {
-            case 1:  self = .heading1
-            case 2:  self = .heading2
-            default: self = .heading3
-            }
-        case .bulletListItem:       self = .bulletListItem
-        case .orderedListItem:      self = .orderedListItem
-        case .blockquoteParagraph:  self = .blockquoteParagraph
-        case .codeBlock:            self = .codeBlock
-        case .divider:              self = .divider
-        }
-    }
-}
-
 extension NSAttributedString.Key {
-    /// `Int` rawValue of `BlockChrome`. Set on every character of a
-    /// flattened paragraph (including its trailing newline). The
-    /// layout manager reads this to decide whether to draw a
-    /// blockquote bar, code tint, divider rule, or list marker.
-    static let blockChrome = NSAttributedString.Key("fromInk.blockChrome")
+    /// `Int` encoding of a `ParagraphKind` (via
+    /// `ParagraphKind.attributeValue` / `ParagraphKind(attributeValue:)`).
+    /// Set on every character of a flattened paragraph including its
+    /// trailing newline. The layout manager reads this to decide
+    /// whether to draw a blockquote bar, code tint, divider rule, or
+    /// list marker; the rendering typography helpers (font, paragraph
+    /// style, foreground color) also key off it.
+    ///
+    /// Storage is `Int` rather than the enum directly because
+    /// NSAttributedString attribute equality runs through ObjC
+    /// `isEqual:`, where `NSNumber` is the safe shape. The
+    /// side-channel `ParagraphIndex` preserves the original heading
+    /// level; the attribute clamps to 1...3 (rendering is identical
+    /// above level 3).
+    static let paragraphKind = NSAttributedString.Key("fromInk.paragraphKind")
 
     /// UUID of the source `Block`. The parse-back path uses this to
     /// preserve block IDs across edits where possible. New paragraphs
@@ -2958,7 +2989,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
         let storageLength = textStorage.length
 
         // Enumerate by **paragraph boundary** (split on `\n`), not
-        // by `.blockChrome` or `.blockID`. Both attribute-based
+        // by `.paragraphKind` or `.blockID`. Both attribute-based
         // enumerations have a fatal flaw for live editing: when
         // the user types after pressing Enter, `typingAttributes`
         // carries the previous paragraph's chrome AND blockID
@@ -2994,8 +3025,8 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
 
             if probeLocation >= 0,
                probeLocation < storageLength,
-               let chromeRaw = textStorage.attribute(.blockChrome, at: probeLocation, effectiveRange: nil) as? Int,
-               let chrome = BlockChrome(rawValue: chromeRaw) {
+               let kindRaw = textStorage.attribute(.paragraphKind, at: probeLocation, effectiveRange: nil) as? Int,
+               let kind = ParagraphKind(attributeValue: kindRaw) {
 
                 // Extend the glyph range by one when the paragraph
                 // has no text — `enumerateLineFragments` doesn't
@@ -3011,7 +3042,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 let glyphRange = self.glyphRange(forCharacterRange: extendedChar, actualCharacterRange: nil)
                 let probeRange = NSRange(location: probeLocation, length: 1)
 
-                switch chrome {
+                switch kind {
                 case .blockquoteParagraph:
                     drawBlockquote(glyphRange: glyphRange, origin: origin)
                 case .codeBlock:
@@ -3077,9 +3108,9 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
             // carries the paragraph attrs.
             guard prevStart < storage.length else { break }
             let attrs = storage.attributes(at: prevStart, effectiveRange: nil)
-            let prevChrome = (attrs[.blockChrome] as? Int).flatMap(BlockChrome.init(rawValue:))
+            let prevKind = (attrs[.paragraphKind] as? Int).flatMap(ParagraphKind.init(attributeValue:))
             let prevGroup = attrs[.groupID] as? UUID
-            guard prevChrome == .orderedListItem, prevGroup == groupID else { break }
+            guard prevKind == .orderedListItem, prevGroup == groupID else { break }
             ordinal += 1
             cursor = prevStart
         }
