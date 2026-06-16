@@ -71,6 +71,23 @@ final class BulletChromeRegressionTests: XCTestCase {
         textView.attributedText = flat.attributed
         coordinator.paragraphIndex = ParagraphIndex(document: document)
         coordinator.lastNewlineCount = TextKitEditorView.newlineCount(in: flat.attributed.string as NSString)
+
+        // Mirror makeUIView's `onEditorCommand` wiring so dispatch
+        // tests exercise the real path the accessory bar + keyboard
+        // shortcuts ride.
+        textView.onEditorCommand = { [weak coordinator] command in
+            guard let coord = coordinator else { return }
+            switch command {
+            case .toggleBold:          coord.applyInlineToggle(.bold);          return
+            case .toggleItalic:        coord.applyInlineToggle(.italic);        return
+            case .toggleUnderline:     coord.applyInlineToggle(.underline);     return
+            case .toggleStrikethrough: coord.applyInlineToggle(.strikethrough); return
+            case .toggleCode:          coord.applyInlineToggle(.code);          return
+            default:
+                break
+            }
+            mirror.commands.append(command)
+        }
         return (textView, coordinator, mirror)
     }
 
@@ -446,6 +463,185 @@ final class BulletChromeRegressionTests: XCTestCase {
             textView.selectedRange,
             NSRange(location: textView.attributedText.length - 1, length: 0),
             "Caret must snap off the phantom position to the end of the last real paragraph"
+        )
+    }
+
+    // MARK: - Inline toggles (Bold / Italic / Underline / Strikethrough)
+
+    /// Selecting a word and calling Bold applies `.traitBold` to that
+    /// word's font in storage. Pin every guard inside `applyInlineToggle`
+    /// — if any one of `.paragraphKind`, `.blockID`, paragraphSlice's
+    /// probe location, or the selection-length check regresses, this
+    /// test catches the silent no-op.
+    func test_applyInlineToggle_bold_appliesBoldTraitToSelection() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+
+        // Select "Hello".
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        coordinator.applyInlineToggle(.bold)
+
+        let font = textView.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Bold trait must land on the selected run"
+        )
+    }
+
+    func test_applyInlineToggle_italic_appliesItalicTraitToSelection() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        coordinator.applyInlineToggle(.italic)
+
+        let font = textView.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false)
+    }
+
+    func test_applyInlineToggle_underline_setsUnderlineStyle() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        coordinator.applyInlineToggle(.underline)
+
+        let style = textView.attributedText.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(style, NSUnderlineStyle.single.rawValue, "Underline style must land on the selected run")
+    }
+
+    func test_applyInlineToggle_strikethrough_setsStrikethroughStyle() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        coordinator.applyInlineToggle(.strikethrough)
+
+        let style = textView.attributedText.attribute(.strikethroughStyle, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(style, NSUnderlineStyle.single.rawValue, "Strikethrough style must land on the selected run")
+    }
+
+    /// Full dispatch chain: BlockTreeTextView's `onEditorCommand`
+    /// closure (set in makeUIView) routes inline toggles to the
+    /// Coordinator's `applyInlineToggle`. This pins the wiring the
+    /// accessory bar buttons and keyboard shortcuts both ride.
+    func test_onEditorCommand_toggleBold_appliesBoldToSelection() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        // Hold the coordinator strongly — SwiftUI's representable
+        // context does this in production; in a test rig the only
+        // strong refs are what we choose to keep.
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        _ = coordinator
+        guard let blockTreeTextView = textView as? BlockTreeTextView else {
+            return XCTFail("Test rig must use BlockTreeTextView")
+        }
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        blockTreeTextView.onEditorCommand?(.toggleBold)
+
+        let font = textView.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Bold must land via the full onEditorCommand → applyInlineToggle dispatch"
+        )
+    }
+
+    // MARK: - Caret-only toggle (Apple Notes / Notion convention)
+
+    /// Tapping Bold with no selection flips `typingAttributes` so the
+    /// NEXT character typed is bold. Matches the convention every major
+    /// note app uses; before this, the toggle silently no-op'd on a
+    /// caret-only selection — the reported B/I/U/S regression.
+    func test_applyInlineToggle_bold_noSelection_flipsTypingAttributes() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)  // caret at end of "Hello"
+        coordinator.applyInlineToggle(.bold)
+
+        let font = textView.typingAttributes[.font] as? UIFont
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Caret-only Bold must flip typingAttributes so the next typed char is bold"
+        )
+    }
+
+    func test_applyInlineToggle_italic_noSelection_flipsTypingAttributes() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.italic)
+
+        let font = textView.typingAttributes[.font] as? UIFont
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false)
+    }
+
+    func test_applyInlineToggle_underline_noSelection_setsUnderlineStyle() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.underline)
+
+        let style = textView.typingAttributes[.underlineStyle] as? Int
+        XCTAssertEqual(style, NSUnderlineStyle.single.rawValue)
+    }
+
+    func test_applyInlineToggle_strikethrough_noSelection_setsStrikethroughStyle() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.strikethrough)
+
+        let style = textView.typingAttributes[.strikethroughStyle] as? Int
+        XCTAssertEqual(style, NSUnderlineStyle.single.rawValue)
+    }
+
+    /// Toggling the same mark twice with no selection returns
+    /// typingAttributes to the un-marked state.
+    func test_applyInlineToggle_bold_twice_noSelection_returnsToUnbold() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.applyInlineToggle(.bold)
+        coordinator.applyInlineToggle(.bold)
+
+        let font = textView.typingAttributes[.font] as? UIFont
+        XCTAssertFalse(font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false)
+    }
+
+    /// The system editing menu fires `formatBold(_:)` (etc) on the
+    /// text view. Verify the @objc bridge routes to onEditorCommand.
+    func test_formatBoldSelector_routesToOnEditorCommand() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello world")]))
+        ])
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
+        _ = coordinator
+        guard let blockTreeTextView = textView as? BlockTreeTextView else {
+            return XCTFail("Test rig must use BlockTreeTextView")
+        }
+        textView.selectedRange = NSRange(location: 0, length: 5)
+        blockTreeTextView.formatBold(nil)  // simulates Cmd+B keyCommand action
+
+        let font = textView.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "formatBold(_:) selector must apply bold via onEditorCommand"
         )
     }
 }

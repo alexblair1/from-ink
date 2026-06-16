@@ -2341,22 +2341,31 @@ struct TextKitEditorView: UIViewRepresentable {
             }
         }
 
-        /// Toggle an inline format across the current selection as
-        /// paragraph-local storage surgery: parse the host paragraph's
-        /// runs, apply the SAME tested mark logic the reducer uses
-        /// (`TextEditingFeature.applyMarkToInlineRuns`), rebuild the
-        /// paragraph through the SAME attribute composer flatten uses
-        /// (`paragraphContent`), and swap it in with undo registered.
-        /// Text length is unchanged, so the selection restores
-        /// verbatim. Contract parity with the reducer path:
-        /// insertion-point selections no-op; code blocks ignore
-        /// inline formats; multi-paragraph selections clamp to the
-        /// host paragraph (fix S2).
+        /// Toggle an inline format. Two paths depending on the selection:
+        ///
+        ///   - **Selection** (length > 0): paragraph-local storage
+        ///     surgery — parse the host paragraph's runs, apply the SAME
+        ///     tested mark logic the reducer uses
+        ///     (`TextEditingFeature.applyMarkToInlineRuns`), rebuild the
+        ///     paragraph through the SAME attribute composer flatten uses
+        ///     (`paragraphContent`), and swap it in with undo registered.
+        ///     Text length is unchanged, so the selection restores
+        ///     verbatim. Multi-paragraph selections clamp to the host
+        ///     paragraph (fix S2).
+        ///   - **Caret only** (length == 0): flip the textView's
+        ///     `typingAttributes` so the next character typed inherits
+        ///     the toggled mark — Apple Notes / Notion convention. No
+        ///     storage mutation, no undo entry until the user types a
+        ///     character. Code blocks and dividers ignore inline
+        ///     formats; the caret-only path is a no-op for them.
         func applyInlineToggle(_ format: TextEditingFeature.InlineFormat) {
             guard let textView = self.textView,
                   textView.markedTextRange == nil else { return }
             let sel = textView.selectedRange
-            guard sel.length > 0 else { return }
+            guard sel.length > 0 else {
+                applyInlineToggleAtCaret(format, textView: textView)
+                return
+            }
             let storage: NSTextStorage = textView.textStorage
 
             let (paraRange, probe) = TextKitEditorView.paragraphSlice(at: sel.location, in: storage)
@@ -2397,6 +2406,82 @@ struct TextKitEditorView: UIViewRepresentable {
                 length: clampedEnd - sel.location
             )
             syncDocumentFromStorage(textView)
+        }
+
+        /// Flip `typingAttributes` so the next typed character carries
+        /// (or stops carrying) the toggled mark. The caret-only branch
+        /// of `applyInlineToggle`. Bold/italic flip the font's symbolic
+        /// traits; underline/strikethrough flip the relevant style key;
+        /// code swaps the font family + sets `.fromInkInlineCode`.
+        /// Inert for code-block / divider paragraphs.
+        private func applyInlineToggleAtCaret(
+            _ format: TextEditingFeature.InlineFormat,
+            textView: UITextView
+        ) {
+            // Skip inline formats inside code blocks and dividers, the
+            // same way the selection branch does — kind probed at the
+            // caret's paragraph.
+            let storage: NSTextStorage = textView.textStorage
+            let (_, probe) = TextKitEditorView.paragraphSlice(at: textView.selectedRange.location, in: storage)
+            if let probe, probe < storage.length {
+                let attrs = storage.attributes(at: probe, effectiveRange: nil)
+                if let kindRaw = attrs[.paragraphKind] as? Int,
+                   let kind = ParagraphKind(attributeValue: kindRaw),
+                   kind == .codeBlock || kind == .divider {
+                    return
+                }
+            }
+            var typing = textView.typingAttributes
+            switch format {
+            case .bold:
+                typing[.font] = flipTrait(.traitBold, in: (typing[.font] as? UIFont) ?? parent.bodyFont)
+            case .italic:
+                typing[.font] = flipTrait(.traitItalic, in: (typing[.font] as? UIFont) ?? parent.bodyFont)
+            case .underline:
+                let on = (typing[.underlineStyle] as? Int) ?? 0
+                if on == 0 {
+                    typing[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                } else {
+                    typing[.underlineStyle] = 0
+                }
+            case .strikethrough:
+                let on = (typing[.strikethroughStyle] as? Int) ?? 0
+                if on == 0 {
+                    typing[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                } else {
+                    typing[.strikethroughStyle] = 0
+                }
+            case .code:
+                // Code toggles the monospace font + a custom key so
+                // parse-back recovers the Mark.code (distinguished from
+                // "happens to be monospaced").
+                let hasCode = (typing[.fromInkInlineCode] as? Bool) ?? false
+                if hasCode {
+                    typing[.fromInkInlineCode] = nil
+                    typing[.font] = parent.bodyFont
+                    typing[.backgroundColor] = nil
+                } else {
+                    typing[.fromInkInlineCode] = true
+                    typing[.font] = UIFont.monospacedSystemFont(
+                        ofSize: parent.bodyFont.pointSize, weight: .regular
+                    )
+                    typing[.backgroundColor] = UIColor.label.withAlphaComponent(0.06)
+                }
+            }
+            textView.typingAttributes = typing
+        }
+
+        /// Toggle a single symbolic trait on a font, preserving every
+        /// other trait + the font's design (serif heading vs. sans body).
+        private func flipTrait(_ trait: UIFontDescriptor.SymbolicTraits, in font: UIFont) -> UIFont {
+            var traits = font.fontDescriptor.symbolicTraits
+            if traits.contains(trait) {
+                traits.remove(trait)
+            } else {
+                traits.insert(trait)
+            }
+            guard let descriptor = font.fontDescriptor.withSymbolicTraits(traits) else { return font }
+            return UIFont(descriptor: descriptor, size: 0)
         }
 
         /// Apply the post-structural-edit identity fixups (fresh
