@@ -54,6 +54,18 @@ struct LayoutTokens: Sendable {
     let dismissIconSize: CGFloat
     let dismissHitTarget: CGFloat
     let headerPreviewMinHeight: CGFloat
+    // MARK: - Dispatch panel
+    /// Height of the dispatch panel tab bar row. Taller than the bare
+    /// hit target so the active chip has vertical breathing room.
+    let dispatchTabBarHeight: CGFloat
+    /// Active-tab chip width — hugs the icon rather than filling the cell.
+    let dispatchTabChipWidth: CGFloat
+    /// Active-tab chip height.
+    let dispatchTabChipHeight: CGFloat
+    /// Diameter of the empty-state icon badge (the light circular disc).
+    let dispatchEmptyBadgeDiameter: CGFloat
+    /// Icon size inside the empty-state badge.
+    let dispatchEmptyBadgeIconSize: CGFloat
     let timeBlockWidth: CGFloat
     let spineMinHeight: CGFloat
     let notebookCardWidth: CGFloat
@@ -176,6 +188,11 @@ struct LayoutTokens: Sendable {
         dismissIconSize: 12,
         dismissHitTarget: 28,
         headerPreviewMinHeight: 80,
+        dispatchTabBarHeight: 56,
+        dispatchTabChipWidth: 60,
+        dispatchTabChipHeight: 40,
+        dispatchEmptyBadgeDiameter: 72,
+        dispatchEmptyBadgeIconSize: 24,
         timeBlockWidth: 72,
         spineMinHeight: 140,
         notebookCardWidth: 116,

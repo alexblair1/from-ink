@@ -96,6 +96,12 @@ struct CanvasScreen: View {
     /// The page builds a `BriefRequest` whose `onSendAll` captures
     /// `routeTask` so per-page routing still works after the hoist.
     @Binding var briefRequest: BriefRequest?
+    /// The current page's dispatch panel store, hoisted to NotebookScreen
+    /// (regular width only) so the side panel renders above the close
+    /// button + toolbar instead of under them. Set when the panel becomes
+    /// visible on this page, cleared on dismiss / page swipe. Compact
+    /// width still presents via the `.sheet` below.
+    @Binding var dispatchPanelPresentation: StoreOf<DispatchPanelFeature>?
 
     // Links (persisted via NotebookClient; UI cache of NoteLinkSnapshot)
     @State private var links: [NoteLinkSnapshot] = []
@@ -490,8 +496,6 @@ struct CanvasScreen: View {
                         .transition(.scale(scale: 0.9).combined(with: .opacity))
                         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: showLassoMenu)
                 }
-
-                dispatchSidePanelLayer
             }
             // Page-level dispatch modal is rendered at NotebookScreen so
             // it covers the toolbar; the page only animates side panels
@@ -600,8 +604,26 @@ struct CanvasScreen: View {
             }
         }
         .onChange(of: dispatchPanelStore.isVisible) { _, visible in
-            guard visible else { return }
+            guard visible else {
+                // withAnimation drives the move transition on the hoisted
+                // card in NotebookScreen — the implicit `.animation(value:)`
+                // doesn't fire reliably for a transition triggered by a
+                // child writing through a binding inside `.onChange`.
+                withAnimation(DesignSystem.standard.animation.standard) {
+                    dispatchPanelPresentation = nil
+                }
+                return
+            }
             syncDispatchPanelData()
+            // Hoist the regular-width side panel to NotebookScreen so it
+            // renders above the close button + toolbar. Compact width
+            // keeps the `.sheet` presentation above. Only the current
+            // page hoists so preloaded neighbors don't fight for it.
+            if sizeClass == .regular, isCurrentPage {
+                withAnimation(DesignSystem.standard.animation.standard) {
+                    dispatchPanelPresentation = dispatchPanelStore
+                }
+            }
         }
         .onChange(of: dispatchPanelStore.navigateToHeaderID) { _, headerID in
             guard let headerID else { return }
@@ -635,6 +657,17 @@ struct CanvasScreen: View {
             }
             dispatchPanelStore.send(.dismissed)
             dispatchPanelStore.send(.routedItemOpenHandled)
+        }
+        .onChange(of: dispatchPanelStore.addRequestedTab) { _, tab in
+            // Forwarded "+ Add …" affordance from the dispatch panel.
+            // The panel exposes the intent per tab; presenting the
+            // matching add flow (link input / calendar / reminder draft)
+            // is wired here. Consume the signal so a repeat tap on the
+            // same tab re-fires (onChange equality-dedupes otherwise).
+            // TODO: present the add flow per `tab` (.links → LinkInputSheet,
+            // .calendar/.reminders → routed-item draft). Not yet wired.
+            guard tab != nil else { return }
+            dispatchPanelStore.send(.addRequestHandled)
         }
         .onChange(of: toolbarStore.isDispatchRequested) { _, requested in
             // Toolbar store is shared across pages. Only the currently
@@ -782,31 +815,6 @@ struct CanvasScreen: View {
         Task { try? await notebookClient.updateLink(linkID, .external(url)) }
     }
 
-    @ViewBuilder
-    private var dispatchSidePanelLayer: some View {
-        if sizeClass == .regular && dispatchPanelStore.isVisible {
-            Color.clear
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { dispatchPanelStore.send(.dismissed) }
-
-            let ds = DesignSystem.standard
-            DispatchPanelWiringView(store: dispatchPanelStore)
-                .frame(width: ds.layout.panelWidth)
-                .frame(maxHeight: .infinity)
-                .overlay(alignment: toolbarSide == .left ? .leading : .trailing) {
-                    Rectangle()
-                        .fill(ds.colors.rule)
-                        .frame(width: ds.layout.borderWidth)
-                }
-                .frame(
-                    maxWidth: .infinity,
-                    alignment: toolbarSide == .left ? .trailing : .leading
-                )
-                .transition(.move(edge: toolbarSide == .left ? .trailing : .leading))
-                .ignoresSafeArea()
-        }
-    }
 
     private var canvasViewLayer: some View {
         CanvasView(
@@ -1148,6 +1156,7 @@ private extension DispatchRoutedItem {
             ToolbarFeature()
         },
         dispatchFlow: .constant(nil),
-        briefRequest: .constant(nil)
+        briefRequest: .constant(nil),
+        dispatchPanelPresentation: .constant(nil)
     )
 }

@@ -9,10 +9,11 @@ struct DispatchPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             titleBar
-            HairlineRule()
             tabBar
-            HairlineRule()
             content
+            if let action = model.action {
+                DispatchActionBarButton(model: action)
+            }
         }
         .background(model.background)
     }
@@ -44,12 +45,8 @@ struct DispatchPanelView: View {
 
     private var tabBar: some View {
         HStack(spacing: 0) {
-            ForEach(Array(model.tabs.enumerated()), id: \.element.id) { index, tab in
+            ForEach(model.tabs, id: \.id) { tab in
                 DispatchTabButton(model: tab)
-
-                if index < model.tabs.count - 1 {
-                    HairlineRule(.vertical)
-                }
             }
         }
         .frame(height: model.tabBarHeight)
@@ -59,30 +56,13 @@ struct DispatchPanelView: View {
 
     private var content: some View {
         Group {
-            switch model.activeContent {
-            case .headers(let rows) where rows.isEmpty:
-                DispatchEmptyState(
-                    model: .init(message: AppStrings.Dispatch.emptyHeaders)
-                )
-
-            case .headers(let rows):
-                scrollableList(rows.map { .header($0) })
-
-            case .links(let rows) where rows.isEmpty:
-                DispatchEmptyState(
-                    model: .init(message: AppStrings.Dispatch.emptyLinks)
-                )
-
-            case .links(let rows):
-                scrollableList(rows.map { .link($0) })
-
-            case .routedItems(let rows, let emptyMessage) where rows.isEmpty:
-                DispatchEmptyState(model: .init(message: emptyMessage))
-
-            case .routedItems(let rows, _):
-                scrollableList(rows.map { .routedItem($0) })
+            if model.activeContent.isEmpty {
+                DispatchEmptyState(model: model.emptyState)
+            } else {
+                scrollableList(model.activeContent.rowItems)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func scrollableList(_ items: [RowItem]) -> some View {
@@ -112,6 +92,8 @@ extension DispatchPanelView {
         let title: String
         let tabs: [DispatchTabButton.Model]
         let activeContent: ContentKind
+        let emptyState: DispatchEmptyState.Model
+        let action: DispatchActionBarButton.Model?
         let onDismiss: () -> Void
         let background: Color
         let secondaryColor: Color
@@ -125,10 +107,26 @@ extension DispatchPanelView {
     enum ContentKind {
         case headers([DispatchHeaderRow.Model])
         case links([DispatchLinkRow.Model])
-        case routedItems([DispatchRoutedItemRow.Model], emptyMessage: String)
+        case routedItems([DispatchRoutedItemRow.Model])
+
+        var isEmpty: Bool {
+            switch self {
+            case .headers(let rows): rows.isEmpty
+            case .links(let rows): rows.isEmpty
+            case .routedItems(let rows): rows.isEmpty
+            }
+        }
+
+        var rowItems: [RowItem] {
+            switch self {
+            case .headers(let rows): rows.map { .header($0) }
+            case .links(let rows): rows.map { .link($0) }
+            case .routedItems(let rows): rows.map { .routedItem($0) }
+            }
+        }
     }
 
-    private enum RowItem: Identifiable {
+    enum RowItem: Identifiable {
         case header(DispatchHeaderRow.Model)
         case link(DispatchLinkRow.Model)
         case routedItem(DispatchRoutedItemRow.Model)
@@ -150,18 +148,22 @@ extension DispatchPanelView.Model {
         title: String,
         tabs: [DispatchTabButton.Model],
         activeContent: DispatchPanelView.ContentKind,
+        emptyState: DispatchEmptyState.Model,
+        action: DispatchActionBarButton.Model?,
         onDismiss: @escaping () -> Void,
         ds: DesignSystem = .standard
     ) {
         self.title = title
         self.tabs = tabs
         self.activeContent = activeContent
+        self.emptyState = emptyState
+        self.action = action
         self.onDismiss = onDismiss
         self.background = ds.colors.paper
         self.secondaryColor = ds.colors.ink2
         self.horizontalPadding = ds.spacing.base
         self.titleBarHeight = ds.layout.navBarHeight
-        self.tabBarHeight = ds.layout.hitTarget
+        self.tabBarHeight = ds.layout.dispatchTabBarHeight
         self.dismissIconSize = ds.layout.dismissIconSize
         self.dismissHitTarget = ds.layout.dismissHitTarget
     }

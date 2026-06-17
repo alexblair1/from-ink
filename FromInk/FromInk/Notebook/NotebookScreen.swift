@@ -58,6 +58,9 @@ struct NotebookScreen: View {
     @State private var showAddButton = false
     @State private var briefRequest: BriefRequest? = nil
     @State private var dispatchFlow: DispatchFlow? = nil
+    /// Current page's dispatch side panel, hoisted from CanvasScreen so it
+    /// renders above the toolbar + close button (regular width only).
+    @State private var dispatchPanelPresentation: StoreOf<DispatchPanelFeature>? = nil
     @Environment(\.dismiss) private var dismiss
 
     private var toolbarStore: StoreOf<ToolbarFeature> {
@@ -117,7 +120,8 @@ struct NotebookScreen: View {
                             if store.currentIndex == i { showAddButton = false }
                         },
                         dispatchFlow: $dispatchFlow,
-                        briefRequest: $briefRequest
+                        briefRequest: $briefRequest,
+                        dispatchPanelPresentation: $dispatchPanelPresentation
                     )
                     .tag(i)
                 }
@@ -224,6 +228,62 @@ struct NotebookScreen: View {
             }
             .animation(DesignSystem.standard.animation.standard, value: briefRequest != nil)
 
+            // Dispatch side panel — hoisted from the current page's
+            // CanvasScreen so it renders above the toolbar, close button,
+            // and page navigator (mirrors the Page Brief overlay). Floats
+            // as a rounded card matching the toolbar capsule: same corner
+            // radius, fill, border, shadow, and outer insets, so its top
+            // and bottom align with the toolbar's. Regular width only;
+            // compact width presents as a sheet from CanvasScreen.
+            Group {
+                if let panelStore = dispatchPanelPresentation {
+                    let ds = DesignSystem.standard
+                    let cardShape = RoundedRectangle(
+                        cornerRadius: ds.layout.toolbarCapsuleCornerRadius,
+                        style: .continuous
+                    )
+                    ZStack {
+                        Color.clear
+                            .ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture { panelStore.send(.dismissed) }
+
+                        DispatchPanelWiringView(store: panelStore)
+                            .frame(width: ds.layout.panelWidth)
+                            .frame(maxHeight: .infinity)
+                            .background(cardShape.fill(ds.colors.paper))
+                            .clipShape(cardShape)
+                            .overlay(cardShape.stroke(ds.colors.rule, lineWidth: ds.layout.borderWidth))
+                            .shadow(
+                                color: ds.shadow.toolbarCapsulePrimary.color,
+                                radius: ds.shadow.toolbarCapsulePrimary.radius,
+                                x: ds.shadow.toolbarCapsulePrimary.x,
+                                y: ds.shadow.toolbarCapsulePrimary.y
+                            )
+                            .shadow(
+                                color: ds.shadow.toolbarCapsuleAmbient.color,
+                                radius: ds.shadow.toolbarCapsuleAmbient.radius,
+                                x: ds.shadow.toolbarCapsuleAmbient.x,
+                                y: ds.shadow.toolbarCapsuleAmbient.y
+                            )
+                            .padding(.horizontal, ds.layout.toolbarCapsuleHorizontalInset)
+                            .padding(.vertical, ds.layout.toolbarCapsuleVerticalInset)
+                            // Transition sits before the positioning frame
+                            // so the card slides only its own width in from
+                            // the screen edge — not the full screen width.
+                            // The edge follows the toolbar side (panel is
+                            // always opposite the toolbar). Driven by the
+                            // withAnimation at the CanvasScreen mutation site.
+                            .transition(.move(edge: toolbarIsLeft ? .trailing : .leading))
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: toolbarIsLeft ? .trailing : .leading
+                            )
+                    }
+                }
+            }
+
             // Universal Dispatch modal — also at notebook level so its
             // dim backdrop covers the toolbar + close button. Hosting
             // CanvasScreen captures per-page completion logic in
@@ -249,6 +309,10 @@ struct NotebookScreen: View {
             // page N doesn't linger over page N+1 with the wrong data.
             briefRequest = nil
             dispatchFlow = nil
+            // Reset the leaving page's panel visibility (not just the
+            // hoist) so swiping back and reopening presents it fresh.
+            dispatchPanelPresentation?.send(.dismissed)
+            dispatchPanelPresentation = nil
         }
     }
 

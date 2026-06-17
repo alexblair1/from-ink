@@ -17,12 +17,21 @@ struct DispatchPanelFeature: Reducer {
         var navigateToHeaderID: UUID? = nil
         var openLinkURL: URL? = nil
         var openRoutedItem: DispatchRoutedItem? = nil
+        /// Set when the user taps the bottom "+ Add …" action. The
+        /// parent observes this, presents the matching add flow, and
+        /// clears it with `addRequestHandled` (same consume-to-rearm
+        /// pattern as the `open…` / `navigateTo…` signals above).
+        var addRequestedTab: DispatchTab? = nil
     }
 
     @CasePathable
     enum Action {
         // Tab
         case tabSelected(DispatchTab)
+
+        // Bottom add-action — forwarded to parent
+        case addTapped(DispatchTab)
+        case addRequestHandled
 
         // Item interactions — forwarded to parent
         case headerTapped(UUID)
@@ -59,6 +68,16 @@ struct DispatchPanelFeature: Reducer {
 
             case .tabSelected(let tab):
                 state.selectedTab = tab
+                return .none
+
+            // MARK: - Add action
+
+            case .addTapped(let tab):
+                state.addRequestedTab = tab
+                return .none
+
+            case .addRequestHandled:
+                state.addRequestedTab = nil
                 return .none
 
             // MARK: - Item interactions

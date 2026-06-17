@@ -12,9 +12,14 @@ struct DispatchTabButton: View {
                 .font(.system(size: model.iconSize, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(model.foreground)
+                .frame(width: model.chipWidth, height: model.chipHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: model.chipCornerRadius, style: .continuous)
+                        .fill(model.background)
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(model.background)
                 .animation(model.animation, value: model.foreground)
+                .animation(model.animation, value: model.background)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -31,6 +36,9 @@ extension DispatchTabButton {
         let iconSize: CGFloat
         let foreground: Color
         let background: Color
+        let chipWidth: CGFloat
+        let chipHeight: CGFloat
+        let chipCornerRadius: CGFloat
         let animation: Animation
     }
 }
@@ -52,6 +60,9 @@ extension DispatchTabButton.Model {
         self.iconSize = ds.layout.tabIconSize
         self.foreground = foreground
         self.background = background
+        self.chipWidth = ds.layout.dispatchTabChipWidth
+        self.chipHeight = ds.layout.dispatchTabChipHeight
+        self.chipCornerRadius = ds.cornerRadius.row
         self.animation = ds.animation.fast
     }
 }

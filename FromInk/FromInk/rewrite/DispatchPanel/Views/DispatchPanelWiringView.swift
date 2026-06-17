@@ -62,10 +62,7 @@ extension DispatchPanelView.Model {
                         onTap: { store.send(.routedItemTapped(item)) }
                     )
                 }
-                return .routedItems(
-                    rows,
-                    emptyMessage: AppStrings.Dispatch.emptyCalendar
-                )
+                return .routedItems(rows)
 
             case .reminders:
                 let rows = store.reminderItems.map { item in
@@ -74,17 +71,32 @@ extension DispatchPanelView.Model {
                         onTap: { store.send(.routedItemTapped(item)) }
                     )
                 }
-                return .routedItems(
-                    rows,
-                    emptyMessage: AppStrings.Dispatch.emptyReminders
-                )
+                return .routedItems(rows)
             }
         }()
 
+        let tab = store.selectedTab
+        let emptyState = DispatchEmptyState.Model(
+            icon: tab.icon,
+            headline: tab.emptyHeadline,
+            hint: tab.emptyHint
+        )
+
+        // Headers are authored on the page, so they carry no add label
+        // and the action bar is omitted for that tab.
+        let action = tab.addLabel.map { label in
+            DispatchActionBarButton.Model(
+                label: label,
+                onTap: { store.send(.addTapped(tab)) }
+            )
+        }
+
         self.init(
-            title: store.selectedTab.title,
+            title: tab.title,
             tabs: tabs,
             activeContent: activeContent,
+            emptyState: emptyState,
+            action: action,
             onDismiss: { store.send(.dismissed) }
         )
     }
