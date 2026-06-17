@@ -34,7 +34,8 @@ final class BulletChromeRegressionTests: XCTestCase {
     }
 
     private func makeEditorRig(
-        document: RichTextDocument
+        document: RichTextDocument,
+        onSlashTyped: @escaping (_ path: [UUID], _ offset: Int, _ rect: CGRect) -> Void = { _, _, _ in }
     ) -> (textView: UITextView, coordinator: TextKitEditorView.Coordinator, mirror: ReducerMirror) {
         let storage = NSTextStorage()
         let layoutManager = BlockDecoratingLayoutManager()
@@ -55,7 +56,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         let view = TextKitEditorView(
             document: Binding(get: { mirror.document }, set: { mirror.document = $0 }),
             selection: Binding(get: { mirror.selection }, set: { mirror.selection = $0 }),
-            onSlashTyped: { _, _, _ in },
+            onSlashTyped: onSlashTyped,
             onCommand: { mirror.commands.append($0) },
             onCaretAnchorMoved: { _ in },
             onSlashFilterChanged: { _ in },
@@ -778,6 +779,44 @@ final class BulletChromeRegressionTests: XCTestCase {
 
         let font = textView.typingAttributes[.font] as? UIFont
         XCTAssertFalse(font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false)
+    }
+
+    // MARK: - Slash trigger end-to-end
+
+    /// Typing `/` at the start of a paragraph must fire `onSlashTyped`.
+    /// Regression: Chunk 9 removed the parse-back fallback in
+    /// `syncDocumentFromStorage`, and the palette-interaction branch
+    /// (which a pending slash triggers) ran sync BEFORE the index's
+    /// non-structural edit was applied. `bridgeSelection`'s
+    /// `entry.range == textRange` guard then failed and returned unset,
+    /// silently dropping the trigger. Fix: apply
+    /// `applyNonStructuralEdit` in `textViewDidChange` regardless of
+    /// which branch follows.
+    func test_typingSlash_atParagraphStart_firesOnSlashTyped() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "")]))
+        ])
+        var capturedPaths: [[UUID]] = []
+        let (textView, coordinator, _) = makeEditorRig(
+            document: doc,
+            onSlashTyped: { path, _, _ in capturedPaths.append(path) }
+        )
+        _ = coordinator
+        textView.selectedRange = NSRange(location: 0, length: 0)
+
+        // Mirror the input system: shouldChangeTextIn → insert →
+        // didChange.
+        let accepted = coordinator.textView(
+            textView, shouldChangeTextIn: NSRange(location: 0, length: 0), replacementText: "/"
+        )
+        XCTAssertTrue(accepted)
+        textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 0),
+            with: NSAttributedString(string: "/")
+        )
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(capturedPaths.count, 1, "Slash trigger must fire after typing `/`")
     }
 
     /// The system editing menu fires `formatBold(_:)` (etc) on the

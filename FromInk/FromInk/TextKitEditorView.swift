@@ -2462,6 +2462,22 @@ struct TextKitEditorView: UIViewRepresentable {
             let newlines = TextKitEditorView.newlineCount(in: textView.text as NSString)
             let isStructural = newlines != lastNewlineCount
 
+            // Apply the pending non-structural edit to the index FIRST,
+            // regardless of which branch runs next. Structural edits
+            // route their (range, replacement) through `applyEdit` in
+            // `syncDocumentFromStorage`; non-structural edits maintain
+            // the index here so `bridgeSelection` + `documentFromIndex`
+            // see fresh ranges in EVERY path — including the palette /
+            // slash-trigger path where the sync runs before the index
+            // would otherwise catch up.
+            if !isStructural, let edit = pendingNonStructuralEdit {
+                paragraphIndex.applyNonStructuralEdit(
+                    editedRange: edit.range,
+                    newLength: edit.newLength
+                )
+            }
+            pendingNonStructuralEdit = nil
+
             // While the palette is open (or a trigger is pending),
             // every keystroke syncs immediately — a palette command
             // is a reducer-driven mutation, and the reducer must
@@ -2471,21 +2487,8 @@ struct TextKitEditorView: UIViewRepresentable {
             if isStructural || paletteInteraction {
                 syncDocumentFromStorage(textView)
             } else {
-                // Non-structural keystroke: no paragraph added, removed,
-                // or merged — keep the index's ranges live with a cheap
-                // in-place shift instead of waiting for the debounced
-                // rebuild, so `bridgeSelection` resolves identity from
-                // the index (not the fallback) for caret moves before
-                // the next sync.
-                if let edit = pendingNonStructuralEdit {
-                    paragraphIndex.applyNonStructuralEdit(
-                        editedRange: edit.range,
-                        newLength: edit.newLength
-                    )
-                }
                 scheduleDebouncedSync(textView)
             }
-            pendingNonStructuralEdit = nil
 
             // Live filter republish while the palette is open —
             // computed storage-side; nil dismisses (trigger deleted).
