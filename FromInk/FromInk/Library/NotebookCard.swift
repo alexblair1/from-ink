@@ -4,28 +4,30 @@ struct NotebookCard: View {
     let notebook: Notebook
     let onTap: () -> Void
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 6) {
                 // Portrait card with drawn notebook illustration
                 ZStack {
-                    Color.surface
+                    ds.colors.surface
                     notebookIllustration
                 }
                 .frame(width: 130, height: 160)
                 .overlay {
-                    Rectangle().strokeBorder(Color.border, lineWidth: 1)
+                    Rectangle().strokeBorder(ds.colors.rule, lineWidth: 1)
                 }
 
                 Text(notebook.title)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.ink)
+                    .foregroundStyle(ds.colors.ink)
                     .lineLimit(1)
                     .frame(width: 130, alignment: .leading)
 
                 Text(notebook.modifiedAt.formatted(.relative(presentation: .named)))
                     .font(.system(size: 10))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
                     .frame(width: 130, alignment: .leading)
             }
         }
@@ -36,13 +38,13 @@ struct NotebookCard: View {
     private var notebookIllustration: some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(Color.ink)
+                .fill(ds.colors.ink)
                 .frame(width: 10)
-            Color.canvas
+            ds.colors.paper
         }
         .frame(width: 72, height: 100)
         .overlay {
-            Rectangle().strokeBorder(Color.ink, lineWidth: 1.5)
+            Rectangle().strokeBorder(ds.colors.ink, lineWidth: 1.5)
         }
     }
 }

@@ -7,17 +7,19 @@ struct SheetActionFooter: View {
     var primaryAction: () -> Void = {}
     var primaryDisabled: Bool = false
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         VStack(spacing: 0) {
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
             HStack(spacing: 12) {
                 Button(action: secondaryAction) {
                     Text(secondary)
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.ink)
+                        .foregroundStyle(ds.colors.ink)
                         .padding(.horizontal, 16)
                         .frame(height: 36)
-                        .overlay(Rectangle().strokeBorder(Color.border, lineWidth: 1))
+                        .overlay(Rectangle().strokeBorder(ds.colors.rule, lineWidth: 1))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -27,10 +29,10 @@ struct SheetActionFooter: View {
                 Button(action: primaryAction) {
                     Text(primary)
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(primaryDisabled ? Color.inkSecondary : Color.inkOnDark)
+                        .foregroundStyle(primaryDisabled ? ds.colors.ink2 : ds.colors.paperOnInk)
                         .padding(.horizontal, 16)
                         .frame(height: 36)
-                        .background(primaryDisabled ? Color.border : Color.ink)
+                        .background(primaryDisabled ? ds.colors.rule : ds.colors.ink)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -40,7 +42,7 @@ struct SheetActionFooter: View {
             .padding(.horizontal, 20)
             .frame(height: 60)
         }
-        .background(Color.surface)
+        .background(ds.colors.surface)
     }
 }
 

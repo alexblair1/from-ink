@@ -345,7 +345,7 @@ struct PDFCanvas: UIViewRepresentable {
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
-        view.backgroundColor = UIColor(Color.canvas)
+        view.backgroundColor = UIColor(DesignSystem.standard.colors.paper)
         view.document = document
         view.fromInkCoordinator = context.coordinator
         // Register the **Highlight** edit-menu item on first mount.

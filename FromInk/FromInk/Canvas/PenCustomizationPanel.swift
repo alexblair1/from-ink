@@ -5,18 +5,20 @@ struct PenCustomizationPanel: View {
     @Binding var settings: PenSettings
     var onDismiss: () -> Void = {}
 
+    private let ds = DesignSystem.standard
+
     private var showsHighlighterColors: Bool { settings.penType.isHighlighter }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
 
             penTypeList
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
 
             thicknessSection
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
 
             if showsHighlighterColors {
                 highlighterColorSection
@@ -25,8 +27,8 @@ struct PenCustomizationPanel: View {
             }
         }
         .frame(width: 260)
-        .background(Color.surface)
-        .overlay(Rectangle().strokeBorder(Color.border, lineWidth: 1))
+        .background(ds.colors.surface)
+        .overlay(Rectangle().strokeBorder(ds.colors.rule, lineWidth: 1))
     }
 
     // MARK: - Header
@@ -35,14 +37,14 @@ struct PenCustomizationPanel: View {
         HStack {
             Text(tool.rawValue.capitalized)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .textCase(.uppercase)
                 .kerning(0.5)
             Spacer()
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
@@ -72,16 +74,16 @@ struct PenCustomizationPanel: View {
             HStack(spacing: 12) {
                 Image(systemName: type.icon)
                     .font(.system(size: 13))
-                    .foregroundStyle(isSelected ? Color.inkOnDark : Color.ink)
+                    .foregroundStyle(isSelected ? ds.colors.paperOnInk : ds.colors.ink)
                     .frame(width: 18)
                 Text(type.displayName)
                     .font(.system(size: 15))
-                    .foregroundStyle(isSelected ? Color.inkOnDark : Color.ink)
+                    .foregroundStyle(isSelected ? ds.colors.paperOnInk : ds.colors.ink)
                 Spacer()
             }
             .padding(.horizontal, 16)
             .frame(height: 40)
-            .background(isSelected ? Color.ink : Color.clear)
+            .background(isSelected ? ds.colors.ink : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -93,7 +95,7 @@ struct PenCustomizationPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Thickness")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .textCase(.uppercase)
                 .kerning(0.5)
 
@@ -117,11 +119,11 @@ struct PenCustomizationPanel: View {
         } label: {
             ZStack {
                 Rectangle()
-                    .fill(isSelected ? Color.ink : Color.clear)
+                    .fill(isSelected ? ds.colors.ink : Color.clear)
                 Rectangle()
-                    .strokeBorder(isSelected ? Color.ink : Color.border, lineWidth: 1)
+                    .strokeBorder(isSelected ? ds.colors.ink : ds.colors.rule, lineWidth: 1)
                 Rectangle()
-                    .fill(isSelected ? Color.inkOnDark : Color.ink)
+                    .fill(isSelected ? ds.colors.paperOnInk : ds.colors.ink)
                     .frame(height: lineH)
             }
             .frame(height: 32)
@@ -137,13 +139,13 @@ struct PenCustomizationPanel: View {
             HStack {
                 Text("Graphite")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
                     .textCase(.uppercase)
                     .kerning(0.5)
                 Spacer()
                 Text(settings.grade.label)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
             }
 
             gradeSlider
@@ -152,7 +154,7 @@ struct PenCustomizationPanel: View {
                 ForEach(PenSettings.GraphiteGrade.allCases, id: \.self) { grade in
                     Text(grade.label)
                         .font(.system(size: 10))
-                        .foregroundStyle(Color.inkSecondary)
+                        .foregroundStyle(ds.colors.ink2)
                     if grade != .nineB { Spacer() }
                 }
             }
@@ -205,7 +207,7 @@ struct PenCustomizationPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Color")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .textCase(.uppercase)
                 .kerning(0.5)
 
@@ -217,7 +219,7 @@ struct PenCustomizationPanel: View {
                         .frame(width: 28, height: 28)
                         .overlay(
                             Circle()
-                                .strokeBorder(Color.ink, lineWidth: isSelected ? 2 : 0)
+                                .strokeBorder(ds.colors.ink, lineWidth: isSelected ? 2 : 0)
                                 .padding(-3)
                         )
                         .onTapGesture {
@@ -234,7 +236,7 @@ struct PenCustomizationPanel: View {
 }
 
 #Preview {
-    Color.canvas.ignoresSafeArea()
+    DesignSystem.standard.colors.paper.ignoresSafeArea()
         .overlay {
             PenCustomizationPanel(tool: .pen, settings: .constant(.default))
         }

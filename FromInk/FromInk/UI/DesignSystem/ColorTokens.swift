@@ -33,6 +33,17 @@ struct ColorTokens: Sendable {
     /// Use sparingly; this is the loudest color in the palette.
     let flagRed: Color
 
+    /// Ink-to-execution accent ("bolt"). The one sanctioned amber in an
+    /// otherwise monochrome palette — marks the brief/dispatch trigger
+    /// (`sparkles.rectangle.stack`). Use only for that affordance, never
+    /// as decoration. Migrated from the legacy `Color.bolt`.
+    let bolt: Color
+
+    /// Ruled-line template guides drawn on the canvas (college rule, grid,
+    /// dot). A muted lavender-grey that recedes behind ink. Migrated from
+    /// the legacy `Color.ruleLine`.
+    let ruleLine: Color
+
     // Semantic aliases (computed, not stored)
     var tint: Color { ink }
     var selection: Color { highlight }
@@ -52,6 +63,8 @@ struct ColorTokens: Sendable {
         paperOnInk: Color("ink/Paper"),
         inkPure:    Color("ink/InkPure"),
         paperPure:  Color("ink/PaperPure"),
-        flagRed:    Color("ink/FlagRed")
+        flagRed:    Color("ink/FlagRed"),
+        bolt:       Color("ink/Bolt"),
+        ruleLine:   Color("ink/RuleLine")
     )
 }

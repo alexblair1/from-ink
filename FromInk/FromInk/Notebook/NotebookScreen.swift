@@ -107,7 +107,7 @@ struct NotebookScreen: View {
     @ViewBuilder
     private var loadingPlaceholder: some View {
         ZStack {
-            Color.canvas.ignoresSafeArea()
+            DesignSystem.standard.colors.paper.ignoresSafeArea()
         }
         .task { store.send(.onAppear) }
     }
@@ -181,9 +181,9 @@ struct NotebookScreen: View {
                     Button(action: { dismiss() }) {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.inkSecondary)
+                            .foregroundStyle(DesignSystem.standard.colors.ink2)
                             .frame(width: 32, height: 32)
-                            .background(Color.surface.opacity(0.85))
+                            .background(DesignSystem.standard.colors.surface.opacity(0.85))
                             .clipShape(Circle())
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())

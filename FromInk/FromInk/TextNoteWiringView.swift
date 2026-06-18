@@ -38,7 +38,7 @@ struct TextNoteWiringView: View {
 
     var body: some View {
         ZStack {
-            Color.canvas.ignoresSafeArea()
+            ds.colors.paper.ignoresSafeArea()
 
             editorRegion
                 .frame(maxWidth: ds.layout.textEditorMaxContentWidth, alignment: .leading)
@@ -153,10 +153,10 @@ struct TextNoteWiringView: View {
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark")
                         .font(.system(size: ds.layout.dismissIconSize, weight: .medium))
-                        .foregroundStyle(Color.inkSecondary)
+                        .foregroundStyle(ds.colors.ink2)
                         .frame(width: ds.layout.dismissHitTarget,
                                height: ds.layout.dismissHitTarget)
-                        .background(Color.surface.opacity(0.85))
+                        .background(ds.colors.surface.opacity(0.85))
                         .clipShape(Circle())
                         .frame(width: ds.layout.hitTarget, height: ds.layout.hitTarget)
                         .contentShape(Rectangle())

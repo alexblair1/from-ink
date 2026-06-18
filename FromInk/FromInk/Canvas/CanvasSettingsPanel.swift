@@ -5,10 +5,12 @@ struct CanvasSettingsPanel: View {
 
     @AppStorage("correctHandwriting") private var correctHandwriting = true
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
             toggleRow(
                 icon: "wand.and.sparkles",
                 title: "AI Handwriting Correction",
@@ -17,9 +19,9 @@ struct CanvasSettingsPanel: View {
             )
         }
         .fixedSize()
-        .background(Color.surface)
+        .background(ds.colors.surface)
         .overlay(
-            Rectangle().strokeBorder(Color.border, lineWidth: 1)
+            Rectangle().strokeBorder(ds.colors.rule, lineWidth: 1)
         )
     }
 
@@ -27,14 +29,14 @@ struct CanvasSettingsPanel: View {
         HStack {
             Text("Settings")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .textCase(.uppercase)
                 .kerning(0.5)
             Spacer()
         }
         .padding(.horizontal, 16)
         .frame(height: 36)
-        .background(Color.canvas.opacity(0.5))
+        .background(ds.colors.paper.opacity(0.5))
     }
 
     private func toggleRow(
@@ -46,20 +48,20 @@ struct CanvasSettingsPanel: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 14))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13))
-                    .foregroundStyle(Color.ink)
+                    .foregroundStyle(ds.colors.ink)
                 Text(detail)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
             }
             Spacer()
             Toggle("", isOn: isOn)
                 .labelsHidden()
-                .tint(Color.ink)
+                .tint(ds.colors.ink)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

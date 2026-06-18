@@ -6,6 +6,8 @@ struct ExtractionDebugSheet: View {
     private let log = ExtractionDebugLog.shared
     @State private var selectedRunID: UUID? = nil
 
+    private let ds = DesignSystem.standard
+
     private var displayRun: ExtractionDebugLog.Run? {
         if let id = selectedRunID { return log.runs.first { $0.id == id } }
         return log.runs.first
@@ -14,7 +16,7 @@ struct ExtractionDebugSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
 
             if log.runs.isEmpty {
                 emptyState
@@ -23,8 +25,8 @@ struct ExtractionDebugSheet: View {
                 entryList
             }
         }
-        .background(Color.surface)
-        .presentationBackground(Color.surface)
+        .background(ds.colors.surface)
+        .presentationBackground(ds.colors.surface)
         .presentationCornerRadius(0)
         .presentationDragIndicator(.hidden)
         .presentationDetents([.medium, .large])
@@ -36,10 +38,10 @@ struct ExtractionDebugSheet: View {
         HStack(spacing: 8) {
             Image(systemName: "ant")
                 .font(.system(size: 13))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
             Text("Extraction Debug")
-                .font(.canvasTitle)
-                .foregroundStyle(Color.ink)
+                .font(.system(size: 17, weight: .medium, design: .serif))
+                .foregroundStyle(ds.colors.ink)
             Spacer()
             if !log.runs.isEmpty {
                 Button("Clear") {
@@ -47,12 +49,12 @@ struct ExtractionDebugSheet: View {
                     selectedRunID = nil
                 }
                 .font(.system(size: 13))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
             }
             Button(action: { dismiss() }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Color.inkSecondary)
+                    .foregroundStyle(ds.colors.ink2)
                     .frame(width: 32, height: 32)
                     .contentShape(Rectangle())
             }
@@ -78,10 +80,10 @@ struct ExtractionDebugSheet: View {
                             Text(run.startedAt.formatted(date: .omitted, time: .standard))
                                 .font(.system(size: 10))
                         }
-                        .foregroundStyle(isSelected ? Color.inkOnDark : Color.inkSecondary)
+                        .foregroundStyle(isSelected ? ds.colors.paperOnInk : ds.colors.ink2)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(isSelected ? Color.ink : Color.canvas, in: Capsule())
+                        .background(isSelected ? ds.colors.ink : ds.colors.paper, in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
@@ -89,9 +91,9 @@ struct ExtractionDebugSheet: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
-        .background(Color.canvas.opacity(0.5))
+        .background(ds.colors.paper.opacity(0.5))
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
         }
     }
 
@@ -106,7 +108,7 @@ struct ExtractionDebugSheet: View {
                         Section {
                             ForEach(entries) { entry in
                                 EntryRow(entry: entry)
-                                Rectangle().fill(Color.border).frame(height: 1)
+                                Rectangle().fill(ds.colors.rule).frame(height: 1)
                             }
                         } header: {
                             sectionHeader(phase.rawValue, count: entries.count)
@@ -121,19 +123,19 @@ struct ExtractionDebugSheet: View {
         HStack {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
                 .textCase(.uppercase)
                 .kerning(0.5)
             Spacer()
             Text("\(count)")
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
         }
         .padding(.horizontal, 20)
         .frame(height: 32)
-        .background(Color.canvas.opacity(0.6))
+        .background(ds.colors.paper.opacity(0.6))
         .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.border).frame(height: 1)
+            Rectangle().fill(ds.colors.rule).frame(height: 1)
         }
     }
 
@@ -144,13 +146,13 @@ struct ExtractionDebugSheet: View {
             Spacer()
             Image(systemName: "ant")
                 .font(.system(size: 32))
-                .foregroundStyle(Color.inkSecondary.opacity(0.4))
+                .foregroundStyle(ds.colors.ink2.opacity(0.4))
             Text("No extractions yet")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.inkSecondary)
+                .foregroundStyle(ds.colors.ink2)
             Text("Tap the bolt or use two-finger lasso to run the pipeline.")
                 .font(.system(size: 13))
-                .foregroundStyle(Color.inkSecondary.opacity(0.7))
+                .foregroundStyle(ds.colors.ink2.opacity(0.7))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
             Spacer()
@@ -165,10 +167,12 @@ private struct EntryRow: View {
     let entry: ExtractionDebugLog.Entry
     @State private var expanded = false
 
+    private let ds = DesignSystem.standard
+
     private var accentColor: Color {
         if entry.isError { return .red }
         if entry.isWarning { return .orange }
-        return Color.inkSecondary
+        return ds.colors.ink2
     }
 
     var body: some View {
@@ -182,11 +186,11 @@ private struct EntryRow: View {
                         .frame(width: 6, height: 6)
                     Text(entry.label)
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(entry.isError ? .red : entry.isWarning ? .orange : Color.ink)
+                        .foregroundStyle(entry.isError ? .red : entry.isWarning ? .orange : ds.colors.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10))
-                        .foregroundStyle(Color.inkSecondary)
+                        .foregroundStyle(ds.colors.ink2)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
@@ -198,19 +202,19 @@ private struct EntryRow: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(entry.content.isEmpty ? "(empty)" : entry.content)
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Color.ink.opacity(0.85))
+                        .foregroundStyle(ds.colors.ink.opacity(0.85))
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .background(Color.canvas.opacity(0.4))
+                .background(ds.colors.paper.opacity(0.4))
             }
         }
     }
 }
 
 #Preview {
-    Color.canvas.ignoresSafeArea()
+    DesignSystem.standard.colors.paper.ignoresSafeArea()
         .sheet(isPresented: .constant(true)) {
             ExtractionDebugSheet()
         }

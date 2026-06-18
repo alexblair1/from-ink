@@ -5,16 +5,18 @@ struct IntegrationButton: View {
     let isSelected: Bool
     var action: () -> Void = {}
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         Button(action: action) {
             Image(systemName: integration.icon)
                 .font(.system(size: 11, weight: .regular))
-                .foregroundStyle(isSelected ? Color.inkOnDark : Color.inkSecondary)
+                .foregroundStyle(isSelected ? ds.colors.paperOnInk : ds.colors.ink2)
                 .frame(width: 28, height: 28)
-                .background(isSelected ? Color.ink : Color.clear)
+                .background(isSelected ? ds.colors.ink : Color.clear)
                 .overlay(
                     Rectangle()
-                        .strokeBorder(isSelected ? Color.ink : Color.border, lineWidth: 1)
+                        .strokeBorder(isSelected ? ds.colors.ink : ds.colors.rule, lineWidth: 1)
                 )
                 .contentShape(Rectangle())
         }
@@ -54,5 +56,5 @@ struct IntegrationButtonRow: View {
         IntegrationButton(integration: .mail, isSelected: false)
     }
     .padding()
-    .background(Color.surface)
+    .background(DesignSystem.standard.colors.surface)
 }

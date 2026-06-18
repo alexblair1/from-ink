@@ -21,7 +21,7 @@ final class PageTemplateLayer: UIView {
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let size = bounds.size
-        let lineColor = UIColor(Color.ruleLine)
+        let lineColor = UIColor(DesignSystem.standard.colors.ruleLine)
 
         switch template {
         case .none:

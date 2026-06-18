@@ -21,7 +21,7 @@ struct TemplateView: View {
         size: CGSize,
         spacing: CGFloat
     ) {
-        let color = GraphicsContext.Shading.color(Color.ruleLine)
+        let color = GraphicsContext.Shading.color(DesignSystem.standard.colors.ruleLine)
         switch template {
         case .none:
             break

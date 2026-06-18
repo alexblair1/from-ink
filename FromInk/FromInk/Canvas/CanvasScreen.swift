@@ -466,7 +466,7 @@ struct CanvasScreen: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Color.canvas.ignoresSafeArea()
+                DesignSystem.standard.colors.paper.ignoresSafeArea()
                     #if DEBUG
                     .sheet(isPresented: $showDebugSheet) { ExtractionDebugSheet() }
                     #endif

@@ -7,6 +7,8 @@ struct PageNavigator: View {
     let onNext: () -> Void
     let onAddPage: () -> Void
 
+    private let ds = DesignSystem.standard
+
     private var isAtLastPage: Bool { current >= total }
 
     var body: some View {
@@ -33,21 +35,21 @@ struct PageNavigator: View {
                 Image(systemName: isAtLastPage ? "plus" : "chevron.right")
                     .font(.system(size: 17, weight: isAtLastPage ? .bold : .regular))
                     .foregroundStyle(isAtLastPage
-                        ? DesignSystem.standard.colors.inkPure
-                        : Color.inkSecondary)
+                        ? ds.colors.inkPure
+                        : ds.colors.ink2)
                     .frame(width: 52, height: 52)
                     .contentShape(Rectangle())
                     .contentTransition(.symbolEffect(.replace))
             }
         }
-        .foregroundStyle(Color.inkSecondary)
+        .foregroundStyle(ds.colors.ink2)
         .buttonStyle(.plain)
         // Canvas-matched fill so handwriting / template lines behind the
         // navigator are masked out. Same `ink/Paper` token the notebook
         // background uses, so the rectangle reads as a "cleared" area
         // of the page rather than a separate UI element. Rectangle
         // (not capsule) per CLAUDE.md: `cornerRadius: 0` globally.
-        .background(Color.canvas)
+        .background(ds.colors.paper)
     }
 }
 

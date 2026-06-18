@@ -8,9 +8,11 @@ struct LassoMenuBar: View {
     var onSearch: () -> Void = {}
     var onShare: () -> Void = {}
 
+    private let ds = DesignSystem.standard
+
     var body: some View {
         HStack(spacing: 0) {
-            menuButton(icon: "sparkles.rectangle.stack", tint: Color.bolt, action: onTaskBrief)
+            menuButton(icon: "sparkles.rectangle.stack", tint: ds.colors.bolt, action: onTaskBrief)
             divider
             menuButton(icon: "bookmark", action: onMarkHeader)
             divider
@@ -24,24 +26,24 @@ struct LassoMenuBar: View {
         }
         .frame(height: 48)
         .fixedSize()
-        .background(Color.surface)
+        .background(ds.colors.surface)
         .overlay {
             Rectangle()
-                .stroke(Color.border, lineWidth: 1)
+                .stroke(ds.colors.rule, lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.14), radius: 16, x: 0, y: 6)
     }
 
     private var divider: some View {
         Rectangle()
-            .fill(Color.border)
+            .fill(ds.colors.rule)
             .frame(width: 1)
     }
 
     @ViewBuilder
     private func menuButton(
         icon: String,
-        tint: Color = Color.inkSecondary,
+        tint: Color = DesignSystem.standard.colors.ink2,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -56,6 +58,6 @@ struct LassoMenuBar: View {
 }
 
 #Preview {
-    Color.canvas.ignoresSafeArea()
+    DesignSystem.standard.colors.paper.ignoresSafeArea()
         .overlay { LassoMenuBar() }
 }
