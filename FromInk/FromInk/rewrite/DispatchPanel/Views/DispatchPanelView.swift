@@ -44,11 +44,17 @@ struct DispatchPanelView: View {
     // MARK: - Tab bar
 
     private var tabBar: some View {
-        HStack(spacing: 0) {
+        let track = RoundedRectangle(cornerRadius: model.trackCornerRadius, style: .continuous)
+        return HStack(spacing: 0) {
             ForEach(model.tabs, id: \.id) { tab in
                 DispatchTabButton(model: tab)
             }
         }
+        .frame(height: model.segmentRowHeight)
+        .padding(model.trackPadding)
+        .background(track.fill(model.trackFill))
+        .overlay(track.stroke(model.trackBorder, lineWidth: model.borderWidth))
+        .padding(.horizontal, model.horizontalPadding)
         .frame(height: model.tabBarHeight)
     }
 
@@ -97,6 +103,12 @@ extension DispatchPanelView {
         let onDismiss: () -> Void
         let background: Color
         let secondaryColor: Color
+        let trackFill: Color
+        let trackBorder: Color
+        let trackCornerRadius: CGFloat
+        let trackPadding: CGFloat
+        let segmentRowHeight: CGFloat
+        let borderWidth: CGFloat
         let horizontalPadding: CGFloat
         let titleBarHeight: CGFloat
         let tabBarHeight: CGFloat
@@ -161,6 +173,12 @@ extension DispatchPanelView.Model {
         self.onDismiss = onDismiss
         self.background = ds.colors.paper
         self.secondaryColor = ds.colors.ink2
+        self.trackFill = ds.colors.surface
+        self.trackBorder = ds.colors.rule
+        self.trackCornerRadius = ds.cornerRadius.row
+        self.trackPadding = ds.layout.dispatchSegmentTrackPadding
+        self.segmentRowHeight = ds.layout.dispatchSegmentRowHeight
+        self.borderWidth = ds.layout.borderWidth
         self.horizontalPadding = ds.spacing.base
         self.titleBarHeight = ds.layout.navBarHeight
         self.tabBarHeight = ds.layout.dispatchTabBarHeight

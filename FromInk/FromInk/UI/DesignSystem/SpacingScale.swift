@@ -55,13 +55,14 @@ struct LayoutTokens: Sendable {
     let dismissHitTarget: CGFloat
     let headerPreviewMinHeight: CGFloat
     // MARK: - Dispatch panel
-    /// Height of the dispatch panel tab bar row. Taller than the bare
-    /// hit target so the active chip has vertical breathing room.
+    /// Height of the dispatch panel tab bar row, including the margin
+    /// around the segmented-control track.
     let dispatchTabBarHeight: CGFloat
-    /// Active-tab chip width — hugs the icon rather than filling the cell.
-    let dispatchTabChipWidth: CGFloat
-    /// Active-tab chip height.
-    let dispatchTabChipHeight: CGFloat
+    /// Height of the segmented-control track's inner content (the segment
+    /// row). The track itself is this plus twice the track padding.
+    let dispatchSegmentRowHeight: CGFloat
+    /// Inset between the track wall and the selected-segment thumb.
+    let dispatchSegmentTrackPadding: CGFloat
     /// Diameter of the empty-state icon badge (the light circular disc).
     let dispatchEmptyBadgeDiameter: CGFloat
     /// Icon size inside the empty-state badge.
@@ -189,8 +190,8 @@ struct LayoutTokens: Sendable {
         dismissHitTarget: 28,
         headerPreviewMinHeight: 80,
         dispatchTabBarHeight: 56,
-        dispatchTabChipWidth: 60,
-        dispatchTabChipHeight: 40,
+        dispatchSegmentRowHeight: 36,
+        dispatchSegmentTrackPadding: 3,
         dispatchEmptyBadgeDiameter: 72,
         dispatchEmptyBadgeIconSize: 24,
         timeBlockWidth: 72,

@@ -6,6 +6,12 @@ import Foundation
 
 struct DispatchPanelFeature: Reducer {
 
+    /// Gates the bottom "+ Add …" action bar. The forwarded `addTapped`
+    /// intent has no destination wired yet (CanvasScreen only consumes the
+    /// signal), so the button stays hidden rather than shipping a no-op.
+    /// Flip to `true` once the link / event / reminder draft flows land.
+    static let addActionsEnabled = false
+
     @ObservableState
     struct State: Equatable {
         var selectedTab: DispatchTab = .headers

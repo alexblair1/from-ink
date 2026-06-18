@@ -24,7 +24,7 @@ extension DispatchPanelView.Model {
                 id: tab.rawValue,
                 icon: tab.icon,
                 onTap: { store.send(.tabSelected(tab)) },
-                foreground: isSelected ? ds.colors.paperPure : ds.colors.inkPure,
+                foreground: isSelected ? ds.colors.paperPure : ds.colors.ink2,
                 background: isSelected ? ds.colors.inkPure : .clear
             )
         }
@@ -82,9 +82,12 @@ extension DispatchPanelView.Model {
             hint: tab.emptyHint
         )
 
-        // Headers are authored on the page, so they carry no add label
-        // and the action bar is omitted for that tab.
-        let action = tab.addLabel.map { label in
+        // Headers are authored on the page, so they carry no add label and
+        // the action bar is omitted for that tab. The whole action bar is
+        // also gated until the add destinations are wired (see
+        // `DispatchPanelFeature.addActionsEnabled`).
+        let addLabel = DispatchPanelFeature.addActionsEnabled ? tab.addLabel : nil
+        let action = addLabel.map { label in
             DispatchActionBarButton.Model(
                 label: label,
                 onTap: { store.send(.addTapped(tab)) }

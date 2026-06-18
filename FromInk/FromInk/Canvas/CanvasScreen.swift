@@ -98,10 +98,14 @@ struct CanvasScreen: View {
     @Binding var briefRequest: BriefRequest?
     /// The current page's dispatch panel store, hoisted to NotebookScreen
     /// (regular width only) so the side panel renders above the close
-    /// button + toolbar instead of under them. Set when the panel becomes
-    /// visible on this page, cleared on dismiss / page swipe. Compact
-    /// width still presents via the `.sheet` below.
+    /// button + toolbar instead of under them. Retained across dismiss so
+    /// the outgoing card can render during slide-out; cleared on page
+    /// swipe. Compact width still presents via the `.sheet` below.
     @Binding var dispatchPanelPresentation: StoreOf<DispatchPanelFeature>?
+    /// Visibility signal for the hoisted panel. A plain Bool (not the
+    /// store's `isVisible`) so NotebookScreen reliably re-renders and runs
+    /// its open/close slide animation. Toggled here from the store's state.
+    @Binding var dispatchPanelVisible: Bool
 
     // Links (persisted via NotebookClient; UI cache of NoteLinkSnapshot)
     @State private var links: [NoteLinkSnapshot] = []
@@ -604,26 +608,15 @@ struct CanvasScreen: View {
             }
         }
         .onChange(of: dispatchPanelStore.isVisible) { _, visible in
-            guard visible else {
-                // withAnimation drives the move transition on the hoisted
-                // card in NotebookScreen — the implicit `.animation(value:)`
-                // doesn't fire reliably for a transition triggered by a
-                // child writing through a binding inside `.onChange`.
-                withAnimation(DesignSystem.standard.animation.standard) {
-                    dispatchPanelPresentation = nil
-                }
-                return
-            }
-            syncDispatchPanelData()
-            // Hoist the regular-width side panel to NotebookScreen so it
-            // renders above the close button + toolbar. Compact width
-            // keeps the `.sheet` presentation above. Only the current
-            // page hoists so preloaded neighbors don't fight for it.
-            if sizeClass == .regular, isCurrentPage {
-                withAnimation(DesignSystem.standard.animation.standard) {
-                    dispatchPanelPresentation = dispatchPanelStore
-                }
-            }
+            if visible { syncDispatchPanelData() }
+            syncDispatchHoist()
+        }
+        .onChange(of: sizeClass) { _, _ in
+            // Regular↔compact transitions (iPad Split View / Slide Over)
+            // must re-reconcile: compact presents via the `.sheet`, regular
+            // via the hoisted card. Without this, resizing while open
+            // double-presents (card + sheet) or drops the panel entirely.
+            syncDispatchHoist()
         }
         .onChange(of: dispatchPanelStore.navigateToHeaderID) { _, headerID in
             guard let headerID else { return }
@@ -977,6 +970,28 @@ struct CanvasScreen: View {
         syncDispatchPanelData()
     }
 
+    /// Reconciles the hoisted side-panel state with the store + size class.
+    /// The card is hoisted to NotebookScreen only in regular width on the
+    /// current page; compact width falls back to the `.sheet`. Idempotent —
+    /// safe to call from both the visibility and size-class observers. Only
+    /// the current page touches the shared hoist bindings so preloaded
+    /// neighbors (which share them) don't race the current page.
+    private func syncDispatchHoist() {
+        guard isCurrentPage else { return }
+        guard sizeClass == .regular else {
+            dispatchPanelVisible = false
+            return
+        }
+        if dispatchPanelStore.isVisible {
+            // Retain the store; toggle the explicit visibility Bool (a real
+            // @State in NotebookScreen) so the slide animates.
+            dispatchPanelPresentation = dispatchPanelStore
+            dispatchPanelVisible = true
+        } else {
+            dispatchPanelVisible = false
+        }
+    }
+
     private func onLinkTapped(_ link: NoteLinkSnapshot) {
         if case .external(let url) = link.destination {
             activeLinkURL = url
@@ -1157,6 +1172,7 @@ private extension DispatchRoutedItem {
         },
         dispatchFlow: .constant(nil),
         briefRequest: .constant(nil),
-        dispatchPanelPresentation: .constant(nil)
+        dispatchPanelPresentation: .constant(nil),
+        dispatchPanelVisible: .constant(false)
     )
 }

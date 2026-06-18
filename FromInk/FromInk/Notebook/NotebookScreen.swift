@@ -58,10 +58,21 @@ struct NotebookScreen: View {
     @State private var showAddButton = false
     @State private var briefRequest: BriefRequest? = nil
     @State private var dispatchFlow: DispatchFlow? = nil
-    /// Current page's dispatch side panel, hoisted from CanvasScreen so it
-    /// renders above the toolbar + close button (regular width only).
+    /// Current page's dispatch side panel store, hoisted from CanvasScreen
+    /// so it renders above the toolbar + close button (regular width only).
+    /// Stays retained while the panel slides out so the outgoing card can
+    /// still render during the removal transition.
     @State private var dispatchPanelPresentation: StoreOf<DispatchPanelFeature>? = nil
+    /// Visibility signal written by CanvasScreen through a binding. A plain
+    /// `@State` (not the TCA store's observed `isVisible`) so a change ALWAYS
+    /// re-renders NotebookScreen — the store-property observation didn't
+    /// reliably re-render on dismiss, so the close animation never fired.
+    @State private var dispatchPanelVisible: Bool = false
+    /// Local flag the card is gated on, toggled inside an explicit
+    /// `withAnimation` so the slide plays in BOTH directions.
+    @State private var showDispatchPanel: Bool = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var toolbarStore: StoreOf<ToolbarFeature> {
         store.scope(state: \.toolbar, action: \.toolbar)
@@ -121,7 +132,8 @@ struct NotebookScreen: View {
                         },
                         dispatchFlow: $dispatchFlow,
                         briefRequest: $briefRequest,
-                        dispatchPanelPresentation: $dispatchPanelPresentation
+                        dispatchPanelPresentation: $dispatchPanelPresentation,
+                        dispatchPanelVisible: $dispatchPanelVisible
                     )
                     .tag(i)
                 }
@@ -235,52 +247,85 @@ struct NotebookScreen: View {
             // radius, fill, border, shadow, and outer insets, so its top
             // and bottom align with the toolbar's. Regular width only;
             // compact width presents as a sheet from CanvasScreen.
+            //
+            // The card slides via `.offset`, NOT an insert/remove transition.
+            // It stays MOUNTED whenever the store is present (parked off
+            // screen when hidden) and only its offset animates. A move
+            // transition animates reliably on insert but SwiftUI cancels it
+            // on removal when the view/data changes in the same pass — which
+            // is why dismiss never animated. Animating a persistent view's
+            // position can't be cancelled that way, so it slides both ways.
             Group {
-                if let panelStore = dispatchPanelPresentation {
+                // Regular width only — compact presents via the `.sheet` in
+                // CanvasScreen. Gating here (not just at the hoist source)
+                // prevents a double-present if the size class flips while
+                // the panel is open.
+                if horizontalSizeClass == .regular, let panelStore = dispatchPanelPresentation {
                     let ds = DesignSystem.standard
                     let cardShape = RoundedRectangle(
                         cornerRadius: ds.layout.toolbarCapsuleCornerRadius,
                         style: .continuous
                     )
-                    ZStack {
+                    // Distance to park the card fully off the screen edge
+                    // (card footprint + shadow). Signed by the toolbar side:
+                    // panel lives opposite the toolbar, so it exits that way.
+                    let hiddenOffset = (ds.layout.panelWidth
+                        + ds.layout.toolbarCapsuleHorizontalInset * 2
+                        + ds.shadow.toolbarCapsulePrimary.radius * 2)
+                        * (toolbarIsLeft ? 1 : -1)
+
+                    // Scrim only while shown, so taps pass through to the
+                    // canvas when the (still-mounted) card is parked off screen.
+                    if showDispatchPanel {
                         Color.clear
                             .ignoresSafeArea()
                             .contentShape(Rectangle())
                             .onTapGesture { panelStore.send(.dismissed) }
-
-                        DispatchPanelWiringView(store: panelStore)
-                            .frame(width: ds.layout.panelWidth)
-                            .frame(maxHeight: .infinity)
-                            .background(cardShape.fill(ds.colors.paper))
-                            .clipShape(cardShape)
-                            .overlay(cardShape.stroke(ds.colors.rule, lineWidth: ds.layout.borderWidth))
-                            .shadow(
-                                color: ds.shadow.toolbarCapsulePrimary.color,
-                                radius: ds.shadow.toolbarCapsulePrimary.radius,
-                                x: ds.shadow.toolbarCapsulePrimary.x,
-                                y: ds.shadow.toolbarCapsulePrimary.y
-                            )
-                            .shadow(
-                                color: ds.shadow.toolbarCapsuleAmbient.color,
-                                radius: ds.shadow.toolbarCapsuleAmbient.radius,
-                                x: ds.shadow.toolbarCapsuleAmbient.x,
-                                y: ds.shadow.toolbarCapsuleAmbient.y
-                            )
-                            .padding(.horizontal, ds.layout.toolbarCapsuleHorizontalInset)
-                            .padding(.vertical, ds.layout.toolbarCapsuleVerticalInset)
-                            // Transition sits before the positioning frame
-                            // so the card slides only its own width in from
-                            // the screen edge — not the full screen width.
-                            // The edge follows the toolbar side (panel is
-                            // always opposite the toolbar). Driven by the
-                            // withAnimation at the CanvasScreen mutation site.
-                            .transition(.move(edge: toolbarIsLeft ? .trailing : .leading))
-                            .frame(
-                                maxWidth: .infinity,
-                                maxHeight: .infinity,
-                                alignment: toolbarIsLeft ? .trailing : .leading
-                            )
                     }
+
+                    DispatchPanelWiringView(store: panelStore)
+                        .frame(width: ds.layout.panelWidth)
+                        .frame(maxHeight: .infinity)
+                        .background(cardShape.fill(ds.colors.paper))
+                        .clipShape(cardShape)
+                        .overlay(cardShape.stroke(ds.colors.rule, lineWidth: ds.layout.borderWidth))
+                        .shadow(
+                            color: ds.shadow.toolbarCapsulePrimary.color,
+                            radius: ds.shadow.toolbarCapsulePrimary.radius,
+                            x: ds.shadow.toolbarCapsulePrimary.x,
+                            y: ds.shadow.toolbarCapsulePrimary.y
+                        )
+                        .shadow(
+                            color: ds.shadow.toolbarCapsuleAmbient.color,
+                            radius: ds.shadow.toolbarCapsuleAmbient.radius,
+                            x: ds.shadow.toolbarCapsuleAmbient.x,
+                            y: ds.shadow.toolbarCapsuleAmbient.y
+                        )
+                        .padding(.horizontal, ds.layout.toolbarCapsuleHorizontalInset)
+                        .padding(.vertical, ds.layout.toolbarCapsuleVerticalInset)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: toolbarIsLeft ? .trailing : .leading
+                        )
+                        .offset(x: showDispatchPanel ? 0 : hiddenOffset)
+                        // The card stays mounted while parked off screen, so
+                        // explicitly take it out of the hit-test and a11y
+                        // trees when hidden — otherwise VoiceOver could reach
+                        // the off-screen panel and stray taps could hit it.
+                        .allowsHitTesting(showDispatchPanel)
+                        .accessibilityHidden(!showDispatchPanel)
+                }
+            }
+            // Mirror the binding-driven visibility flag into the local flag
+            // inside an explicit withAnimation. The card mounts (store set)
+            // one render before this flips, so it's parked off screen first,
+            // then `showDispatchPanel` animates the offset in; on dismiss it
+            // animates back out. Driven by `dispatchPanelVisible` (a plain
+            // @State) so the change reliably re-renders here.
+            .onChange(of: dispatchPanelVisible) { _, visible in
+                withAnimation(DesignSystem.standard.animation.standard) {
+                    showDispatchPanel = visible
                 }
             }
 
@@ -311,6 +356,9 @@ struct NotebookScreen: View {
             dispatchFlow = nil
             // Reset the leaving page's panel visibility (not just the
             // hoist) so swiping back and reopening presents it fresh.
+            // Instant (no withAnimation) — the page is already moving.
+            showDispatchPanel = false
+            dispatchPanelVisible = false
             dispatchPanelPresentation?.send(.dismissed)
             dispatchPanelPresentation = nil
         }

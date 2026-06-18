@@ -11,10 +11,10 @@ enum DispatchTab: String, CaseIterable, Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .headers: "Headers"
-        case .links: "Links"
-        case .calendar: "Calendar"
-        case .reminders: "Reminders"
+        case .headers: AppStrings.Dispatch.titleHeaders
+        case .links: AppStrings.Dispatch.titleLinks
+        case .calendar: AppStrings.Dispatch.titleCalendar
+        case .reminders: AppStrings.Dispatch.titleReminders
         }
     }
 

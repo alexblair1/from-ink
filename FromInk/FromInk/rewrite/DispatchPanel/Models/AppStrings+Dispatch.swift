@@ -2,6 +2,29 @@ import Foundation
 
 extension AppStrings {
     enum Dispatch {
+        // MARK: Panel titles (shown in the title bar per selected tab)
+
+        static let titleHeaders = NSLocalizedString(
+            "dispatch.title.headers",
+            value: "Headers",
+            comment: "Dispatch panel title — headers tab"
+        )
+        static let titleLinks = NSLocalizedString(
+            "dispatch.title.links",
+            value: "Links",
+            comment: "Dispatch panel title — links tab"
+        )
+        static let titleCalendar = NSLocalizedString(
+            "dispatch.title.calendar",
+            value: "Calendar",
+            comment: "Dispatch panel title — calendar tab"
+        )
+        static let titleReminders = NSLocalizedString(
+            "dispatch.title.reminders",
+            value: "Reminders",
+            comment: "Dispatch panel title — reminders tab"
+        )
+
         static let emptyHeaders = NSLocalizedString(
             "dispatch.empty.headers",
             value: "No headers yet",

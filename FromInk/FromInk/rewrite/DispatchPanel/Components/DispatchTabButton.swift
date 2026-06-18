@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// A single tab button in the dispatch panel tab bar.
+/// A single segment in the dispatch panel's segmented-control tab bar.
+/// Fills its equal-width cell; the active segment shows a filled thumb.
 /// Component view — no TCA imports.
 ///
 struct DispatchTabButton: View {
@@ -12,12 +13,11 @@ struct DispatchTabButton: View {
                 .font(.system(size: model.iconSize, weight: .regular))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(model.foreground)
-                .frame(width: model.chipWidth, height: model.chipHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
-                    RoundedRectangle(cornerRadius: model.chipCornerRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: model.thumbCornerRadius, style: .continuous)
                         .fill(model.background)
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(model.animation, value: model.foreground)
                 .animation(model.animation, value: model.background)
                 .contentShape(Rectangle())
@@ -36,9 +36,7 @@ extension DispatchTabButton {
         let iconSize: CGFloat
         let foreground: Color
         let background: Color
-        let chipWidth: CGFloat
-        let chipHeight: CGFloat
-        let chipCornerRadius: CGFloat
+        let thumbCornerRadius: CGFloat
         let animation: Animation
     }
 }
@@ -60,9 +58,7 @@ extension DispatchTabButton.Model {
         self.iconSize = ds.layout.tabIconSize
         self.foreground = foreground
         self.background = background
-        self.chipWidth = ds.layout.dispatchTabChipWidth
-        self.chipHeight = ds.layout.dispatchTabChipHeight
-        self.chipCornerRadius = ds.cornerRadius.row
+        self.thumbCornerRadius = ds.cornerRadius.chip
         self.animation = ds.animation.fast
     }
 }
