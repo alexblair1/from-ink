@@ -1422,5 +1422,40 @@ final class TextKitEditorViewTests: XCTestCase {
         XCTAssertEqual(TextKitEditorView.newlineCount(in: "abc" as NSString), 0)
         XCTAssertEqual(TextKitEditorView.newlineCount(in: "a\nb\nc\n" as NSString), 3)
     }
+
+    // MARK: - Reflow on bounds change (rotation / Split View resize)
+
+    /// The editor must reflow to the available width whenever its bounds
+    /// change — device rotation, iPad Split View / Stage Manager resize.
+    /// `BlockTreeTextView.layoutSubviews` pins the text container width to
+    /// the available content width on every layout pass (the production
+    /// stack disables `widthTracksTextView`; here we mirror that so the
+    /// test exercises the subclass's width management, not UIKit's
+    /// automatic tracking). See text experience EDD §6.6.
+    func test_blockTreeTextView_reflowsContainerWidth_onBoundsChange() {
+        let textView = BlockTreeTextView()
+        // Mirror the production container config (makeUIView): width is
+        // managed by the subclass, no automatic tracking, zero inset/padding.
+        textView.textContainer.widthTracksTextView = false
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+
+        // Portrait-sized bounds.
+        textView.frame = CGRect(x: 0, y: 0, width: 320, height: 480)
+        textView.layoutIfNeeded()
+        XCTAssertEqual(
+            textView.textContainer.size.width, 320, accuracy: 0.5,
+            "Container width tracks the available width in the initial (portrait) layout"
+        )
+
+        // Rotate to a wider, landscape-sized bounds — the column must widen
+        // to use the new available width rather than stay frozen at 320.
+        textView.frame = CGRect(x: 0, y: 0, width: 768, height: 480)
+        textView.layoutIfNeeded()
+        XCTAssertEqual(
+            textView.textContainer.size.width, 768, accuracy: 0.5,
+            "Container reflows to the new available width after a bounds (rotation) change"
+        )
+    }
 }
 #endif

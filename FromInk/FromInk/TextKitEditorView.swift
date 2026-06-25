@@ -106,7 +106,15 @@ struct TextKitEditorView: UIViewRepresentable {
         let container = NSTextContainer(
             size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         )
-        container.widthTracksTextView = true
+        // Width is managed explicitly in `BlockTreeTextView.layoutSubviews`
+        // rather than via `widthTracksTextView`. The automatic tracking left
+        // the column frozen at its first-laid-out width for this hand-built
+        // TextKit 1 stack inside a SwiftUI `UIViewRepresentable`: rotation /
+        // Split View / Stage Manager resizes changed the textView bounds but
+        // never reflowed the text. The text experience EDD §6.6 requires text
+        // to reflow to the new viewport width on rotation, so the subclass
+        // pins the container width to the available width on every layout pass.
+        container.widthTracksTextView = false
         layoutManager.addTextContainer(container)
 
         let textView = BlockTreeTextView(frame: .zero, textContainer: container)
@@ -2665,6 +2673,32 @@ final class BlockTreeTextView: UITextView {
     override func deleteBackward() {
         if onDeleteBackward?() == true { return }
         super.deleteBackward()
+    }
+
+    /// The content width the text container was last laid out against.
+    /// Seeded to `-1` so the first real layout always reflows.
+    private var lastLaidOutContentWidth: CGFloat = -1
+
+    /// Pin the text container's width to the available content width on
+    /// every layout pass so the editor reflows whenever the bounds change
+    /// — device rotation, iPad Split View / Stage Manager resize, Mac
+    /// window resize. The text experience EDD §6.6 requires text to reflow
+    /// to the new viewport width on rotation; for this hand-built TextKit 1
+    /// stack inside a SwiftUI `UIViewRepresentable`,
+    /// `NSTextContainer.widthTracksTextView` left the column frozen at its
+    /// first-laid-out width, so the subclass manages the width explicitly.
+    ///
+    /// Setting `NSTextContainer.size` invalidates the affected layout, which
+    /// reflows the glyphs and re-runs `drawBackground` — so block chrome
+    /// (blockquote bars, code/divider rules) widens to the new column too.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let available = bounds.width
+            - textContainerInset.left - textContainerInset.right
+            - textContainer.lineFragmentPadding * 2
+        guard available > 0, abs(available - lastLaidOutContentWidth) > 0.5 else { return }
+        lastLaidOutContentWidth = available
+        textContainer.size = CGSize(width: available, height: .greatestFiniteMagnitude)
     }
 
     /// Cached `keyCommands` array (M1). UIKit calls the getter
