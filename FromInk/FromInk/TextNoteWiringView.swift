@@ -18,9 +18,11 @@ import SwiftUI
 /// **Layout.** The editor fills its frame natively — no outer
 /// `ScrollView`. `TextEditor` already scrolls; nesting it inside a
 /// ScrollView creates gesture-recognizer ambiguity that reads as
-/// jank on iPad. Content width is capped at
-/// `textEditorMaxContentWidth` and centered so long-form reading on
-/// wide viewports stays comfortable.
+/// jank on iPad. The editor uses the full available width (text
+/// experience EDD §6.5 — "text reflows to viewport width"), so the
+/// column grows and reflows on rotation / Split View resize rather
+/// than staying pinned to a fixed-width centered band. Only the
+/// horizontal `lg` padding insets the text from the screen edges.
 ///
 /// **Slash popover anchoring.** The slash trigger fires with a
 /// caret rect from the editor's `UITextView` (in editor-local
@@ -41,10 +43,9 @@ struct TextNoteWiringView: View {
             ds.colors.paper.ignoresSafeArea()
 
             editorRegion
-                .frame(maxWidth: ds.layout.textEditorMaxContentWidth, alignment: .leading)
                 .padding(.horizontal, ds.spacing.lg)
                 .padding(.vertical, ds.spacing.xl)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             dismissChrome
         }
