@@ -33,6 +33,7 @@ import SwiftUI
 struct TextNoteWiringView: View {
     @Bindable var store: StoreOf<NotebookFeature>
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var slashPopoverAnchorRect: CGRect = .zero
 
@@ -52,6 +53,17 @@ struct TextNoteWiringView: View {
         .task { store.send(.onAppear) }
         .onDisappear {
             store.send(.textEditing(.flush))
+        }
+        // Backgrounding flush (readiness audit A3). The editor's
+        // Coordinator has already pushed its debounced tail through the
+        // binding on willResignActive (which UIKit posts BEFORE
+        // scenePhase leaves .active), so this flush persists the
+        // current document — closing the window where a swipe-to-
+        // background inside the debounce lost the last ~1s of typing.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active {
+                store.send(.textEditing(.flush))
+            }
         }
     }
 

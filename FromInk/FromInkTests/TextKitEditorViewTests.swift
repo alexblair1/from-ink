@@ -1559,5 +1559,103 @@ final class TextKitEditorViewTests: XCTestCase {
         }
         XCTAssertEqual(inline.first?.marks, [.bold], "Explicit bold on body text must survive")
     }
+
+    // MARK: - Index alignment guard + rebuild (readiness audit A1/A2)
+
+    /// A document-built index is aligned with its own flatten output.
+    func test_indexAligned_freshFlatten_isAligned() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [Inline(text: "Body")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        XCTAssertTrue(
+            TextKitEditorView.indexAligned(ParagraphIndex(document: doc), with: flat.attributed)
+        )
+    }
+
+    /// An edit that bypasses the index maintainers (undo of native
+    /// typing, composition-commit edge, edit-menu Replace) leaves the
+    /// index misaligned — the guard must catch it BEFORE
+    /// `documentFromIndex` zips wrong ranges into a wrong document.
+    func test_indexAligned_detectsBypassEdit() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")])),
+            Block(kind: .paragraph(inline: [Inline(text: "World")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let index = ParagraphIndex(document: doc)
+
+        // Simulate a bypass edit: a structural mutation applied
+        // directly to storage without flowing through
+        // `shouldChangeTextIn` (what UIKit's native-typing undo does).
+        let mutated = NSMutableAttributedString(attributedString: flat.attributed)
+        mutated.replaceCharacters(in: NSRange(location: 0, length: 0), with: "Undone\n")
+
+        XCTAssertTrue(TextKitEditorView.indexAligned(index, with: flat.attributed))
+        XCTAssertFalse(TextKitEditorView.indexAligned(index, with: mutated))
+    }
+
+    /// The rebuild recovers paragraph kinds and list grouping from the
+    /// storage's stamped attributes; identity is fresh by design.
+    func test_rebuildIndex_recoversKindsAndGrouping() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 2, inline: [Inline(text: "Title")])),
+            Block(kind: .bulletList(items: [
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "A")]))]),
+                ListItem(content: [Block(kind: .paragraph(inline: [Inline(text: "B")]))])
+            ])),
+            Block(kind: .paragraph(inline: [Inline(text: "Body")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+
+        let rebuilt = TextKitEditorView.rebuildIndex(from: flat.attributed)
+
+        XCTAssertEqual(rebuilt.entries.count, 4)
+        XCTAssertEqual(rebuilt.entries[0].kind, .heading(level: 2))
+        XCTAssertEqual(rebuilt.entries[1].kind, .bulletListItem)
+        XCTAssertEqual(rebuilt.entries[2].kind, .bulletListItem)
+        XCTAssertEqual(rebuilt.entries[3].kind, .paragraph)
+        // Ranges match the storage's live paragraph boundaries.
+        XCTAssertEqual(
+            rebuilt.entries.map(\.range),
+            TextKitEditorView.storageParagraphTextRanges(in: flat.attributed)
+        )
+        // Both list items share ONE fresh container (consecutive-run
+        // grouping), and it differs from the heading's leaf id.
+        XCTAssertEqual(
+            rebuilt.entries[1].blockPath.first,
+            rebuilt.entries[2].blockPath.first,
+            "Adjacent items of the same list share a container"
+        )
+        XCTAssertNotEqual(rebuilt.entries[1].blockPath.first, rebuilt.entries[0].blockPath.first)
+        XCTAssertNotNil(rebuilt.entries[1].listItemID)
+    }
+
+    /// End-to-end recovery: bypass edit → rebuild → documentFromIndex
+    /// yields a structurally correct document instead of a corrupted
+    /// one. This is the exact path `syncDocumentFromStorage` takes when
+    /// the alignment guard fires.
+    func test_rebuildIndex_thenDocumentFromIndex_survivesBypassEdit() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")])),
+            Block(kind: .paragraph(inline: [Inline(text: "World")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let mutated = NSMutableAttributedString(attributedString: flat.attributed)
+        // Bypass edit merges the two paragraphs (deletes the first \n)
+        // — the classic undo-of-Enter shape.
+        let firstNewline = (mutated.string as NSString).range(of: "\n")
+        mutated.deleteCharacters(in: firstNewline)
+
+        let rebuilt = TextKitEditorView.rebuildIndex(from: mutated)
+        let recovered = TextKitEditorView.documentFromIndex(rebuilt, storage: mutated)
+
+        XCTAssertEqual(recovered.blocks.count, 1)
+        guard case .paragraph(let inline) = recovered.blocks[0].kind else {
+            return XCTFail("Expected merged paragraph")
+        }
+        XCTAssertEqual(inline.map(\.text).joined(), "HelloWorld")
+    }
 }
 #endif
