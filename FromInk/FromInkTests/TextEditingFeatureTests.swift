@@ -1241,6 +1241,128 @@ final class TextEditingFeatureTests: XCTestCase {
         }
     }
 
+    // MARK: - Persist failure auto-retry (readiness audit A4)
+
+    /// A failed persist schedules a delayed retry; when the retry
+    /// succeeds, the dirty flag, banner, and retry counter all clear.
+    @MainActor
+    func test_persistFailed_schedulesRetry_thenSucceeds() async {
+        let doc = paragraphDoc("Hello")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.isDirty = true
+
+        let attempts = LockIsolated(0)
+        var client = Self.successUpdateBlockBodyClient
+        client.updateBlockBody = { _, _, _ in
+            let attempt = attempts.withValue { $0 += 1; return $0 }
+            if attempt == 1 {
+                throw NSError(
+                    domain: "test", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "disk full"]
+                )
+            }
+        }
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { [client] in
+                $0.continuousClock = ImmediateClock()
+                $0.notebookClient = client
+            }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.flush)
+        await store.receive(.persistFailed(reason: "disk full")) {
+            $0.lastPersistFailureReason = "disk full"
+            $0.persistRetryCount = 1
+        }
+        // The scheduled retry fires (ImmediateClock) and succeeds.
+        await store.receive(.persistRequested)
+        await store.receive(.persistCompleted) {
+            $0.isDirty = false
+            $0.lastPersistFailureReason = nil
+            $0.persistRetryCount = 0
+        }
+    }
+
+    /// Retries are bounded: after `maxPersistRetries` consecutive
+    /// failures the reducer stops rescheduling — the banner stays and
+    /// the next edit / flush re-arms persistence. Without the bound,
+    /// a persistent failure (disk full) would retry forever.
+    @MainActor
+    func test_persistFailed_retriesAreBounded() async {
+        let doc = paragraphDoc("Hello")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.isDirty = true
+
+        var client = Self.successUpdateBlockBodyClient
+        client.updateBlockBody = { _, _, _ in
+            throw NSError(
+                domain: "test", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "disk full"]
+            )
+        }
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: { [client] in
+                $0.continuousClock = ImmediateClock()
+                $0.notebookClient = client
+            }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.flush)
+        // Initial failure + 3 bounded retries, then silence.
+        await store.receive(.persistFailed(reason: "disk full")) { $0.persistRetryCount = 1 }
+        await store.receive(.persistRequested)
+        await store.receive(.persistFailed(reason: "disk full")) { $0.persistRetryCount = 2 }
+        await store.receive(.persistRequested)
+        await store.receive(.persistFailed(reason: "disk full")) { $0.persistRetryCount = 3 }
+        await store.receive(.persistRequested)
+        // Fourth failure: retries exhausted — no further effects.
+        await store.receive(.persistFailed(reason: "disk full"))
+        await store.finish()
+        XCTAssertEqual(store.state.persistRetryCount, 3)
+        XCTAssertEqual(store.state.lastPersistFailureReason, "disk full")
+        XCTAssertTrue(store.state.isDirty, "Content stays dirty so a later flush can still save it")
+    }
+
+    /// A fresh edit resets the retry budget — new content gets its own
+    /// full set of retries.
+    @MainActor
+    func test_documentEdited_resetsRetryBudget() async {
+        let doc = paragraphDoc("Hello")
+        var initial = TextEditingFeature.State(activeBlock: snapshot(document: doc))
+        initial.document = doc
+        initial.persistRetryCount = 3
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { TextEditingFeature() },
+            withDependencies: {
+                $0.continuousClock = TestClock()
+                $0.notebookClient = Self.successUpdateBlockBodyClient
+            }
+        )
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        let edited = paragraphDoc("Hello!")
+        await store.send(.documentEdited(edited)) {
+            $0.document = edited
+            $0.isDirty = true
+            $0.persistRetryCount = 0
+        }
+        // Don't let the debounced persist fire — this test only pins
+        // the counter reset.
+        await store.skipInFlightEffects()
+    }
+
     /// All fields throw cancellation EXCEPT `updateBlockBody` which
     /// succeeds. Used to test the persist path without standing up a
     /// real SwiftData container.

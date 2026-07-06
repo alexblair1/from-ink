@@ -64,6 +64,14 @@ struct TextEditingFeature: Reducer {
 
         var lastPersistFailureReason: String? = nil
 
+        /// Consecutive failed persist attempts for the CURRENT dirty
+        /// content. Drives the bounded auto-retry (readiness audit A4):
+        /// each failure schedules a delayed retry until
+        /// `maxPersistRetries`, after which only the banner remains and
+        /// the next edit / flush re-arms persistence. Reset on success
+        /// and on every fresh edit.
+        var persistRetryCount: Int = 0
+
         /// Slash command palette state, scoped under this feature.
         var slashPalette: SlashCommandPaletteFeature.State = .init()
 
@@ -151,6 +159,22 @@ struct TextEditingFeature: Reducer {
     private static let persistCancelID = "TextEditingFeature.persist"
     private static let debounceMilliseconds: Int = 600
 
+    /// Bounded auto-retry after a failed persist (readiness audit A4).
+    /// Delay is deliberately longer than the edit debounce so an
+    /// actively-typing user's next edit supersedes the retry (same
+    /// cancel ID) rather than racing it.
+    private static let maxPersistRetries: Int = 3
+    private static let retryDelayMilliseconds: Int = 2000
+
+    /// Encoded `bodyData` size above which we log a warning.
+    /// `PageBlock.bodyData` is deliberately NOT `.externalStorage`
+    /// (data model EDD — typical bodies are 200B–2KB), so a runaway
+    /// document risks CloudKit's ~1MB per-record ceiling, where sync
+    /// fails silently. The warning gives us telemetry before that
+    /// cliff; a hard cap is a product decision deferred to the hybrid
+    /// work.
+    private static let bodySizeWarningBytes: Int = 750_000
+
     var body: some Reducer<State, Action> {
         Reduce { state, action in
             switch action {
@@ -180,6 +204,7 @@ struct TextEditingFeature: Reducer {
                 state.selection = BlockTreeSelection()
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
+                state.persistRetryCount = 0
                 state.slashPalette = .init()
                 return .cancel(id: Self.persistCancelID)
 
@@ -187,6 +212,8 @@ struct TextEditingFeature: Reducer {
                 guard state.loadFailure == nil else { return .none }
                 state.document = new
                 state.isDirty = true
+                // Fresh content re-arms the bounded retry (audit A4).
+                state.persistRetryCount = 0
 
                 if state.slashPalette.isOpen {
                     // Refresh the filter from the trigger leaf's
@@ -217,10 +244,29 @@ struct TextEditingFeature: Reducer {
             case .persistCompleted:
                 state.isDirty = false
                 state.lastPersistFailureReason = nil
+                state.persistRetryCount = 0
                 return .none
 
+            case .persistFailed(let reason) where state.persistRetryCount < Self.maxPersistRetries:
+                // Bounded auto-retry (readiness audit A4). Same cancel
+                // ID as the edit debounce, so a user edit while the
+                // retry is pending supersedes it — the edit's own
+                // scheduled persist carries the retry content anyway
+                // (isDirty stays true across failures).
+                let attempt = state.persistRetryCount + 1
+                log.error("Body persist failed (retry \(attempt, privacy: .public)/\(Self.maxPersistRetries, privacy: .public)): \(reason, privacy: .public)")
+                state.lastPersistFailureReason = reason
+                state.persistRetryCount = attempt
+                return .run { send in
+                    try await clock.sleep(for: .milliseconds(Self.retryDelayMilliseconds))
+                    await send(.persistRequested)
+                }
+                .cancellable(id: Self.persistCancelID, cancelInFlight: true)
+
             case .persistFailed(let reason):
-                log.error("Body persist failed: \(reason, privacy: .public)")
+                // Retries exhausted — banner stays; the next edit or
+                // the dismiss flush re-arms persistence.
+                log.error("Body persist failed (retries exhausted): \(reason, privacy: .public)")
                 state.lastPersistFailureReason = reason
                 return .none
 
@@ -397,6 +443,12 @@ struct TextEditingFeature: Reducer {
         return .run { send in
             do {
                 let data = try PageBlockSnapshot.encodeBody(document)
+                if data.count > Self.bodySizeWarningBytes {
+                    // bodyData is not externalStorage; CloudKit's
+                    // ~1MB record ceiling fails SILENTLY past this
+                    // point (audit A4). Telemetry before the cliff.
+                    log.warning("Encoded body is \(data.count, privacy: .public) bytes — approaching the CloudKit per-record limit")
+                }
                 let plain = document.plainText
                 try await notebookClient.updateBlockBody(blockID, data, plain)
                 await send(.persistCompleted)

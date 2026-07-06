@@ -1184,6 +1184,117 @@ struct TextKitEditorView: UIViewRepresentable {
         return count
     }
 
+    // MARK: - Index alignment guard (readiness audit A1/A2)
+
+    /// Paragraph text ranges (excluding trailing `\n`) as the live
+    /// storage defines them — the ground truth `ParagraphIndex` entry
+    /// ranges must match before `documentFromIndex` may trust the
+    /// index. Same walk as `reStampIdentity`'s.
+    static func storageParagraphTextRanges(in storage: NSAttributedString) -> [NSRange] {
+        let ns = storage.string as NSString
+        var ranges: [NSRange] = []
+        var cursor = 0
+        while cursor < ns.length {
+            let nl = ns.range(of: "\n", options: [], range: NSRange(location: cursor, length: ns.length - cursor))
+            let textEnd = nl.location != NSNotFound ? nl.location : ns.length
+            ranges.append(NSRange(location: cursor, length: textEnd - cursor))
+            if nl.location == NSNotFound { break }
+            cursor = textEnd + 1
+        }
+        return ranges
+    }
+
+    /// True when every index entry range matches the storage's live
+    /// paragraph boundaries exactly. False means an edit reached the
+    /// storage WITHOUT flowing through the index maintainers — undo of
+    /// native typing, a composition commit whose pendings were cleared,
+    /// edit-menu Replace, or any other path that bypasses
+    /// `shouldChangeTextIn`. Running `documentFromIndex` against a
+    /// misaligned index zips wrong ranges into a wrong document (or
+    /// traps on an out-of-bounds substring), and that document
+    /// PERSISTS — so callers must rebuild first.
+    static func indexAligned(_ index: ParagraphIndex, with storage: NSAttributedString) -> Bool {
+        storageParagraphTextRanges(in: storage) == index.entries.map(\.range)
+    }
+
+    /// Rebuild a `ParagraphIndex` from the storage alone — the recovery
+    /// path when `indexAligned` fails. Paragraph KINDS and list/quote
+    /// grouping are recovered from the `.paragraphKind` / `.groupID` /
+    /// `.fromInkLanguageHint` attributes stamped on every character;
+    /// block IDENTITY cannot be recovered (it lived only in the stale
+    /// index), so every leaf, container, and list item gets a fresh
+    /// UUID. Identity churn on the recovery path is the accepted cost —
+    /// strictly better than persisting a corrupted document.
+    ///
+    /// Grouping follows `documentFromIndex`'s consecutive-run rule: a
+    /// run of adjacent paragraphs with the same grouped kind AND the
+    /// same storage `.groupID` shares one fresh container id; any break
+    /// in kind or group starts a new container. A grouped paragraph
+    /// with a missing `.groupID` becomes its own single-item container
+    /// (degraded but structurally valid).
+    static func rebuildIndex(
+        from storage: NSAttributedString,
+        makeID: () -> UUID = { UUID() }
+    ) -> ParagraphIndex {
+        var entries: [ParagraphIndex.Entry] = []
+        var runGroupID: UUID? = nil
+        var runKind: ParagraphKind? = nil
+        var runContainer: UUID? = nil
+
+        for textRange in storageParagraphTextRanges(in: storage) {
+            // Probe the first character, or the trailing `\n` for an
+            // empty paragraph (flatten + typingAttributes both stamp
+            // it) — same convention as `paragraphSlice`.
+            let probe = textRange.length > 0
+                ? textRange.location
+                : min(textRange.location, storage.length - 1)
+            var kind: ParagraphKind = .paragraph
+            var groupID: UUID? = nil
+            var languageHint: String? = nil
+            if probe >= 0, probe < storage.length {
+                let attrs = storage.attributes(at: probe, effectiveRange: nil)
+                if let raw = attrs[.paragraphKind] as? Int,
+                   let recovered = ParagraphKind(attributeValue: raw) {
+                    kind = recovered
+                }
+                groupID = attrs[.groupID] as? UUID
+                languageHint = attrs[.fromInkLanguageHint] as? String
+            }
+
+            switch kind {
+            case .bulletListItem, .orderedListItem, .blockquoteParagraph:
+                let container: UUID
+                if runKind == kind, groupID != nil, runGroupID == groupID, let existing = runContainer {
+                    container = existing
+                } else {
+                    container = makeID()
+                }
+                runKind = kind
+                runGroupID = groupID
+                runContainer = container
+                entries.append(.init(
+                    range: textRange,
+                    blockPath: [container, makeID()],
+                    kind: kind,
+                    listItemID: kind == .blockquoteParagraph ? nil : makeID(),
+                    languageHint: languageHint
+                ))
+            default:
+                runKind = nil
+                runGroupID = nil
+                runContainer = nil
+                entries.append(.init(
+                    range: textRange,
+                    blockPath: [makeID()],
+                    kind: kind,
+                    listItemID: nil,
+                    languageHint: languageHint
+                ))
+            }
+        }
+        return ParagraphIndex(entries: entries)
+    }
+
     // MARK: - Identity re-stamp (paragraph-kind heal from the index)
 
     /// Re-stamp per-paragraph identity attributes onto `storage` FROM the
@@ -1904,10 +2015,41 @@ struct TextKitEditorView: UIViewRepresentable {
         /// in the wiring view.
         var pinnedSlashLocation: Int? = nil
 
+        /// Backgrounding flush (readiness audit A3). Typing sits in the
+        /// 300ms debounce; on app backgrounding the process can be
+        /// killed before the debounce fires, losing the tail of the
+        /// user's typing. `willResignActiveNotification` fires BEFORE
+        /// SwiftUI's `scenePhase` leaves `.active`, so flushing here
+        /// guarantees the wiring view's scenePhase-driven
+        /// `.textEditing(.flush)` persists the CURRENT document, not
+        /// one missing the last few hundred ms.
+        private var resignActiveObserver: NSObjectProtocol? = nil
+
         init(parent: TextKitEditorView) {
             self.parent = parent
             self.lastSyncedDocument = parent.document
             super.init()
+            resignActiveObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                // Queue .main → already on the main actor; hop is a
+                // no-op assertion, required because the observer
+                // closure is typed nonisolated.
+                MainActor.assumeIsolated {
+                    guard let self, let textView = self.textView, self.hasPendingSync else { return }
+                    self.syncDocumentFromStorage(textView)
+                }
+            }
+        }
+
+        deinit {
+            // NotificationCenter removal is thread-safe; safe from the
+            // nonisolated deinit.
+            if let resignActiveObserver {
+                NotificationCenter.default.removeObserver(resignActiveObserver)
+            }
         }
 
         // MARK: - Document sync (imperative boundary, EDD §22.4.1)
@@ -1945,10 +2087,19 @@ struct TextKitEditorView: UIViewRepresentable {
                 TextKitEditorView.reStampIdentity(on: textView.textStorage, from: paragraphIndex)
             }
             pendingStructuralEdit = nil
-            // Index-authoritative path. With `ParagraphIndex.applyEdit`
-            // covering EVERY structural shape `shouldChangeTextIn`
-            // captures, the index is always aligned with storage — no
-            // parse-back fallback needed.
+            // Alignment guard (readiness audit A1/A2). `applyEdit`
+            // covers every structural shape `shouldChangeTextIn`
+            // captures — but some edits never flow through
+            // `shouldChangeTextIn` at all: undo of native typing, a
+            // composition commit whose pendings were cleared, edit-menu
+            // Replace. Parsing against a misaligned index zips wrong
+            // ranges into a wrong document (or traps on substring),
+            // and that document PERSISTS. Verify range-level alignment
+            // and rebuild from the storage's stamped attributes when it
+            // fails — fresh identity (accepted churn) beats corruption.
+            if !TextKitEditorView.indexAligned(paragraphIndex, with: textView.attributedText) {
+                paragraphIndex = TextKitEditorView.rebuildIndex(from: textView.attributedText)
+            }
             let parsed = TextKitEditorView.documentFromIndex(
                 paragraphIndex,
                 storage: textView.attributedText
@@ -2725,6 +2876,24 @@ final class BlockTreeTextView: UITextView {
     /// guard for that.
     var onEditorCommand: ((EditorCommand) -> Void)? = nil
 
+    // Scribble is DISABLED for v1 (readiness audit D5). Pencil writing
+    // into the text view mutates storage without reliably flowing
+    // through `shouldChangeTextIn`, bypassing the ParagraphIndex
+    // maintainers. The alignment guard would recover, but with identity
+    // churn on every stroke — a bad authoring experience. In the
+    // product model, Pencil authors INK; typed text comes from the
+    // keyboard. Revisit when hybrid pages land: proper support means
+    // routing Scribble edits through the index-maintenance path.
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        addInteraction(UIScribbleInteraction(delegate: self))
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        addInteraction(UIScribbleInteraction(delegate: self))
+    }
+
     /// Closure the editor wiring sets to intercept Backspace. Returns
     /// true when it handled the keystroke (e.g. outdenting an empty
     /// list item) so `super.deleteBackward()` is skipped. This fires
@@ -2837,6 +3006,17 @@ final class BlockTreeTextView: UITextView {
             rect = .zero
         }
         onEditorCommand?(.openSlashPalette(caretRectInEditor: rect))
+    }
+}
+
+extension BlockTreeTextView: UIScribbleInteractionDelegate {
+    /// Refuse every Scribble session — see the init comment for the
+    /// v1 rationale (bypasses the ParagraphIndex maintainers).
+    func scribbleInteraction(
+        _ interaction: UIScribbleInteraction,
+        shouldBeginAt location: CGPoint
+    ) -> Bool {
+        false
     }
 }
 
