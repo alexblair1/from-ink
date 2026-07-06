@@ -111,5 +111,13 @@ extension AppStrings {
             value: "Text formatting",
             comment: "Accessibility label for the Aa formatting popover."
         )
+
+        // MARK: - Keyboard shortcut HUD
+
+        static let slashMenu = NSLocalizedString(
+            "accessoryBar.command.slashMenu",
+            value: "Slash Menu",
+            comment: "Hold-Command HUD title for the shortcut that opens the slash command palette."
+        )
     }
 }

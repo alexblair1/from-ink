@@ -101,7 +101,9 @@ struct TextKitEditorView: UIViewRepresentable {
         // can't run the BlockDecoratingLayoutManager's overrides.
         let storage = NSTextStorage()
         let layoutManager = BlockDecoratingLayoutManager()
-        layoutManager.tintColor = bodyColor
+        // Chrome colors come from the design system (audit B5);
+        // marker digits + gutter side localize per B4.
+        layoutManager.chromeColors = BlockChromeColors()
         storage.addLayoutManager(layoutManager)
 
         let container = NSTextContainer(
@@ -119,6 +121,12 @@ struct TextKitEditorView: UIViewRepresentable {
         layoutManager.addTextContainer(container)
 
         let textView = BlockTreeTextView(frame: .zero, textContainer: container)
+        // Marker gutter mirrors with the layout direction (audit B4).
+        // Read live at draw time — Settings-driven direction changes
+        // relaunch the app, but Slide-Over trait churn doesn't.
+        layoutManager.isRTL = { [weak textView] in
+            textView?.effectiveUserInterfaceLayoutDirection == .rightToLeft
+        }
         textView.font = bodyFont
         textView.textColor = bodyColor
         textView.backgroundColor = .clear
@@ -726,6 +734,13 @@ struct TextKitEditorView: UIViewRepresentable {
         if let languageHint {
             paragraphAttrs[.fromInkLanguageHint] = languageHint
         }
+        // VoiceOver announces "heading level N" and the headings rotor
+        // can navigate by it (readiness audit B3) — without this, a
+        // heading reads as plain prose. Clamped to the 1...6 range the
+        // accessibility attribute defines.
+        if case .heading(let level) = kind {
+            paragraphAttrs[NSAttributedString.Key.accessibilityTextHeadingLevel] = min(max(level, 1), 6)
+        }
         _ = blockID
         _ = listItemID
         // Apply paragraph attrs only to characters that DON'T already
@@ -832,7 +847,7 @@ struct TextKitEditorView: UIViewRepresentable {
             case .code:
                 font = UIFont.monospacedSystemFont(ofSize: baseFont.pointSize, weight: .regular)
                 symbolicTraits = font.fontDescriptor.symbolicTraits
-                backgroundColor = UIColor.label.withAlphaComponent(0.06)
+                backgroundColor = UIColor(DesignSystem.standard.colors.codeBackground)
                 // Custom key so parse-back recovers the Mark.code
                 // without inferring from font + background (which is
                 // ambiguous).
@@ -846,7 +861,7 @@ struct TextKitEditorView: UIViewRepresentable {
             case .link(let url):
                 attrs[.link] = url
                 underline = .single
-                foreground = UIColor.systemBlue
+                foreground = UIColor(DesignSystem.standard.colors.link)
             }
         }
 
@@ -862,11 +877,13 @@ struct TextKitEditorView: UIViewRepresentable {
     }
 
     private static func color(for kind: HighlightKind) -> UIColor {
+        // Alphas are baked into the color sets (readiness audit B5).
+        let colors = DesignSystem.standard.colors
         switch kind {
-        case .yellow: return UIColor.systemYellow.withAlphaComponent(0.35)
-        case .red:    return UIColor.systemRed.withAlphaComponent(0.25)
-        case .blue:   return UIColor.systemBlue.withAlphaComponent(0.20)
-        case .green:  return UIColor.systemGreen.withAlphaComponent(0.25)
+        case .yellow: return UIColor(colors.highlightYellow)
+        case .red:    return UIColor(colors.highlightRed)
+        case .blue:   return UIColor(colors.highlightBlue)
+        case .green:  return UIColor(colors.highlightGreen)
         }
     }
 
@@ -877,15 +894,21 @@ struct TextKitEditorView: UIViewRepresentable {
         case .paragraph, .bulletListItem, .orderedListItem, .divider:
             return bodyFont
         case .heading(let level):
+            // Scaled via UIFontMetrics (readiness audit B2): fixed
+            // 28/22/18pt headings broke the type hierarchy under
+            // accessibility text sizes — body scaled, headings didn't.
+            // Base sizes match the metrics styles' defaults (title1 =
+            // 28, title2 = 22) so nothing changes at the default
+            // content size.
             switch level {
             case 1:
-                return makeSerif(size: 28, weight: .semibold, fallback: UIFont.systemFont(ofSize: 28, weight: .semibold))
+                return scaledSerif(size: 28, weight: .semibold, textStyle: .title1)
             case 2:
-                return makeSerif(size: 22, weight: .semibold, fallback: UIFont.systemFont(ofSize: 22, weight: .semibold))
+                return scaledSerif(size: 22, weight: .semibold, textStyle: .title2)
             default:
                 // Level 3+ all render at H3 size (matches the storage
                 // clamp in `ParagraphKind.attributeValue`).
-                return makeSerif(size: 18, weight: .semibold, fallback: UIFont.systemFont(ofSize: 18, weight: .semibold))
+                return scaledSerif(size: 18, weight: .semibold, textStyle: .title3)
             }
         case .codeBlock:
             return UIFont.monospacedSystemFont(ofSize: bodyFont.pointSize, weight: .regular)
@@ -898,12 +921,15 @@ struct TextKitEditorView: UIViewRepresentable {
         }
     }
 
-    private static func makeSerif(size: CGFloat, weight: UIFont.Weight, fallback: UIFont) -> UIFont {
+    /// Serif system font scaled through `UIFontMetrics` so it tracks
+    /// the user's Dynamic Type setting (readiness audit B2). At the
+    /// default content size the metrics return `size` unchanged;
+    /// accessibility sizes scale it along `textStyle`'s curve.
+    static func scaledSerif(size: CGFloat, weight: UIFont.Weight, textStyle: UIFont.TextStyle) -> UIFont {
         let base = UIFont.systemFont(ofSize: size, weight: weight)
-        if let descriptor = base.fontDescriptor.withDesign(.serif) {
-            return UIFont(descriptor: descriptor, size: 0)
-        }
-        return fallback
+        let serif = base.fontDescriptor.withDesign(.serif)
+            .map { UIFont(descriptor: $0, size: 0) } ?? base
+        return UIFontMetrics(forTextStyle: textStyle).scaledFont(for: serif)
     }
 
     private static func foregroundColor(for kind: ParagraphKind, bodyColor: UIColor) -> UIColor {
@@ -958,6 +984,9 @@ struct TextKitEditorView: UIViewRepresentable {
         ]
         if let groupID {
             attrs[.groupID] = groupID
+        }
+        if case .heading(let level) = kind {
+            attrs[NSAttributedString.Key.accessibilityTextHeadingLevel] = min(max(level, 1), 6)
         }
         _ = blockID
         return attrs
@@ -1351,6 +1380,18 @@ struct TextKitEditorView: UIViewRepresentable {
                 storage.addAttribute(.fromInkLanguageHint, value: hint, range: range)
             } else {
                 storage.removeAttribute(.fromInkLanguageHint, range: range)
+            }
+            // Keep VoiceOver's heading semantics in step with the kind
+            // (audit B3) — a heading demoted to body must stop
+            // announcing as a heading, and vice versa.
+            if case .heading(let level) = kind {
+                storage.addAttribute(
+                    NSAttributedString.Key.accessibilityTextHeadingLevel,
+                    value: min(max(level, 1), 6),
+                    range: range
+                )
+            } else {
+                storage.removeAttribute(NSAttributedString.Key.accessibilityTextHeadingLevel, range: range)
             }
             storage.addAttribute(.paragraphStyle, value: paragraphStyle(for: kind), range: range)
         }
@@ -2557,7 +2598,7 @@ struct TextKitEditorView: UIViewRepresentable {
                     typing[.font] = UIFont.monospacedSystemFont(
                         ofSize: parent.bodyFont.pointSize, weight: .regular
                     )
-                    typing[.backgroundColor] = UIColor.label.withAlphaComponent(0.06)
+                    typing[.backgroundColor] = UIColor(DesignSystem.standard.colors.codeBackground)
                 }
             }
             textView.typingAttributes = typing
@@ -2994,21 +3035,25 @@ final class BlockTreeTextView: UITextView {
         // collisions are ⌘B/I/U which UITextView would otherwise
         // interpret through its own rich-text path).
         //
-        // `discoverabilityTitle` has been available since iOS 9 and
-        // shows in the hold-⌘ HUD on iPad with hardware keyboards.
+        // `discoverabilityTitle` shows in the hold-⌘ HUD on iPad with
+        // hardware keyboards. Titles come from `AppStrings` (audit B6
+        // — they were hardcoded English) and reuse the accessory bar /
+        // Aa popover vocabulary so the HUD matches the visible UI:
+        // ⌘⌥1/2/3 read Title / Heading / Subheading, not "Heading 1".
+        typealias Strings = AppStrings.AccessoryBar
         let entries: [(input: String, mods: UIKeyModifierFlags, action: Selector, title: String)] = [
-            ("b",  .command,                        #selector(formatBold(_:)),          "Bold"),
-            ("i",  .command,                        #selector(formatItalic(_:)),        "Italic"),
-            ("u",  .command,                        #selector(formatUnderline(_:)),     "Underline"),
-            ("x",  [.command, .shift],              #selector(formatStrikethrough(_:)), "Strikethrough"),
-            ("e",  .command,                        #selector(formatCode(_:)),          "Code"),
-            ("1",  [.command, .alternate],          #selector(applyHeading1(_:)),       "Heading 1"),
-            ("2",  [.command, .alternate],          #selector(applyHeading2(_:)),       "Heading 2"),
-            ("3",  [.command, .alternate],          #selector(applyHeading3(_:)),       "Heading 3"),
-            ("0",  [.command, .alternate],          #selector(applyBodyParagraph(_:)),  "Body"),
-            ("7",  [.command, .shift],              #selector(applyNumberedList(_:)),   "Numbered List"),
-            ("8",  [.command, .shift],              #selector(applyBulletedList(_:)),   "Bulleted List"),
-            ("/",  [.command, .shift],              #selector(openSlashPalette(_:)),    "Slash Menu"),
+            ("b",  .command,                        #selector(formatBold(_:)),          Strings.bold),
+            ("i",  .command,                        #selector(formatItalic(_:)),        Strings.italic),
+            ("u",  .command,                        #selector(formatUnderline(_:)),     Strings.underline),
+            ("x",  [.command, .shift],              #selector(formatStrikethrough(_:)), Strings.strikethrough),
+            ("e",  .command,                        #selector(formatCode(_:)),          Strings.code),
+            ("1",  [.command, .alternate],          #selector(applyHeading1(_:)),       Strings.title),
+            ("2",  [.command, .alternate],          #selector(applyHeading2(_:)),       Strings.heading),
+            ("3",  [.command, .alternate],          #selector(applyHeading3(_:)),       Strings.subheading),
+            ("0",  [.command, .alternate],          #selector(applyBodyParagraph(_:)),  Strings.body),
+            ("7",  [.command, .shift],              #selector(applyNumberedList(_:)),   Strings.numberedList),
+            ("8",  [.command, .shift],              #selector(applyBulletedList(_:)),   Strings.bulletedList),
+            ("/",  [.command, .shift],              #selector(openSlashPalette(_:)),    Strings.slashMenu),
         ]
         return entries.map { entry in
             let cmd = UIKeyCommand(input: entry.input, modifierFlags: entry.mods, action: entry.action)
@@ -3112,6 +3157,30 @@ extension NSAttributedString.Key {
 
 }
 
+// MARK: - BlockChromeColors
+
+/// Design-system colors for the block-level chrome the layout manager
+/// draws (readiness audit B5). Injected at editor construction so the
+/// chrome participates in theming like every other surface — the
+/// previous inline `UIColor.label.withAlphaComponent(...)` literals
+/// couldn't be re-themed and bypassed the token catalog entirely.
+/// Alphas are baked into the color sets.
+struct BlockChromeColors {
+    let blockquoteBackground: UIColor
+    let blockquoteBar: UIColor
+    let codeBackground: UIColor
+    let dividerRule: UIColor
+    let listMarker: UIColor
+
+    init(colors: ColorTokens = DesignSystem.standard.colors) {
+        self.blockquoteBackground = UIColor(colors.blockquoteBackground)
+        self.blockquoteBar = UIColor(colors.blockquoteBar)
+        self.codeBackground = UIColor(colors.codeBackground)
+        self.dividerRule = UIColor(colors.dividerRule)
+        self.listMarker = UIColor(colors.listMarker)
+    }
+}
+
 // MARK: - BlockDecoratingLayoutManager
 
 /// `NSLayoutManager` subclass that draws block-level chrome via
@@ -3119,7 +3188,21 @@ extension NSAttributedString.Key {
 /// override — see the type doc on `TextKitEditorView` for the full
 /// architectural rationale.
 final class BlockDecoratingLayoutManager: NSLayoutManager {
-    var tintColor: UIColor = .label
+    /// Design-system chrome colors — see `BlockChromeColors`.
+    var chromeColors = BlockChromeColors()
+
+    /// Locale for the ordered-list ordinal digits (readiness audit
+    /// B4). Latin "1." hardcoding broke Arabic-Indic / Devanagari /
+    /// Thai numbering systems.
+    var markerLocale: Locale = .autoupdatingCurrent
+
+    /// True when list markers should draw in the TRAILING gutter
+    /// (readiness audit B4). Set from the hosting text view's
+    /// `effectiveUserInterfaceLayoutDirection`; a closure so the
+    /// direction is read live at draw time rather than frozen at
+    /// construction. NSParagraphStyle head-indents already resolve
+    /// direction-relatively; the marker DRAWING was the broken half.
+    var isRTL: () -> Bool = { false }
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -3270,7 +3353,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 width: container.size.width - inset * 2,
                 height: frag.height
             )
-            UIColor.label.withAlphaComponent(0.04).setFill()
+            self.chromeColors.blockquoteBackground.setFill()
             UIBezierPath(rect: bg).fill()
 
             let bar = CGRect(
@@ -3279,7 +3362,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 width: 3,
                 height: frag.height - 4
             )
-            UIColor.label.withAlphaComponent(0.4).setFill()
+            self.chromeColors.blockquoteBar.setFill()
             UIBezierPath(rect: bar).fill()
         }
     }
@@ -3294,7 +3377,7 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 width: container.size.width - inset * 2,
                 height: frag.height
             )
-            UIColor.label.withAlphaComponent(0.06).setFill()
+            self.chromeColors.codeBackground.setFill()
             UIBezierPath(rect: bg).fill()
         }
     }
@@ -3310,23 +3393,52 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
                 width: container.size.width - inset * 2,
                 height: 1
             )
-            UIColor.label.withAlphaComponent(0.25).setFill()
+            self.chromeColors.dividerRule.setFill()
             UIBezierPath(rect: rule).fill()
         }
     }
 
-    /// Draw the leading list marker in the **indent space** (left
-    /// of the text column), not inside the text column.
+    // MARK: - List markers (pure helpers, testable)
+
+    /// Ordinal label text for an ordered-list item, digits localized
+    /// to `locale` (readiness audit B4). Latin `"\(n)."` hardcoding
+    /// rendered "1." for Arabic-Indic / Devanagari / Thai numbering
+    /// systems — a first-class localization obligation per the
+    /// localization EDD.
+    static func orderedListMarkerText(_ n: Int, locale: Locale) -> String {
+        "\(n.formatted(.number.locale(locale)))."
+    }
+
+    /// X origin for a list marker in the indent gutter, mirrored for
+    /// RTL (readiness audit B4). LTR draws in the LEADING (left)
+    /// gutter the head-indent reserves; RTL draws in the trailing
+    /// (right) gutter — NSParagraphStyle's head-indent is already
+    /// direction-relative, so the reserved space mirrors with the
+    /// text and only the marker's x needed fixing.
+    static func markerOriginX(
+        lineFragmentRect: CGRect,
+        lineFragmentPadding: CGFloat,
+        gutterOffset: CGFloat,
+        markerWidth: CGFloat,
+        isRTL: Bool
+    ) -> CGFloat {
+        if isRTL {
+            return lineFragmentRect.maxX - lineFragmentPadding - gutterOffset - markerWidth
+        }
+        return lineFragmentRect.minX + lineFragmentPadding + gutterOffset
+    }
+
+    /// Draw the leading list marker in the **indent space** (the
+    /// gutter the head-indent reserves), not inside the text column.
     ///
     /// `usedRect.minX` is where the glyphs start — that's `28` for
     /// list-item paragraphs (matching `firstLineHeadIndent`), so
     /// the old `usedRect.minX + 8` placed the bullet at x=36
     /// *inside* the text column, sitting under the first character.
-    /// Using `lineFragmentRect.minX` instead gives the container's
-    /// leading edge; adding `lineFragmentPadding + offset` puts the
-    /// marker in the gutter the indent reserves for exactly this
-    /// purpose. We enumerate (rather than calling a helper) so the
-    /// closure receives both rects + the container in one pass.
+    /// `markerOriginX` uses the line fragment's edge instead, on the
+    /// side the writing direction dictates. We enumerate (rather than
+    /// calling a helper) so the closure receives both rects + the
+    /// container in one pass.
     private func drawBullet(
         glyphRange: NSRange,
         origin: CGPoint,
@@ -3337,11 +3449,18 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
             ?? UIFont.preferredFont(forTextStyle: .body)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: bulletFont,
-            .foregroundColor: tintColor.withAlphaComponent(0.85)
+            .foregroundColor: chromeColors.listMarker
         ]
         let bullet = NSAttributedString(string: "•", attributes: attrs)
+        let rtl = isRTL()
         enumerateLineFragments(forGlyphRange: glyphRange) { lineFragRect, usedRect, container, _, stop in
-            let x = origin.x + lineFragRect.minX + container.lineFragmentPadding + 10
+            let x = origin.x + Self.markerOriginX(
+                lineFragmentRect: lineFragRect,
+                lineFragmentPadding: container.lineFragmentPadding,
+                gutterOffset: 10,
+                markerWidth: bullet.size().width,
+                isRTL: rtl
+            )
             let y = origin.y + usedRect.minY
             bullet.draw(at: CGPoint(x: x, y: y))
             stop.pointee = true
@@ -3359,11 +3478,21 @@ final class BlockDecoratingLayoutManager: NSLayoutManager {
             ?? UIFont.preferredFont(forTextStyle: .body)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: labelFont,
-            .foregroundColor: tintColor.withAlphaComponent(0.85)
+            .foregroundColor: chromeColors.listMarker
         ]
-        let label = NSAttributedString(string: "\(n).", attributes: attrs)
+        let label = NSAttributedString(
+            string: Self.orderedListMarkerText(n, locale: markerLocale),
+            attributes: attrs
+        )
+        let rtl = isRTL()
         enumerateLineFragments(forGlyphRange: glyphRange) { lineFragRect, usedRect, container, _, stop in
-            let x = origin.x + lineFragRect.minX + container.lineFragmentPadding + 4
+            let x = origin.x + Self.markerOriginX(
+                lineFragmentRect: lineFragRect,
+                lineFragmentPadding: container.lineFragmentPadding,
+                gutterOffset: 4,
+                markerWidth: label.size().width,
+                isRTL: rtl
+            )
             let y = origin.y + usedRect.minY
             label.draw(at: CGPoint(x: x, y: y))
             stop.pointee = true

@@ -89,11 +89,11 @@ per-block embedding multiplies the surfaces.
 | ID | Severity | Summary | Where |
 |---|---|---|---|
 | B1 | **fixed** (this branch) | iPhone/compact + soft keyboard now gets a **literal slash** — the typed-slash trigger is gated by `typedSlashOpensPalette` (regular size class OR hardware keyboard, per EDD §13.3's "hardware keyboard wins"); `⌘⇧/` path untouched | `TextKitEditorView` slash trigger path |
-| B2 | Accessibility | Headings fixed at 28/22/18pt — no Dynamic Type scaling while body scales | `TextKitEditorView.swift:879–887` |
-| B3 | Accessibility | List bullets/ordinals drawn in `drawBackground` — invisible to VoiceOver; heading/quote/code semantics unannounced (WCAG 1.3.1) | `BlockDecoratingLayoutManager` |
-| B4 | Localization | RTL unmirrored: bullet gutter hardcoded left, head-indents don't flip, ordinals Latin-digits-only (`"\(n)."`) | `drawBullet` / `drawNumber` / `paragraphStyle(for:)` |
-| B5 | Design system | Chrome colors hardcoded: `UIColor.label.withAlphaComponent(...)` (blockquote/code/divider), `systemBlue` links, `systemYellow/Red/Blue/Green` highlights. No theming path | layout manager + `inlineAttributes` |
-| B6 | Localization | `keyCommands` `discoverabilityTitle`s hardcoded English ("Bold", "Slash Menu", …) — bypass AppStrings | `BlockTreeTextView.buildKeyCommands` |
+| B2 | **fixed** (this branch) | Headings now scale via `UIFontMetrics` (title1/2/3 curves, same sizes at default content size). Remaining: fonts snapshot at editor creation — a mid-session Dynamic Type change needs a re-flatten hook (rare; app relaunch covers it) | `scaledSerif` |
+| B3 | **partial** (this branch) | Headings now carry `.accessibilityTextHeadingLevel` (VoiceOver announces "heading level N", rotor navigation works; kept in step on demote via `reStampIdentity`). Remaining: list bullets/ordinals are still drawn chrome, invisible to VoiceOver — the real fix is marker glyphs as characters, deferred to the hybrid text refactor | `paragraphContent` / `reStampIdentity` |
+| B4 | **fixed** (this branch) | Ordinal digits localize via `orderedListMarkerText(_:locale:)` (Arabic-Indic, Devanagari, …); marker gutter mirrors for RTL via `markerOriginX(isRTL:)` reading the view's live layout direction. Head-indents were already direction-relative (NSParagraphStyle) | layout manager |
+| B5 | **fixed** (this branch) | All chrome + content colors tokenized: `BlockChromeColors` (blockquote bg/bar, code bg, divider rule, list marker) injected into the layout manager; link + 4 highlight tokens replace the `systemBlue`/`systemYellow…` literals. Ten new `ink/*` color sets with baked alphas + dark variants | `ColorTokens`, `BlockChromeColors` |
+| B6 | **fixed** (this branch) | `keyCommands` HUD titles now come from `AppStrings.AccessoryBar`, reusing the accessory-bar vocabulary (⌘⌥1/2/3 read Title/Heading/Subheading, matching the Aa popover); new `slashMenu` key | `BlockTreeTextView.buildKeyCommands` |
 | B7 | UX-minor | Inline toggles silently no-op in code blocks while chips still look tappable | `applyInlineToggleAtCaret` |
 | B8 | UX-minor | Slash palette always opens with Heading 1 highlighted; no context awareness | `SlashCommandPaletteFeature.openRequested` |
 
@@ -132,8 +132,8 @@ The iPhone gap is B1 only, not bar wiring.
 1. **Correctness hardening (A1–A5)** — *done on this branch.* Includes the Scribble decision:
    disabled for v1 (D5).
 2. **iPhone compact gating (B1)** — *done on this branch.*
-3. **Editor-internal debt (B2–B6)** — token injection into the layout manager, Dynamic Type
-   headings, VoiceOver list semantics, RTL. Once, before N instances exist.
+3. **Editor-internal debt (B2–B6)** — *done on this branch* (B3 partial: heading semantics
+   shipped; list-marker VoiceOver visibility deferred to the hybrid marker-glyph refactor).
 4. **Hybrid foundation** — `NotePageFeature` + `PageBlockStackView` + ink lifecycle as its own
    planned phase; the seams in §C are the open design questions.
 5. **Mac scope decision** — read-only Mac is shippable v1; full authoring is a separate
