@@ -23,7 +23,7 @@ Line numbers reference the tree at commit `0f15c57`.
 | A2 | **fixed** (this branch) | Composition commit of structural change corrupts `ParagraphIndex` |
 | A3 | **fixed** (this branch) | No scenePhase flush — typing lost on backgrounding/kill |
 | A4 | **fixed** (this branch) | Persist failure never retries; no `bodyData` size guard |
-| A5 | open | Duplicate text-block seeding race on double `onAppear` |
+| A5 | **fixed** (this branch) | Duplicate text-block seeding race on double `onAppear` |
 
 ### A1 — No storage-alignment guard → silent document corruption *(verified)*
 
@@ -70,12 +70,14 @@ size guard against CloudKit's ~1MB per-record limit.
 **Fix:** scheduled delayed retry after failure (cancelled/superseded by any newer persist),
 plus an encoded-size warning log at 750KB.
 
-### A5 — Duplicate-seed race *(open)*
+### A5 — Duplicate-seed race
 
-Double `onAppear` before the first `insertBlock` completes can seed two text blocks
-(`NotebookFeature.swift:154–174` — no in-flight guard). Low frequency today; likelihood rises
-once hybrid block loading gets busier. Fix shape: `isSeedingTextBlock` in-flight flag or
-idempotent seed keyed on page ID.
+Double `onAppear` before the first `insertBlock` completes could seed two text blocks
+(`NotebookFeature.swift` `textBlocksLoaded` had no in-flight guard).
+
+**Fix:** `isSeedingTextBlock` in-flight flag; the seed result routes through a dedicated
+`textBlockSeeded` action that clears the flag, re-arms on failure, and refuses to hand the
+editor a block for a page the user has swiped away from.
 
 ---
 
@@ -86,7 +88,7 @@ per-block embedding multiplies the surfaces.
 
 | ID | Severity | Summary | Where |
 |---|---|---|---|
-| B1 | UX-blocker (EDD violation) | iPhone/compact + soft keyboard must get a **literal slash**, never the palette (`text_experience_edd.md:1200, 1331`); code arms the palette everywhere | `TextKitEditorView` slash trigger path |
+| B1 | **fixed** (this branch) | iPhone/compact + soft keyboard now gets a **literal slash** — the typed-slash trigger is gated by `typedSlashOpensPalette` (regular size class OR hardware keyboard, per EDD §13.3's "hardware keyboard wins"); `⌘⇧/` path untouched | `TextKitEditorView` slash trigger path |
 | B2 | Accessibility | Headings fixed at 28/22/18pt — no Dynamic Type scaling while body scales | `TextKitEditorView.swift:879–887` |
 | B3 | Accessibility | List bullets/ordinals drawn in `drawBackground` — invisible to VoiceOver; heading/quote/code semantics unannounced (WCAG 1.3.1) | `BlockDecoratingLayoutManager` |
 | B4 | Localization | RTL unmirrored: bullet gutter hardcoded left, head-indents don't flip, ordinals Latin-digits-only (`"\(n)."`) | `drawBullet` / `drawNumber` / `paragraphStyle(for:)` |
@@ -127,9 +129,9 @@ The iPhone gap is B1 only, not bar wiring.
 
 ## D. Recommended sequence
 
-1. **Correctness hardening (A1–A4)** — *done on this branch.* Includes the Scribble decision:
+1. **Correctness hardening (A1–A5)** — *done on this branch.* Includes the Scribble decision:
    disabled for v1 (D5).
-2. **iPhone compact gating (B1)** — small; closes the EDD violation.
+2. **iPhone compact gating (B1)** — *done on this branch.*
 3. **Editor-internal debt (B2–B6)** — token injection into the layout manager, Dynamic Type
    headings, VoiceOver list semantics, RTL. Once, before N instances exist.
 4. **Hybrid foundation** — `NotePageFeature` + `PageBlockStackView` + ink lifecycle as its own

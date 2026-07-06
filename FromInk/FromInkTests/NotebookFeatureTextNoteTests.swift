@@ -132,4 +132,130 @@ final class NotebookFeatureTextNoteTests: XCTestCase {
             $0.notebookType = .textNote
         }
     }
+
+    // MARK: - Seed in-flight guard (readiness audit A5)
+
+    private func blockSnapshot(pageID: UUID?) -> PageBlockSnapshot {
+        PageBlockSnapshot(
+            id: UUID(),
+            pageID: pageID,
+            sortIndex: 0,
+            kind: .text,
+            heightPoints: 44,
+            document: .empty,
+            bodyDecodeFailed: false,
+            drawingData: nil,
+            voice: nil,
+            ocrText: nil,
+            plainText: "",
+            contentHash: PageBlock.sha256(""),
+            sourceVoiceBlockID: nil,
+            createdAt: now,
+            modifiedAt: now
+        )
+    }
+
+    /// Two empty block loads racing the first seed insert must produce
+    /// exactly ONE inserted block. Before the in-flight guard, each
+    /// empty result dispatched its own `insertBlock` — duplicate text
+    /// blocks on the page.
+    @MainActor
+    func test_textBlocksLoaded_emptyTwiceBeforeSeedLands_insertsOnce() async {
+        let insertCalls = LockIsolated<Int>(0)
+        let seeded = blockSnapshot(pageID: pageID)
+
+        var initial = NotebookFeature.State(notebookID: notebookID, notebookTitle: "Test")
+        initial.pages = [pageSnapshot()]
+        initial.hasLoadedOnce = true
+        initial.notebookType = .textNote
+
+        // The insert suspends on this clock so the SECOND load
+        // genuinely races the in-flight seed. (A fast stub wouldn't
+        // exercise the race: non-exhaustive TestStore processes the
+        // queued `textBlockSeeded` before the next send, clearing the
+        // flag and making the second load look legitimate.)
+        let clock = TestClock()
+        let store = TestStore(
+            initialState: initial,
+            reducer: { NotebookFeature() }
+        ) {
+            $0.notebookClient.insertBlock = { _, _, _ in
+                insertCalls.withValue { $0 += 1 }
+                try await clock.sleep(for: .seconds(1))
+                return seeded
+            }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.textBlocksLoaded([])) {
+            $0.isSeedingTextBlock = true
+        }
+        // Second empty load lands while the seed insert is still
+        // suspended — the guard must hold.
+        await store.send(.textBlocksLoaded([]))
+
+        await clock.advance(by: .seconds(1))
+        await store.receive(.textBlockSeeded(seeded)) {
+            $0.isSeedingTextBlock = false
+        }
+        await store.receive(.textEditing(.activeBlockChanged(seeded)))
+        await store.finish()
+
+        XCTAssertEqual(insertCalls.value, 1, "Racing empty loads must not double-seed")
+    }
+
+    /// A seed that lands after the user swiped to another page clears
+    /// the in-flight flag but does NOT hand the editor a block from
+    /// the page they left.
+    @MainActor
+    func test_textBlockSeeded_forStalePage_clearsFlagWithoutRouting() async {
+        var initial = NotebookFeature.State(notebookID: notebookID, notebookTitle: "Test")
+        initial.pages = [pageSnapshot()]
+        initial.hasLoadedOnce = true
+        initial.notebookType = .textNote
+        initial.isSeedingTextBlock = true
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { NotebookFeature() }
+        ) {
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        // Seed targets a DIFFERENT page than the one on screen.
+        let stale = blockSnapshot(pageID: UUID())
+        await store.send(.textBlockSeeded(stale)) {
+            $0.isSeedingTextBlock = false
+        }
+        await store.finish()
+        XCTAssertNil(
+            store.state.textEditing.activeBlock,
+            "A stale-page seed must not become the active editor block"
+        )
+    }
+
+    /// A failed seed (nil result) re-arms seeding so the empty-state
+    /// tap can retry.
+    @MainActor
+    func test_textBlockSeeded_nil_reArmsSeeding() async {
+        var initial = NotebookFeature.State(notebookID: notebookID, notebookTitle: "Test")
+        initial.pages = [pageSnapshot()]
+        initial.hasLoadedOnce = true
+        initial.notebookType = .textNote
+        initial.isSeedingTextBlock = true
+
+        let store = TestStore(
+            initialState: initial,
+            reducer: { NotebookFeature() }
+        ) {
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off(showSkippedAssertions: false)
+
+        await store.send(.textBlockSeeded(nil)) {
+            $0.isSeedingTextBlock = false
+        }
+    }
 }

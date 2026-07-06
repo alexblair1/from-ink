@@ -1,5 +1,6 @@
 #if os(iOS) || os(visionOS)
 import Combine
+import GameController
 import SwiftUI
 import UIKit
 
@@ -1835,6 +1836,25 @@ struct TextKitEditorView: UIViewRepresentable {
         case clear
     }
 
+    /// Surface gate for the TYPED slash trigger (EDD §13.3 / §14.4.4,
+    /// readiness audit B1). On iPhone and iPad-compact with the soft
+    /// keyboard, `/` is never intercepted — it inserts as a literal
+    /// slash and the accessory bar is the only command surface (the
+    /// Apple Notes convention). A hardware keyboard overrides the
+    /// size-class gate ("hardware keyboard wins" — an iPad in Slide
+    /// Over with a Magic Keyboard still gets the popover). The `⌘⇧/`
+    /// shortcut path is untouched: it can only fire FROM a hardware
+    /// keyboard, so it is always allowed.
+    ///
+    /// `.unspecified` (transient, off-window) is treated as allowed —
+    /// only an explicit `.compact` without hardware keys suppresses.
+    static func typedSlashOpensPalette(
+        horizontalSizeClass: UIUserInterfaceSizeClass,
+        hasHardwareKeyboard: Bool
+    ) -> Bool {
+        horizontalSizeClass != .compact || hasHardwareKeyboard
+    }
+
     /// Pure function: given a `shouldChangeTextIn` replacement and
     /// the current pre-mutation text, decide whether to arm a
     /// pending slash trigger. Lives outside the Coordinator so it
@@ -2014,6 +2034,20 @@ struct TextKitEditorView: UIViewRepresentable {
         /// scroll without us having to observe scroll position
         /// in the wiring view.
         var pinnedSlashLocation: Int? = nil
+
+        /// Hardware-keyboard probe for the typed-slash surface gate
+        /// (EDD §13.3 — "hardware keyboard wins" over the size-class
+        /// gate). Injectable so tests can pin either side of the
+        /// matrix deterministically; live value reads GameController's
+        /// coalesced keyboard.
+        var hasHardwareKeyboard: () -> Bool = { GCKeyboard.coalesced != nil }
+
+        /// Test seam for the gate's size-class read. `nil` (production)
+        /// reads the textView's live `traitCollection`; tests pin a
+        /// value because off-window views inherit
+        /// `UITraitCollection.current` (compact on iPhone simulators)
+        /// and `traitOverrides` don't propagate without a layout pass.
+        var horizontalSizeClassOverride: UIUserInterfaceSizeClass? = nil
 
         /// Backgrounding flush (readiness audit A3). Typing sits in the
         /// 300ms debounce; on app backgrounding the process can be
@@ -2594,8 +2628,17 @@ struct TextKitEditorView: UIViewRepresentable {
                 replacementRange: range,
                 currentText: textView.text ?? ""
             ) {
-            case .armed(let location):
+            case .armed(let location) where TextKitEditorView.typedSlashOpensPalette(
+                horizontalSizeClass: horizontalSizeClassOverride
+                    ?? textView.traitCollection.horizontalSizeClass,
+                hasHardwareKeyboard: hasHardwareKeyboard()
+            ):
                 pendingSlashLocation = location
+            case .armed:
+                // Compact + soft keyboard: `/` stays a literal slash;
+                // the accessory bar is the command surface (EDD
+                // §14.4.4, audit B1).
+                pendingSlashLocation = nil
             case .clear:
                 pendingSlashLocation = nil
             }
