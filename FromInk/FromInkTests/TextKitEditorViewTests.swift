@@ -1657,5 +1657,35 @@ final class TextKitEditorViewTests: XCTestCase {
         }
         XCTAssertEqual(inline.map(\.text).joined(), "HelloWorld")
     }
+
+    // MARK: - Typed-slash surface gate (EDD §13.3 / §14.4.4, audit B1)
+
+    /// Full presentation matrix: the typed `/` opens the palette on
+    /// regular size class OR whenever a hardware keyboard is attached
+    /// ("hardware keyboard wins" — iPad Slide Over with a Magic
+    /// Keyboard keeps the popover). Compact + soft keyboard gets a
+    /// literal slash; the accessory bar is the command surface.
+    func test_typedSlashOpensPalette_matchesEDDPresentationMatrix() {
+        // iPad regular — soft or hardware keyboard → popover.
+        XCTAssertTrue(TextKitEditorView.typedSlashOpensPalette(
+            horizontalSizeClass: .regular, hasHardwareKeyboard: false
+        ))
+        XCTAssertTrue(TextKitEditorView.typedSlashOpensPalette(
+            horizontalSizeClass: .regular, hasHardwareKeyboard: true
+        ))
+        // Compact + hardware keyboard → hardware keyboard wins.
+        XCTAssertTrue(TextKitEditorView.typedSlashOpensPalette(
+            horizontalSizeClass: .compact, hasHardwareKeyboard: true
+        ))
+        // iPhone / iPad compact + soft keyboard → literal slash.
+        XCTAssertFalse(TextKitEditorView.typedSlashOpensPalette(
+            horizontalSizeClass: .compact, hasHardwareKeyboard: false
+        ))
+        // Transient off-window state → allowed (never suppress on
+        // anything but an explicit compact reading).
+        XCTAssertTrue(TextKitEditorView.typedSlashOpensPalette(
+            horizontalSizeClass: .unspecified, hasHardwareKeyboard: false
+        ))
+    }
 }
 #endif

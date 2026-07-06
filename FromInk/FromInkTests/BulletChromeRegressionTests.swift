@@ -67,6 +67,12 @@ final class BulletChromeRegressionTests: XCTestCase {
         let coordinator = view.makeCoordinator()
         coordinator.textView = textView
         textView.delegate = coordinator
+        // Pin the typed-slash surface gate to iPad regular: off-window
+        // views inherit UITraitCollection.current (compact on iPhone
+        // simulators), and compact + soft keyboard suppresses the
+        // trigger by design (EDD §14.4.4). Tests of the gate itself
+        // override this.
+        coordinator.horizontalSizeClassOverride = .regular
 
         let flat = TextKitEditorView.flatten(document: document, bodyFont: bodyFont, bodyColor: bodyColor)
         textView.attributedText = flat.attributed
@@ -824,6 +830,65 @@ final class BulletChromeRegressionTests: XCTestCase {
         coordinator.textViewDidChange(textView)
 
         XCTAssertEqual(capturedPaths.count, 1, "Slash trigger must fire after typing `/`")
+    }
+
+    /// Compact + soft keyboard: the typed `/` inserts as a literal
+    /// slash and must NOT open the palette (EDD §14.4.4, audit B1) —
+    /// the accessory bar is the only command surface on iPhone / iPad
+    /// compact.
+    func test_typingSlash_compactSoftKeyboard_doesNotFireOnSlashTyped() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "")]))
+        ])
+        var capturedPaths: [[UUID]] = []
+        let (textView, coordinator, _) = makeEditorRig(
+            document: doc,
+            onSlashTyped: { path, _, _ in capturedPaths.append(path) }
+        )
+        coordinator.horizontalSizeClassOverride = .compact
+        coordinator.hasHardwareKeyboard = { false }
+        textView.selectedRange = NSRange(location: 0, length: 0)
+
+        let accepted = coordinator.textView(
+            textView, shouldChangeTextIn: NSRange(location: 0, length: 0), replacementText: "/"
+        )
+        XCTAssertTrue(accepted, "The slash still inserts as a literal character")
+        textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 0),
+            with: NSAttributedString(string: "/")
+        )
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertTrue(capturedPaths.isEmpty, "Compact + soft keyboard must not open the palette")
+    }
+
+    /// Compact + HARDWARE keyboard: the hardware-keyboard rule
+    /// overrides the size-class gate (EDD §13.3) — an iPad in Slide
+    /// Over with a Magic Keyboard keeps the popover.
+    func test_typingSlash_compactHardwareKeyboard_firesOnSlashTyped() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "")]))
+        ])
+        var capturedPaths: [[UUID]] = []
+        let (textView, coordinator, _) = makeEditorRig(
+            document: doc,
+            onSlashTyped: { path, _, _ in capturedPaths.append(path) }
+        )
+        coordinator.horizontalSizeClassOverride = .compact
+        coordinator.hasHardwareKeyboard = { true }
+        textView.selectedRange = NSRange(location: 0, length: 0)
+
+        let accepted = coordinator.textView(
+            textView, shouldChangeTextIn: NSRange(location: 0, length: 0), replacementText: "/"
+        )
+        XCTAssertTrue(accepted)
+        textView.textStorage.replaceCharacters(
+            in: NSRange(location: 0, length: 0),
+            with: NSAttributedString(string: "/")
+        )
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(capturedPaths.count, 1, "Hardware keyboard wins over the size-class gate")
     }
 
     /// The system editing menu fires `formatBold(_:)` (etc) on the

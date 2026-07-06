@@ -35,6 +35,15 @@ struct NotebookFeature: Reducer {
         var currentIndex: Int = 0
         var hasLoadedOnce: Bool = false
 
+        /// True while a text-block seed insert is in flight (readiness
+        /// audit A5). `textBlocksLoaded` can fire multiple times before
+        /// the first seed lands — double `onAppear`, a store-change
+        /// refresh racing the insert — and each empty result would
+        /// otherwise dispatch ANOTHER `insertBlock`, leaving duplicate
+        /// text blocks on the page. Cleared when the seed lands
+        /// (`textBlockSeeded`) or a loaded block makes seeding moot.
+        var isSeedingTextBlock: Bool = false
+
         /// Toolbar lives at the notebook level (not per-page) so tool
         /// selection persists across page swipes and `ToolbarWiringView`
         /// renders once as a sibling of the `TabView`.
@@ -79,6 +88,10 @@ struct NotebookFeature: Reducer {
         /// retry in `TextBlockView` so a failed auto-seed or a
         /// corrupted body can be recovered without closing the note.
         case textBlocksReloadRequested
+        /// Result of the auto-seed insert for an empty text-note page.
+        /// `nil` means the insert failed (already logged); either way
+        /// the in-flight flag clears so a retry can re-arm seeding.
+        case textBlockSeeded(PageBlockSnapshot?)
         case addPageTapped
         case pageCreated(NotePageSnapshot)
         case currentIndexChanged(Int)
@@ -160,18 +173,35 @@ struct NotebookFeature: Reducer {
                     .sorted { $0.sortIndex < $1.sortIndex }
                     .first(where: { $0.kind == .text })
                 if let snap = firstTextBlock {
+                    state.isSeedingTextBlock = false
                     return .send(.textEditing(.activeBlockChanged(snap)))
                 }
-                guard let pageID = state.pages[safe: state.currentIndex]?.id
+                // In-flight guard (readiness audit A5): a second empty
+                // load racing the first seed must not insert a
+                // duplicate block.
+                guard !state.isSeedingTextBlock,
+                      let pageID = state.pages[safe: state.currentIndex]?.id
                 else { return .none }
+                state.isSeedingTextBlock = true
                 return .run { send in
                     do {
                         let snap = try await notebookClient.insertBlock(pageID, .text, nil)
-                        await send(.textEditing(.activeBlockChanged(snap)))
+                        await send(.textBlockSeeded(snap))
                     } catch {
                         log.error("Seed text block failed: \(error.localizedDescription)")
+                        await send(.textBlockSeeded(nil))
                     }
                 }
+
+            case .textBlockSeeded(let snap):
+                state.isSeedingTextBlock = false
+                // Route only when the seed still targets the page the
+                // user is looking at — a swipe mid-seed must not hand
+                // the editor a block from the page they left.
+                guard let snap,
+                      state.pages[safe: state.currentIndex]?.id == snap.pageID
+                else { return .none }
+                return .send(.textEditing(.activeBlockChanged(snap)))
 
             case .addPageTapped:
                 // New pages inherit the **current page's** template so
