@@ -214,6 +214,16 @@ struct TextKitEditorView: UIViewRepresentable {
     func updateUIView(_ textView: UITextView, context: Context) {
         context.coordinator.parent = self
 
+        // Whether a reducer-driven change landed this pass. Set when the
+        // document is re-flattened or the caret is overridden — both
+        // rebuild the state the accessory bar / Aa popover read (paragraph
+        // kind + typingAttributes), and both do so under
+        // `isApplyingBindingUpdate`, which suppresses the
+        // `textViewDidChangeSelection` refresh. Without an explicit refresh
+        // here the bar keeps its stale pre-change active state (e.g. still
+        // showing "Body" after a heading was applied). Fix 2.
+        var needsAccessoryRefresh = false
+
         // Body re-sync when the SwiftUI side diverges from what the
         // editor already shows. Documents are Equatable; only the
         // shape comparison triggers a re-flatten. Under the
@@ -259,6 +269,7 @@ struct TextKitEditorView: UIViewRepresentable {
             )
 
             context.coordinator.isApplyingBindingUpdate = false
+            needsAccessoryRefresh = true
         }
 
         // Selection re-sync — SEMANTICALLY gated. The flatten maps
@@ -284,6 +295,7 @@ struct TextKitEditorView: UIViewRepresentable {
             context.coordinator.isApplyingBindingUpdate = true
             textView.selectedRange = nsRange
             context.coordinator.isApplyingBindingUpdate = false
+            needsAccessoryRefresh = true
         }
 
         // Clear the slash anchor pin when the palette closes so
@@ -294,6 +306,13 @@ struct TextKitEditorView: UIViewRepresentable {
         // through the binding.
         if !isSlashPaletteOpen {
             context.coordinator.pinnedSlashLocation = nil
+        }
+
+        // Re-read the now-current paragraph kind + typingAttributes into
+        // the accessory bar. Guarded so ordinary SwiftUI re-renders (no
+        // document/selection change) don't rebuild the hosted bar. Fix 2.
+        if needsAccessoryRefresh {
+            context.coordinator.refreshAccessoryBar()
         }
     }
 
@@ -1078,6 +1097,29 @@ struct TextKitEditorView: UIViewRepresentable {
         paragraphIndex.entry(containing: textView.selectedRange.location)?.kind
     }
 
+    /// Symbolic traits a paragraph KIND contributes through its own base
+    /// typography, independent of any user-applied inline mark. A
+    /// heading's semibold weight reads as `.traitBold` (verified on the
+    /// serif heading font); a blockquote is italic. These must be
+    /// subtracted before reporting active bold/italic or persisting
+    /// bold/italic marks — otherwise a kind's intrinsic weight/slant is
+    /// mistaken for an explicit Bold/Italic mark. That conflation caused
+    /// the Bold chip to light up in every heading AND polluted parse-back
+    /// (heading runs round-tripped carrying spurious `.bold` marks, so a
+    /// heading demoted to body stayed bold). Fix 1.
+    ///
+    /// The `bodyFont` only affects body / list / divider kinds, which
+    /// contribute no bold/italic; heading / blockquote / code build their
+    /// own font. A neutral system font therefore yields the correct
+    /// structural traits without threading the real body font through.
+    static func structuralInlineTraits(for kind: ParagraphKind?) -> UIFontDescriptor.SymbolicTraits {
+        guard let kind else { return [] }
+        let neutralBody = UIFont.systemFont(ofSize: UIFont.systemFontSize)
+        return font(for: kind, bodyFont: neutralBody)
+            .fontDescriptor.symbolicTraits
+            .intersection([.traitBold, .traitItalic])
+    }
+
     /// Inline-format marks currently "active" at the caret/selection,
     /// derived from `textView.typingAttributes`. For a selection, UIKit
     /// populates `typingAttributes` from the selection's first
@@ -1087,20 +1129,29 @@ struct TextKitEditorView: UIViewRepresentable {
     /// "what marks will the next typed character get."
     ///
     /// Reads:
-    ///   - bold / italic from the font's symbolic traits
+    ///   - bold / italic from the font's symbolic traits, MINUS the
+    ///     structural traits the caret paragraph's kind already carries
+    ///     (`structuralInlineTraits`) — so a heading's intrinsic bold
+    ///     weight isn't reported as an explicit Bold mark. Fix 1.
     ///   - underline / strikethrough from the style keys
     ///   - code from `.fromInkInlineCode` (parse-back's canonical
     ///     "Mark.code" discriminator)
     ///
     /// Used by `refreshAccessoryBar` to keep the B/I/U/S chips' visual
     /// active state in sync with the editor.
-    static func activeInlineFormats(in textView: UITextView) -> Set<TextEditingFeature.InlineFormat> {
+    static func activeInlineFormats(
+        in textView: UITextView,
+        paragraphIndex: ParagraphIndex
+    ) -> Set<TextEditingFeature.InlineFormat> {
         var active: Set<TextEditingFeature.InlineFormat> = []
         let typing = textView.typingAttributes
+        let base = structuralInlineTraits(
+            for: activeParagraphKind(in: textView, paragraphIndex: paragraphIndex)
+        )
         if let font = typing[.font] as? UIFont {
             let traits = font.fontDescriptor.symbolicTraits
-            if traits.contains(.traitBold) { active.insert(.bold) }
-            if traits.contains(.traitItalic) { active.insert(.italic) }
+            if traits.contains(.traitBold), !base.contains(.traitBold) { active.insert(.bold) }
+            if traits.contains(.traitItalic), !base.contains(.traitItalic) { active.insert(.italic) }
         }
         if let underline = typing[.underlineStyle] as? Int, underline != 0 {
             active.insert(.underline)
@@ -1211,7 +1262,7 @@ struct TextKitEditorView: UIViewRepresentable {
         var runs: [Inline] = []
         attributed.enumerateAttributes(in: range, options: []) { attrs, runRange, _ in
             let runText = (attributed.string as NSString).substring(with: runRange)
-            let marks = marksFor(attrs: attrs)
+            let marks = marksFor(attrs: attrs, kind: kind)
             runs.append(Inline(text: runText, marks: marks))
         }
         // Coalesce adjacent runs with equal marks.
@@ -1227,8 +1278,18 @@ struct TextKitEditorView: UIViewRepresentable {
         return coalesced
     }
 
-    private static func marksFor(attrs: [NSAttributedString.Key: Any]) -> [Mark] {
+    /// Recover inline marks from a run's attributes. `kind` is the run's
+    /// host paragraph kind — its structural bold/italic traits
+    /// (`structuralInlineTraits`) are subtracted so a heading's semibold
+    /// weight or a blockquote's slant isn't persisted as an explicit
+    /// `.bold` / `.italic` mark. Without this, a heading round-tripped
+    /// with bold marks on every run and stayed bold when demoted. Fix 1.
+    private static func marksFor(
+        attrs: [NSAttributedString.Key: Any],
+        kind: ParagraphKind
+    ) -> [Mark] {
         var marks: [Mark] = []
+        let base = structuralInlineTraits(for: kind)
         // Code is checked first so the bold/italic traits inferred
         // from the monospaced font don't accidentally emit bold/italic
         // marks. A code mark's font is monospaced, not bold/italic.
@@ -1237,8 +1298,8 @@ struct TextKitEditorView: UIViewRepresentable {
             marks.append(.code)
         } else if let font = attrs[.font] as? UIFont {
             let traits = font.fontDescriptor.symbolicTraits
-            if traits.contains(.traitBold) { marks.append(.bold) }
-            if traits.contains(.traitItalic) { marks.append(.italic) }
+            if traits.contains(.traitBold), !base.contains(.traitBold) { marks.append(.bold) }
+            if traits.contains(.traitItalic), !base.contains(.traitItalic) { marks.append(.italic) }
         }
         if (attrs[.underlineStyle] as? Int) ?? 0 != 0 {
             marks.append(.underline)
@@ -1250,8 +1311,8 @@ struct TextKitEditorView: UIViewRepresentable {
             marks.append(.link(url))
         }
         if let kindRaw = attrs[.fromInkHighlightKind] as? String,
-           let kind = HighlightKind(rawValue: kindRaw) {
-            marks.append(.highlight(kind))
+           let highlightKind = HighlightKind(rawValue: kindRaw) {
+            marks.append(.highlight(highlightKind))
         }
         return marks
     }
@@ -1983,7 +2044,7 @@ struct TextKitEditorView: UIViewRepresentable {
             func command(_ c: EditorCommand) -> () -> Void {
                 { [weak textView] in textView?.onEditorCommand?(c) }
             }
-            let active = TextKitEditorView.activeInlineFormats(in: textView)
+            let active = TextKitEditorView.activeInlineFormats(in: textView, paragraphIndex: paragraphIndex)
             let blockKind = TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: paragraphIndex)
             typealias Bar = AccessoryBarView
             let aa = Bar.Button(
@@ -2062,7 +2123,9 @@ struct TextKitEditorView: UIViewRepresentable {
         /// `EditorCommand` cases land.
         private func aaPopoverModel() -> AaFormatPopoverView.Model {
             typealias Pop = AaFormatPopoverView
-            let active = textView.map { TextKitEditorView.activeInlineFormats(in: $0) } ?? []
+            let active = textView.map {
+                TextKitEditorView.activeInlineFormats(in: $0, paragraphIndex: paragraphIndex)
+            } ?? []
             let blockKind = textView.flatMap {
                 TextKitEditorView.activeParagraphKind(in: $0, paragraphIndex: paragraphIndex)
             }

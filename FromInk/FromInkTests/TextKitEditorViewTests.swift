@@ -1457,5 +1457,107 @@ final class TextKitEditorViewTests: XCTestCase {
             "Container reflows to the new available width after a bounds (rotation) change"
         )
     }
+
+    // MARK: - Structural traits vs. inline marks (Fix 1)
+
+    /// A kind's intrinsic typography traits (heading weight, blockquote
+    /// slant) are reported by `structuralInlineTraits`; body/list kinds
+    /// contribute none. These are the traits subtracted before a font's
+    /// bold/italic is read as an explicit inline mark.
+    func test_structuralInlineTraits_headingBold_blockquoteItalic_bodyEmpty() {
+        XCTAssertTrue(
+            TextKitEditorView.structuralInlineTraits(for: .heading(level: 1)).contains(.traitBold),
+            "Heading's semibold weight is a structural bold trait"
+        )
+        XCTAssertTrue(
+            TextKitEditorView.structuralInlineTraits(for: .blockquoteParagraph).contains(.traitItalic),
+            "Blockquote's slant is a structural italic trait"
+        )
+        XCTAssertTrue(TextKitEditorView.structuralInlineTraits(for: .paragraph).isEmpty)
+        XCTAssertTrue(TextKitEditorView.structuralInlineTraits(for: .bulletListItem).isEmpty)
+        XCTAssertTrue(TextKitEditorView.structuralInlineTraits(for: nil).isEmpty)
+    }
+
+    /// The reported bug: caret in a heading must NOT report Bold as an
+    /// active inline format — the heading's semibold weight is intrinsic,
+    /// not a user-applied Bold mark. (`activeInlineFormats` drives the
+    /// accessory bar chips + the Aa popover toggles.)
+    func test_activeInlineFormats_inHeading_excludesIntrinsicBold() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let textView = UITextView()
+        textView.attributedText = flat.attributed
+        textView.selectedRange = NSRange(location: 0, length: 0)
+        textView.typingAttributes = TextKitEditorView.typingAttributes(
+            for: .heading(level: 1), blockID: UUID(), groupID: nil,
+            bodyFont: bodyFont, bodyColor: bodyColor
+        )
+        let active = TextKitEditorView.activeInlineFormats(
+            in: textView, paragraphIndex: ParagraphIndex(document: doc)
+        )
+        XCTAssertFalse(active.contains(.bold), "Heading weight must not read as an active Bold mark")
+    }
+
+    /// Parse-back must not persist a heading's intrinsic weight as a
+    /// `.bold` inline mark — otherwise demoting the heading to body would
+    /// leave the text bold.
+    func test_documentFromIndex_heading_roundTripsWithoutBoldMarks() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc), storage: flat.attributed
+        )
+        guard case .heading(_, let inline) = recovered.blocks[0].kind else {
+            return XCTFail("Expected heading")
+        }
+        XCTAssertEqual(inline.map(\.text).joined(), "Title")
+        XCTAssertTrue(
+            inline.allSatisfy { $0.marks.isEmpty },
+            "Heading intrinsic weight must not round-trip as a bold mark"
+        )
+    }
+
+    /// Same guarantee for a blockquote's intrinsic italic slant.
+    func test_documentFromIndex_blockquote_roundTripsWithoutItalicMarks() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .blockquote(children: [
+                Block(kind: .paragraph(inline: [Inline(text: "Quote")]))
+            ]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc), storage: flat.attributed
+        )
+        guard case .blockquote(let children) = recovered.blocks[0].kind,
+              case .paragraph(let inline) = children[0].kind else {
+            return XCTFail("Expected blockquote → paragraph")
+        }
+        XCTAssertEqual(inline.map(\.text).joined(), "Quote")
+        XCTAssertTrue(
+            inline.allSatisfy { $0.marks.isEmpty },
+            "Blockquote intrinsic slant must not round-trip as an italic mark"
+        )
+    }
+
+    /// A user-applied Bold on top of BODY text is still recovered — the
+    /// subtraction only removes a kind's STRUCTURAL trait, not explicit
+    /// marks. (Guards against over-correcting Fix 1.)
+    func test_documentFromIndex_bodyBold_stillRecovered() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "hi", marks: [.bold])]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let recovered = TextKitEditorView.documentFromIndex(
+            ParagraphIndex(document: doc), storage: flat.attributed
+        )
+        guard case .paragraph(let inline) = recovered.blocks[0].kind else {
+            return XCTFail("Expected paragraph")
+        }
+        XCTAssertEqual(inline.first?.marks, [.bold], "Explicit bold on body text must survive")
+    }
 }
 #endif
