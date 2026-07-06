@@ -718,10 +718,14 @@ final class BulletChromeRegressionTests: XCTestCase {
         let doc = RichTextDocument(blocks: [
             Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
         ])
-        let (textView, _, _) = makeEditorRig(document: doc)
+        let (textView, coordinator, _) = makeEditorRig(document: doc)
         textView.selectedRange = NSRange(location: 5, length: 0)
 
-        XCTAssertTrue(TextKitEditorView.activeInlineFormats(in: textView).isEmpty)
+        XCTAssertTrue(
+            TextKitEditorView.activeInlineFormats(
+                in: textView, paragraphIndex: coordinator.paragraphIndex
+            ).isEmpty
+        )
     }
 
     /// After flipping Bold at the caret, the active set contains .bold.
@@ -733,7 +737,10 @@ final class BulletChromeRegressionTests: XCTestCase {
         textView.selectedRange = NSRange(location: 5, length: 0)
         coordinator.applyInlineToggle(.bold)
 
-        XCTAssertEqual(TextKitEditorView.activeInlineFormats(in: textView), [.bold])
+        XCTAssertEqual(
+            TextKitEditorView.activeInlineFormats(in: textView, paragraphIndex: coordinator.paragraphIndex),
+            [.bold]
+        )
     }
 
     /// Multiple marks stacked → all show as active.
@@ -746,7 +753,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         coordinator.applyInlineToggle(.bold)
         coordinator.applyInlineToggle(.italic)
 
-        let active = TextKitEditorView.activeInlineFormats(in: textView)
+        let active = TextKitEditorView.activeInlineFormats(in: textView, paragraphIndex: coordinator.paragraphIndex)
         XCTAssertTrue(active.contains(.bold))
         XCTAssertTrue(active.contains(.italic))
     }
@@ -761,7 +768,7 @@ final class BulletChromeRegressionTests: XCTestCase {
         coordinator.applyInlineToggle(.underline)
         coordinator.applyInlineToggle(.strikethrough)
 
-        let active = TextKitEditorView.activeInlineFormats(in: textView)
+        let active = TextKitEditorView.activeInlineFormats(in: textView, paragraphIndex: coordinator.paragraphIndex)
         XCTAssertTrue(active.contains(.underline))
         XCTAssertTrue(active.contains(.strikethrough))
     }
