@@ -44,6 +44,37 @@ struct ColorTokens: Sendable {
     /// the legacy `Color.ruleLine`.
     let ruleLine: Color
 
+    // MARK: Text editor block chrome (readiness audit B5)
+    //
+    // Drawn by `BlockDecoratingLayoutManager` — these replace the
+    // `UIColor.label.withAlphaComponent(...)` literals so the editor's
+    // block chrome participates in theming like every other surface.
+    // Alphas are baked into the color sets.
+
+    /// Blockquote paragraph wash (label @ 4%).
+    let blockquoteBackground: Color
+    /// Blockquote leading bar (label @ 40%).
+    let blockquoteBar: Color
+    /// Code block + inline-code background (label @ 6%).
+    let codeBackground: Color
+    /// Divider block rule (label @ 25%).
+    let dividerRule: Color
+    /// Bullet / ordinal list markers (label @ 85%).
+    let listMarker: Color
+
+    // MARK: Text editor content colors (readiness audit B5)
+    //
+    // These are CONTENT emphasis, not UI chrome — the monochrome-chrome
+    // rule doesn't apply to what the user authored.
+
+    /// Link runs in rich text.
+    let link: Color
+    /// Highlight-mark backgrounds. Alphas baked into the color sets.
+    let highlightYellow: Color
+    let highlightRed: Color
+    let highlightBlue: Color
+    let highlightGreen: Color
+
     // Semantic aliases (computed, not stored)
     var tint: Color { ink }
     var selection: Color { highlight }
@@ -65,6 +96,16 @@ struct ColorTokens: Sendable {
         paperPure:  Color("ink/PaperPure"),
         flagRed:    Color("ink/FlagRed"),
         bolt:       Color("ink/Bolt"),
-        ruleLine:   Color("ink/RuleLine")
+        ruleLine:   Color("ink/RuleLine"),
+        blockquoteBackground: Color("ink/BlockquoteBackground"),
+        blockquoteBar:        Color("ink/BlockquoteBar"),
+        codeBackground:       Color("ink/CodeBackground"),
+        dividerRule:          Color("ink/DividerRule"),
+        listMarker:           Color("ink/ListMarker"),
+        link:                 Color("ink/Link"),
+        highlightYellow:      Color("ink/HighlightYellow"),
+        highlightRed:         Color("ink/HighlightRed"),
+        highlightBlue:        Color("ink/HighlightBlue"),
+        highlightGreen:       Color("ink/HighlightGreen")
     )
 }

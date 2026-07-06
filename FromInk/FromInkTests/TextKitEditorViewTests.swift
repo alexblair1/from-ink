@@ -1687,5 +1687,111 @@ final class TextKitEditorViewTests: XCTestCase {
             horizontalSizeClass: .unspecified, hasHardwareKeyboard: false
         ))
     }
+
+    // MARK: - Dynamic Type headings (audit B2)
+
+    /// Heading fonts route through `UIFontMetrics` so they scale with
+    /// the user's Dynamic Type setting — flatten output must carry the
+    /// scaled font, not a fixed 28pt one.
+    func test_flatten_headingFont_isDynamicTypeScaled() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let font = flat.attributed.attributes(at: 0, effectiveRange: nil)[.font] as? UIFont
+
+        let expected = TextKitEditorView.scaledSerif(size: 28, weight: .semibold, textStyle: .title1)
+        XCTAssertEqual(
+            font?.pointSize, expected.pointSize,
+            "H1 must carry the UIFontMetrics-scaled size for the current content size category"
+        )
+        XCTAssertTrue(
+            font?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false,
+            "Scaling must preserve the heading's semibold weight"
+        )
+    }
+
+    // MARK: - VoiceOver heading semantics (audit B3)
+
+    /// Heading paragraphs carry the accessibility heading-level
+    /// attribute so VoiceOver announces "heading level N" and the
+    /// headings rotor can navigate; body paragraphs carry none.
+    func test_flatten_heading_carriesAccessibilityHeadingLevel() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 2, inline: [Inline(text: "Title")])),
+            Block(kind: .paragraph(inline: [Inline(text: "Body")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+
+        let headingAttrs = flat.attributed.attributes(at: 0, effectiveRange: nil)
+        XCTAssertEqual(headingAttrs[NSAttributedString.Key.accessibilityTextHeadingLevel] as? Int, 2)
+
+        // "Body" starts after "Title\n".
+        let bodyAttrs = flat.attributed.attributes(at: 6, effectiveRange: nil)
+        XCTAssertNil(bodyAttrs[NSAttributedString.Key.accessibilityTextHeadingLevel])
+    }
+
+    /// Demoting a heading must strip the accessibility attribute —
+    /// `reStampIdentity` keeps VoiceOver's semantics in step with the
+    /// index's kind.
+    func test_reStampIdentity_demotedHeading_dropsAccessibilityHeadingLevel() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .heading(level: 1, inline: [Inline(text: "Title")]))
+        ])
+        let flat = TextKitEditorView.flatten(document: doc, bodyFont: bodyFont, bodyColor: bodyColor)
+        let storage = NSMutableAttributedString(attributedString: flat.attributed)
+
+        // Same text, but the index now says it's a body paragraph.
+        let demoted = ParagraphIndex(entries: [
+            .init(range: NSRange(location: 0, length: 5), blockPath: [UUID()], kind: .paragraph)
+        ])
+        XCTAssertTrue(TextKitEditorView.reStampIdentity(on: storage, from: demoted))
+        XCTAssertNil(
+            storage.attributes(at: 0, effectiveRange: nil)[NSAttributedString.Key.accessibilityTextHeadingLevel],
+            "A demoted heading must stop announcing as a heading"
+        )
+    }
+
+    // MARK: - Localized list markers + RTL gutter (audit B4)
+
+    func test_orderedListMarkerText_localizesDigits() {
+        XCTAssertEqual(
+            BlockDecoratingLayoutManager.orderedListMarkerText(1, locale: Locale(identifier: "en_US")),
+            "1."
+        )
+        let arabic = BlockDecoratingLayoutManager.orderedListMarkerText(
+            1, locale: Locale(identifier: "ar_SA@numbers=arab")
+        )
+        XCTAssertTrue(arabic.contains("١"), "Arabic-Indic numbering must render ١, got \(arabic)")
+    }
+
+    func test_markerOriginX_mirrorsForRTL() {
+        let frag = CGRect(x: 0, y: 0, width: 320, height: 20)
+        let ltr = BlockDecoratingLayoutManager.markerOriginX(
+            lineFragmentRect: frag, lineFragmentPadding: 5,
+            gutterOffset: 10, markerWidth: 8, isRTL: false
+        )
+        XCTAssertEqual(ltr, 15, "LTR: leading edge + padding + gutter offset")
+
+        let rtl = BlockDecoratingLayoutManager.markerOriginX(
+            lineFragmentRect: frag, lineFragmentPadding: 5,
+            gutterOffset: 10, markerWidth: 8, isRTL: true
+        )
+        XCTAssertEqual(rtl, 297, "RTL: trailing edge - padding - gutter offset - marker width")
+    }
+
+    // MARK: - Localized key-command titles (audit B6)
+
+    func test_keyCommands_titlesComeFromAppStrings() {
+        let textView = BlockTreeTextView()
+        let commands = textView.keyCommands ?? []
+        func title(for input: String) -> String? {
+            commands.first { $0.input == input }?.discoverabilityTitle
+        }
+        XCTAssertEqual(title(for: "b"), AppStrings.AccessoryBar.bold)
+        XCTAssertEqual(title(for: "1"), AppStrings.AccessoryBar.title)
+        XCTAssertEqual(title(for: "0"), AppStrings.AccessoryBar.body)
+        XCTAssertEqual(title(for: "/"), AppStrings.AccessoryBar.slashMenu)
+    }
 }
 #endif
