@@ -132,6 +132,34 @@ document-wide undo, so this is a known v1 gap — logged in the audit doc as a h
 - `activeBlockID` survives rotation (EDD §6.6 state-preservation list) alongside the
   scroll fraction.
 
+### 3.5 Block creation at boundaries — both directions
+
+The core hybrid promise is symmetric: **handwriting below a block of text, and text below
+handwriting.** Both flows are first-class requirements of Phase 3 and acceptance criteria for
+calling hybrid "done."
+
+**Ink below text (specified in the parent EDD — adopted as-is).** Pencil-down on a blank
+line inside a text block splits the text at that point and inserts an ink block between the
+halves; the stroke begins recording immediately (`text_experience_edd.md` §10.4,
+`.inkBlockInserted(afterBlockID:)`; §15.1 implicit-input table). Pencil-down in the empty
+region BELOW the last block appends an ink block at the end of the page — same action, `after:
+lastBlock.id`. No mode switch, no button: the Pencil *is* the intent (Apple Notes convention).
+
+**Text below ink (new — the parent EDD leaves this unspecified).** The inverse rule, using
+the same "the input device is the intent" principle:
+
+| Gesture | Effect |
+|---|---|
+| Finger tap in the empty region below the last block (when last block is ink) | Append a text block, activate it, keyboard up, caret at start |
+| Finger tap in the gap between an ink block and the next block | Insert a text block at that boundary, activate it |
+| Accessory bar / end-of-ink affordance (explicit fallback) | Same insert, for discoverability and for Pencil users who want text next |
+| Keyboard input while an ink block is active (hardware keyboard case) | Append/insert a text block after the active ink block and route the keystroke into it — typing always has somewhere to go |
+
+Both directions reduce to the ONE reducer action the architecture already carries —
+`insertBlockRequested(kind:after:)` — so the symmetric UX costs no new state machinery. Empty
+auto-created blocks that lose focus without receiving content are reaped (no stranded empty
+blocks from an exploratory tap), mirroring the seed-block hygiene from audit A5.
+
 ## 4. The v1 shape question, resolved
 
 **Question from the audit:** does v1 hybrid keep the full-page canvas as ONE big ink block, or
@@ -234,7 +262,7 @@ like the audit sequence; each phase is one or a few PR-sized commits.)
 |---|---|---|
 | **1. NotePageFeature + stack, text-only** | `NotePageFeature`, `NotePageWiringView`, `PageBlockStackView`; `.textNote` route moves onto it; editor becomes non-scrolling + height-reporting; slash anchor re-sourced from stack scroll; A5 seed guard lifted into the page feature | Scroll-ownership seam (§3.1) proven on the path that already has deep test coverage |
 | **2. Ink cutover, one block per page** | `InkBlockRowView` (live state only), canonical-width + scaleEffect render; `.notebook`/`.quickSheet` route onto the stack; legacy `NotePage.drawingData`/`ocrText`/`typedText` payload move + field retirement; `CanvasScreen` carve-up (toolbar/dismiss chrome stays at `NotebookScreen` level per the pinned-chrome invariant) | The either/or switch dissolves; canvas parity on the new architecture |
-| **3. Interleaving + insertion UX** | Insert-block affordances (accessory bar ⊕ / end-of-page tap), text/ink boundaries, focus swap protocol (§3.2), active-block affordance, delete with confirmation | Active-block-swap seam (§3.2) + focus model (§3.4) |
+| **3. Interleaving + insertion UX** | BOTH boundary-creation directions per §3.5 — Pencil-in-blank-text / Pencil-below-page → ink block (parent EDD §10.4), finger-tap-below-ink / keyboard-while-ink → text block; empty-block reaping; focus swap protocol (§3.2); active-block affordance; delete with confirmation | Active-block-swap seam (§3.2) + focus model (§3.4) + the symmetric creation promise (§3.5) |
 | **4. Lifecycle + memory** | placeholder/thumbnail states, visibility observer, promote/demote + thumbnail refresh, scroll-fraction restore across rotation/reopen | 50-block memory target; rotation state preservation |
 | **5. Drag bar + polish** | `DragBarView` height adjustment (`updateBlockHeight`), reorder, iPhone pass on the stack, snapshot coverage for block rows | Height/reorder UX |
 
@@ -249,7 +277,9 @@ regressions. Phases 2+ add surface on a proven chassis.
 - **P2:** legacy→block payload move round-trips (drawing bytes, OCR text, thumbnails); a
   pre-cutover notebook opens identically post-cutover (snapshot).
 - **P3:** swap protocol — flush-before-swap (no lost tail typing), stale-block snapshot
-  dropped, palette closes on block switch.
+  dropped, palette closes on block switch. Boundary creation both directions: Pencil-on-blank-
+  line splits text + inserts ink (§10.4 sequence, sortIndex integrity); finger-tap-below-ink
+  appends + activates a text block; abandoned empty blocks are reaped.
 - **P4:** promote/demote state machine (TestStore); scroll-fraction restore.
 - **P5:** drag-bar height persistence; reorder sortIndex integrity (gapless).
 
