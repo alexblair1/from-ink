@@ -80,6 +80,9 @@ struct TextBlockView: View {
                     model.slashPopover.onFilterChanged(filter)
                 },
                 isSlashPaletteOpen: model.slashPopover.isOpen,
+                onContentHeightChanged: { height in
+                    model.onContentHeightChanged(height)
+                },
                 bodyFont: Self.serifBodyFont(),
                 bodyColor: UIColor(model.bodyColor)
             )
@@ -91,10 +94,20 @@ struct TextBlockView: View {
             #endif
 
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The block stack owns scrolling (hybrid_page_edd.md §3.1) —
+        // this row is a non-scrolling, self-sized cell: height is the
+        // editor's reported content height, floored at
+        // `editorMinHeight` (the wiring passes the stack viewport so a
+        // short note still fills the page and taps below the last
+        // line land IN the editor, preserving tap-to-focus). Before
+        // the first height report, only the floor applies. The slash
+        // popover modifier moved UP to the stack container — the
+        // stationary anchor view.
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: model.editorFrameHeight, alignment: .topLeading)
+        .frame(minHeight: model.editorMinHeight, alignment: .topLeading)
         .accessibilityLabel(model.editorAccessibilityLabel)
         .accessibilityHint(model.accessibilityHint)
-        .modifier(SlashPopoverModifier(popover: model.slashPopover))
     }
 
     #if os(iOS) || os(visionOS)
@@ -227,15 +240,14 @@ extension TextBlockView {
 /// arrow, tap-outside dismissal, VoiceOver focus management, and
 /// safe-area-aware repositioning for free.
 ///
-/// **Coordinate space.** `model.slashPopover.anchorRect` is in the
-/// editor `UITextView`'s viewport space, which equals this ZStack's
-/// local space (the ZStack contains only the editor + an absolutely
-/// positioned placeholder, with `maxWidth/maxHeight: .infinity`).
-/// `TextKitEditorView.visibleCaretRect` already subtracts
-/// `contentOffset` at capture time, and the editor's scroll
-/// observer republishes the rect on every scroll tick, so the
-/// modifier can use the rect directly without any further
-/// translation.
+/// **Coordinate space.** `popover.anchorRect` is in the block
+/// STACK's viewport space (hybrid_page_edd.md §3.1) — the modifier
+/// is applied to the stationary scroll container in
+/// `NotePageWiringView`, not to the (scrolling) editor row.
+/// `TextKitEditorView.stackViewportRect` converts caret rects into
+/// this space at capture time, and the editor's stack-scroll KVO
+/// republishes the rect on every scroll tick, so the modifier uses
+/// the rect directly without further translation.
 ///
 /// **`arrowEdge: .top`** — popover appears BELOW the caret (arrow
 /// points up at it). Follows the autocomplete convention (Notion,
@@ -261,7 +273,7 @@ extension TextBlockView {
 /// aesthetic the design system locks in. The system arrow still
 /// renders because `.presentationBackground` only affects the
 /// content container.
-private struct SlashPopoverModifier: ViewModifier {
+struct SlashPopoverModifier: ViewModifier {
     let popover: TextBlockView.SlashPopover
 
     func body(content: Content) -> some View {
@@ -331,6 +343,21 @@ extension TextBlockView {
         /// `slashPopover.onAnchorMoved`.
         let slashPopover: SlashPopover
 
+        /// Editor content-height report (hybrid stack Phase 1) — the
+        /// wiring view stores it and the stack sizes this row from it.
+        let onContentHeightChanged: (CGFloat) -> Void
+
+        /// Minimum editor-row height, resolved by the stack (its
+        /// viewport height) so a short note still fills the page and
+        /// tap-to-focus works below the last line.
+        let editorMinHeight: CGFloat
+
+        /// Exact editor-row height once a content-height report has
+        /// landed — `max(reported, editorMinHeight)`, resolved in the
+        /// Model init. Nil before the first report (the min-height
+        /// floor alone applies).
+        let editorFrameHeight: CGFloat?
+
         let bodyFont: Font
         let bodyColor: Color
         let headlineFont: Font
@@ -368,6 +395,9 @@ extension TextBlockView.Model {
         onCreateRequested: @escaping () -> Void,
         onRetryRequested: @escaping () -> Void,
         slashPopover: TextBlockView.SlashPopover = .closed,
+        onContentHeightChanged: @escaping (CGFloat) -> Void = { _ in },
+        editorMinHeight: CGFloat = 0,
+        editorContentHeight: CGFloat? = nil,
         ds: DesignSystem = .standard
     ) {
         self.isPresented = isPresented
@@ -393,6 +423,9 @@ extension TextBlockView.Model {
         self.onCreateRequested = onCreateRequested
         self.onRetryRequested = onRetryRequested
         self.slashPopover = slashPopover
+        self.onContentHeightChanged = onContentHeightChanged
+        self.editorMinHeight = editorMinHeight
+        self.editorFrameHeight = editorContentHeight.map { max($0, editorMinHeight) }
         self.bodyFont = .system(.body, design: .serif)
         self.bodyColor = ds.colors.ink
         self.headlineFont = .system(.title2, design: .serif)

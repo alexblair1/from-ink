@@ -87,6 +87,12 @@ struct TextKitEditorView: UIViewRepresentable {
     /// palette closes (so scroll events stop emitting stale anchor
     /// updates).
     let isSlashPaletteOpen: Bool
+    /// Reports the editor's laid-out content height (used rect +
+    /// vertical insets) whenever it changes by more than half a point.
+    /// Phase 1 of the hybrid stack (hybrid_page_edd.md §3.1): the
+    /// editor no longer scrolls itself — the outer block stack owns
+    /// scrolling and sizes this row from the reported height.
+    let onContentHeightChanged: (CGFloat) -> Void
     let bodyFont: UIFont
     let bodyColor: UIColor
 
@@ -131,7 +137,16 @@ struct TextKitEditorView: UIViewRepresentable {
         textView.textColor = bodyColor
         textView.backgroundColor = .clear
         textView.allowsEditingTextAttributes = true
-        textView.isScrollEnabled = true
+        // Hybrid stack Phase 1 (hybrid_page_edd.md §3.1): the outer
+        // PageBlockStackView owns the page's single vertical scroll.
+        // The editor is a non-scrolling, self-sizing row — height is
+        // reported up via onContentHeightChanged; caret keyboard-
+        // following is done against the ENCLOSING scroll view (see
+        // ensureCaretVisible).
+        textView.isScrollEnabled = false
+        textView.onContentHeightChanged = { [weak coordinator = context.coordinator] height in
+            coordinator?.parent.onContentHeightChanged(height)
+        }
         textView.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         textView.textContainer.lineFragmentPadding = 0
         textView.autocorrectionType = .default
@@ -181,6 +196,7 @@ struct TextKitEditorView: UIViewRepresentable {
                     from: textView.beginningOfDocument,
                     to: start
                 )
+                coord.updateStackScrollObservation()
             }
             coord.parent.onCommand(command)
         }
@@ -315,6 +331,7 @@ struct TextKitEditorView: UIViewRepresentable {
         // through the binding.
         if !isSlashPaletteOpen {
             context.coordinator.pinnedSlashLocation = nil
+            context.coordinator.updateStackScrollObservation()
         }
 
         // Re-read the now-current paragraph kind + typingAttributes into
@@ -442,20 +459,34 @@ struct TextKitEditorView: UIViewRepresentable {
         )
     }
 
-    // MARK: - Viewport-space caret rect
+    // MARK: - Stack-viewport-space caret rect
 
-    /// Return the caret rect at `offset` translated into the
-    /// `textView`'s **viewport** coordinate space — i.e. the rect
-    /// SwiftUI sees as the local space of the `UIViewRepresentable`.
+    /// Translate an editor-local rect into the **enclosing scroll
+    /// view's viewport space** — the local space of the stationary
+    /// stack container the slash popover is anchored to
+    /// (hybrid_page_edd.md §3.1).
     ///
-    /// `UITextView.caretRect(for:)` returns the rect in the text
-    /// container's content space, which equals viewport space only
-    /// when `contentOffset == .zero`. The instant the user scrolls,
-    /// content y diverges from viewport y by `contentOffset.y`.
-    /// SwiftUI's `.popover(attachmentAnchor: .rect(...))` expects
-    /// viewport-space rects, so without this translation the
-    /// popover anchor drifts as soon as a note grows past one
-    /// viewport.
+    /// The editor is a non-scrolling row inside the block stack's
+    /// scroll: editor-local rects are stable while the row itself
+    /// moves on screen, so a popover anchored in editor space would
+    /// drift on stack scroll. Converting into the enclosing
+    /// `UIScrollView` and subtracting its `bounds.origin` (== content
+    /// offset) restores the "stationary anchor view + moving rect"
+    /// model the popover repositioning relies on.
+    ///
+    /// With no enclosing scroll view (unit-test rigs, previews), this
+    /// degrades to the legacy editor-viewport translation — which is
+    /// the identity for a non-scrolling editor.
+    static func stackViewportRect(_ rect: CGRect, of textView: UITextView) -> CGRect {
+        guard let scrollView = textView.enclosingScrollView else {
+            return rect.offsetBy(dx: -textView.contentOffset.x, dy: -textView.contentOffset.y)
+        }
+        let inContent = textView.convert(rect, to: scrollView)
+        return inContent.offsetBy(dx: -scrollView.bounds.origin.x, dy: -scrollView.bounds.origin.y)
+    }
+
+    /// Caret rect at `offset`, in stack-viewport space (see
+    /// `stackViewportRect(_:of:)`).
     static func visibleCaretRect(
         in textView: UITextView,
         atOffset offset: Int
@@ -464,8 +495,7 @@ struct TextKitEditorView: UIViewRepresentable {
             from: textView.beginningOfDocument,
             offset: offset
         ) else { return .zero }
-        return textView.caretRect(for: position)
-            .offsetBy(dx: -textView.contentOffset.x, dy: -textView.contentOffset.y)
+        return stackViewportRect(textView.caretRect(for: position), of: textView)
     }
 
     // MARK: - Flatten: RichTextDocument → NSAttributedString
@@ -2076,6 +2106,58 @@ struct TextKitEditorView: UIViewRepresentable {
         /// in the wiring view.
         var pinnedSlashLocation: Int? = nil
 
+        /// KVO on the ENCLOSING stack scroll view's contentOffset,
+        /// live only while the palette is pinned. The editor no
+        /// longer scrolls itself (hybrid stack Phase 1), so
+        /// `scrollViewDidScroll` never fires — this is its
+        /// replacement for keeping the popover anchored to the slash
+        /// glyph while the user scrolls the STACK. Installed by
+        /// `updateStackScrollObservation()` when a pin is set;
+        /// released when the pin clears (assigning nil invalidates).
+        private var stackScrollObservation: NSKeyValueObservation? = nil
+
+        /// Install / tear down the stack-scroll anchor observation to
+        /// match `pinnedSlashLocation`. Call after every pin change.
+        func updateStackScrollObservation() {
+            guard pinnedSlashLocation != nil,
+                  let textView,
+                  let scrollView = textView.enclosingScrollView else {
+                stackScrollObservation = nil
+                return
+            }
+            guard stackScrollObservation == nil else { return }
+            stackScrollObservation = scrollView.observe(\.contentOffset) { [weak self] _, _ in
+                // UIScrollView scrolling drives contentOffset on the
+                // main thread; the isolation hop is an assertion.
+                MainActor.assumeIsolated {
+                    guard let self,
+                          let textView = self.textView,
+                          let location = self.pinnedSlashLocation else { return }
+                    self.parent.onCaretAnchorMoved(
+                        TextKitEditorView.visibleCaretRect(in: textView, atOffset: location)
+                    )
+                }
+            }
+        }
+
+        /// Keep the caret visible above the keyboard by scrolling the
+        /// ENCLOSING stack scroll (hybrid_page_edd.md §3.1). With
+        /// `isScrollEnabled = false` the editor can't do its native
+        /// scroll-to-caret, so typing at the bottom of a long note
+        /// would otherwise disappear under the keyboard/accessory bar.
+        /// The rect is padded a line's worth so the caret never sits
+        /// flush against the keyboard edge.
+        func ensureCaretVisible(_ textView: UITextView) {
+            guard textView.isFirstResponder,
+                  let scrollView = textView.enclosingScrollView,
+                  let end = textView.selectedTextRange?.end else { return }
+            let caret = textView.caretRect(for: end)
+            guard caret.origin.y.isFinite, caret.height > 0 else { return }
+            let padded = textView.convert(caret, to: scrollView)
+                .insetBy(dx: 0, dy: -caret.height)
+            scrollView.scrollRectToVisible(padded, animated: false)
+        }
+
         /// Hardware-keyboard probe for the typed-slash surface gate
         /// (EDD §13.3 — "hardware keyboard wins" over the size-class
         /// gate). Injectable so tests can pin either side of the
@@ -2796,6 +2878,11 @@ struct TextKitEditorView: UIViewRepresentable {
                 scheduleDebouncedSync(textView)
             }
 
+            // The editor no longer scrolls itself — follow the caret
+            // by scrolling the enclosing stack (hybrid Phase 1), so
+            // typing at the bottom stays above the keyboard.
+            ensureCaretVisible(textView)
+
             // Live filter republish while the palette is open —
             // computed storage-side; nil dismisses (trigger deleted).
             if let pinned = pinnedSlashLocation {
@@ -2836,12 +2923,13 @@ struct TextKitEditorView: UIViewRepresentable {
                 atOffset: slashLocation
             )
 
-            // Pin the location for scroll tracking — scroll events
-            // (see `scrollViewDidScroll`) republish a fresh rect so
-            // the popover follows the slash glyph as the user
-            // scrolls. Cleared in `updateUIView` when the palette
-            // closes.
+            // Pin the location for scroll tracking — the stack-scroll
+            // KVO (see `updateStackScrollObservation`) republishes a
+            // fresh rect so the popover follows the slash glyph as
+            // the user scrolls the stack. Cleared in `updateUIView`
+            // when the palette closes.
             self.pinnedSlashLocation = slashLocation
+            updateStackScrollObservation()
 
             parent.onSlashTyped(bridged.path, bridged.startUTF16, caretRect)
         }
@@ -2986,6 +3074,17 @@ final class BlockTreeTextView: UITextView {
     /// lone empty list item at the document top can still outdent.
     var onDeleteBackward: (() -> Bool)? = nil
 
+    /// Reports the laid-out content height (used rect + vertical
+    /// insets) whenever it changes by more than half a point. Set by
+    /// `makeUIView`; the block stack sizes this row from it
+    /// (hybrid_page_edd.md §3.1).
+    var onContentHeightChanged: ((CGFloat) -> Void)? = nil
+
+    /// Last height reported through `onContentHeightChanged` — the
+    /// dedupe that keeps the report → SwiftUI-frame → layout cycle
+    /// convergent instead of looping.
+    private var lastReportedContentHeight: CGFloat = -1
+
     override func deleteBackward() {
         if onDeleteBackward?() == true { return }
         super.deleteBackward()
@@ -3012,9 +3111,31 @@ final class BlockTreeTextView: UITextView {
         let available = bounds.width
             - textContainerInset.left - textContainerInset.right
             - textContainer.lineFragmentPadding * 2
-        guard available > 0, abs(available - lastLaidOutContentWidth) > 0.5 else { return }
-        lastLaidOutContentWidth = available
-        textContainer.size = CGSize(width: available, height: .greatestFiniteMagnitude)
+        if available > 0, abs(available - lastLaidOutContentWidth) > 0.5 {
+            lastLaidOutContentWidth = available
+            textContainer.size = CGSize(width: available, height: .greatestFiniteMagnitude)
+        }
+        reportContentHeightIfChanged()
+    }
+
+    /// Measure the laid-out content height and report it when it
+    /// moved. Reported asynchronously so the SwiftUI state write that
+    /// resizes this row never mutates state mid-layout-pass. The
+    /// half-point dedupe (plus the SwiftUI side setting an explicit
+    /// frame from the reported value) makes the cycle
+    /// report → frame(height:) → layoutSubviews → same height → stop
+    /// convergent.
+    private func reportContentHeightIfChanged() {
+        guard onContentHeightChanged != nil else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer)
+        let height = ceil(used.height) + textContainerInset.top + textContainerInset.bottom
+        guard height > 0, abs(height - lastReportedContentHeight) > 0.5 else { return }
+        lastReportedContentHeight = height
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.onContentHeightChanged?(height)
+        }
     }
 
     /// Cached `keyCommands` array (M1). UIKit calls the getter
@@ -3076,11 +3197,10 @@ final class BlockTreeTextView: UITextView {
     @objc func applyNumberedList(_ sender: Any?) { onEditorCommand?(.applyNumberedList) }
     @objc func openSlashPalette(_ sender: Any?) {
         // Capture the current caret rect so the wiring view can
-        // anchor the popover beside the cursor. Subtract
-        // `contentOffset` so the rect is in viewport space — the
-        // same convention `TextKitEditorView.visibleCaretRect` uses
-        // for the typed-slash path, so the wiring view treats both
-        // sources identically.
+        // anchor the popover beside the cursor — in STACK-viewport
+        // space, the same convention `TextKitEditorView.visibleCaretRect`
+        // uses for the typed-slash path, so the wiring view treats
+        // both sources identically (hybrid_page_edd.md §3.1).
         //
         // The `.zero` fallback is defensive: `UIKeyCommand` only
         // dispatches while this view is in the responder chain,
@@ -3088,12 +3208,29 @@ final class BlockTreeTextView: UITextView {
         // Cheap insurance against a UIKit edge case.
         let rect: CGRect
         if let start = selectedTextRange?.start {
-            rect = caretRect(for: start)
-                .offsetBy(dx: -contentOffset.x, dy: -contentOffset.y)
+            rect = TextKitEditorView.stackViewportRect(caretRect(for: start), of: self)
         } else {
             rect = .zero
         }
         onEditorCommand?(.openSlashPalette(caretRectInEditor: rect))
+    }
+}
+
+// MARK: - Enclosing scroll discovery
+
+extension UIView {
+    /// First `UIScrollView` above this view in the superview chain —
+    /// the block stack's scroll container when the editor is hosted
+    /// as a row (SwiftUI's `ScrollView` is UIScrollView-backed). Nil
+    /// in unit-test rigs and standalone previews, where callers
+    /// degrade to editor-local space.
+    var enclosingScrollView: UIScrollView? {
+        var view = superview
+        while let current = view {
+            if let scrollView = current as? UIScrollView { return scrollView }
+            view = current.superview
+        }
+        return nil
     }
 }
 

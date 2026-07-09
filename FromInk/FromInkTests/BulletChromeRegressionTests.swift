@@ -61,6 +61,7 @@ final class BulletChromeRegressionTests: XCTestCase {
             onCaretAnchorMoved: { _ in },
             onSlashFilterChanged: { _ in },
             isSlashPaletteOpen: false,
+            onContentHeightChanged: { _ in },
             bodyFont: bodyFont,
             bodyColor: bodyColor
         )

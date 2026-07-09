@@ -98,7 +98,14 @@ struct NotebookScreen: View {
             // swapping to the text editor a beat later.
             loadingPlaceholder
         case .textNote:
-            TextNoteWiringView(store: store)
+            // Block stack (hybrid_page_edd.md Phase 1). The child
+            // store is created by the reducer alongside the variant
+            // resolve; the placeholder covers the one-frame gap.
+            if let pageStore = store.scope(state: \.notePage, action: \.notePage) {
+                NotePageWiringView(store: pageStore)
+            } else {
+                loadingPlaceholder
+            }
         case .notebook, .quickSheet:
             canvasBody
         }
