@@ -1,56 +1,51 @@
 import ComposableArchitecture
 import SwiftUI
 
-/// Wiring view for the textNote notebook variant.
+/// Wiring view for a note page's block stack (hybrid_page_edd.md
+/// §5.2). Phase 1: hosts the textNote variant — one text block inside
+/// the stack, scoped under `NotePageFeature`.
 ///
-/// Renders a single `TextBlockView` bound to the active text block of
-/// the current page, scoped under `NotebookFeature.textEditing`. The
-/// canvas toolbar + Pencil chrome are hidden — text notes have no ink
-/// authoring path. The keyboard accessory + slash menu chrome land in
-/// the next PR; this commit ships the bare editor.
+/// Succeeds `TextNoteWiringView`: same slash-palette rows,
+/// `EditorCommand` mapping, dismiss chrome, and flush lifecycle —
+/// re-pointed at the page feature and re-hosted inside
+/// `PageBlockStackView`, which owns the page's single vertical scroll.
 ///
-/// **Lifecycle.** `NotebookFeature` owns the block load: on appear and
-/// on page swipe it fetches blocks for the current page and seeds a
-/// text block if none exists. `.onDisappear` flushes any pending body
-/// writes through the reducer (sibling of the existing `CanvasScreen`
-/// save-on-disappear pattern).
+/// **Slash popover anchoring.** The trigger fires with a caret rect
+/// in STACK-viewport space (`TextKitEditorView.stackViewportRect`).
+/// The popover modifier is applied to the stack container — the
+/// stationary anchor view — so the rect needs no further translation,
+/// and the editor's stack-scroll KVO republishes it while the palette
+/// is open.
 ///
-/// **Layout.** The editor fills its frame natively — no outer
-/// `ScrollView`. `TextEditor` already scrolls; nesting it inside a
-/// ScrollView creates gesture-recognizer ambiguity that reads as
-/// jank on iPad. The editor uses the full available width (text
-/// experience EDD §6.5 — "text reflows to viewport width"), so the
-/// column grows and reflows on rotation / Split View resize rather
-/// than staying pinned to a fixed-width centered band. Only the
-/// horizontal `lg` padding insets the text from the screen edges.
-///
-/// **Slash popover anchoring.** The slash trigger fires with a
-/// caret rect from the editor's `UITextView` (in editor-local
-/// coordinates). We stash it in `@State` so the popover modifier on
-/// `TextBlockView` has a stable anchor while the palette stays
-/// open — the caret moves forward as the user types filter
-/// characters, but the popover stays pinned to the slash glyph.
-struct TextNoteWiringView: View {
-    @Bindable var store: StoreOf<NotebookFeature>
+/// **Height plumbing.** The editor reports its content height; we
+/// store it here and resolve the row's frame in the `TextBlockView`
+/// model, floored at the stack viewport height so short notes fill
+/// the page and taps below the last line land in the editor.
+struct NotePageWiringView: View {
+    @Bindable var store: StoreOf<NotePageFeature>
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var slashPopoverAnchorRect: CGRect = .zero
+    @State private var editorContentHeight: CGFloat? = nil
 
     private let ds = DesignSystem.standard
 
     var body: some View {
-        ZStack {
-            ds.colors.paper.ignoresSafeArea()
+        GeometryReader { geo in
+            ZStack {
+                ds.colors.paper.ignoresSafeArea()
 
-            editorRegion
-                .padding(.horizontal, ds.spacing.lg)
-                .padding(.vertical, ds.spacing.xl)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                PageBlockStackView(model: .init(
+                    textBlock: textBlockModel(
+                        minHeight: max(0, geo.size.height - ds.spacing.xl * 2)
+                    )
+                ))
+                .modifier(SlashPopoverModifier(popover: slashPopover()))
 
-            dismissChrome
+                dismissChrome
+            }
         }
-        .task { store.send(.onAppear) }
         .onDisappear {
             store.send(.textEditing(.flush))
         }
@@ -67,8 +62,10 @@ struct TextNoteWiringView: View {
         }
     }
 
-    private var editorRegion: some View {
-        TextBlockView(model: .init(
+    // MARK: - Row model
+
+    private func textBlockModel(minHeight: CGFloat) -> TextBlockView.Model {
+        TextBlockView.Model(
             isPresented: store.textEditing.activeBlock != nil,
             failureState: store.textEditing.loadFailure,
             document: store.textEditing.document,
@@ -89,46 +86,55 @@ struct TextNoteWiringView: View {
                 handle(command: command)
             },
             onCreateRequested: {
-                // Tap on the empty-state placeholder asks the
-                // notebook feature to re-run the page-blocks load,
-                // which seeds an empty text block if none exists.
-                // Defense against a failed auto-seed leaving the
-                // user stranded on the placeholder.
-                store.send(.textBlocksReloadRequested)
+                // Tap on the empty-state placeholder re-runs the
+                // page-blocks load, which seeds an empty text block if
+                // none exists. Defense against a failed auto-seed
+                // leaving the user stranded on the placeholder.
+                store.send(.reloadRequested)
             },
             onRetryRequested: {
                 // Decode-failed / orphan placeholder retry — same
                 // path as the empty-state tap: re-run the load.
-                store.send(.textBlocksReloadRequested)
+                store.send(.reloadRequested)
             },
-            slashPopover: TextBlockView.SlashPopover(
-                isOpen: store.textEditing.slashPalette.isOpen,
-                anchorRect: slashPopoverAnchorRect,
-                rows: paletteRows(),
-                filterText: store.textEditing.slashPalette.filterText,
-                onAnchorMoved: { rect in
-                    // Republished by the editor's scroll observer
-                    // while the palette is open — keeps the
-                    // popover anchored to the slash glyph as the
-                    // textView scrolls.
-                    slashPopoverAnchorRect = rect
-                },
-                onFilterChanged: { filter in
-                    // Storage-side live filter (the reducer's
-                    // document-based refresh converges to the same
-                    // value on each debounced documentEdited). nil
-                    // means the trigger `/` was deleted.
-                    if let filter {
-                        store.send(.textEditing(.slashPalette(.filterChanged(filter))))
-                    } else {
-                        store.send(.textEditing(.slashPalette(.dismissed)))
-                    }
-                },
-                onDismissed: {
+            slashPopover: slashPopover(),
+            onContentHeightChanged: { height in
+                editorContentHeight = height
+            },
+            editorMinHeight: minHeight,
+            editorContentHeight: editorContentHeight
+        )
+    }
+
+    // MARK: - Slash palette surface
+
+    private func slashPopover() -> TextBlockView.SlashPopover {
+        TextBlockView.SlashPopover(
+            isOpen: store.textEditing.slashPalette.isOpen,
+            anchorRect: slashPopoverAnchorRect,
+            rows: paletteRows(),
+            filterText: store.textEditing.slashPalette.filterText,
+            onAnchorMoved: { rect in
+                // Republished by the editor's stack-scroll KVO while
+                // the palette is open — keeps the popover anchored to
+                // the slash glyph as the stack scrolls.
+                slashPopoverAnchorRect = rect
+            },
+            onFilterChanged: { filter in
+                // Storage-side live filter (the reducer's
+                // document-based refresh converges to the same
+                // value on each debounced documentEdited). nil
+                // means the trigger `/` was deleted.
+                if let filter {
+                    store.send(.textEditing(.slashPalette(.filterChanged(filter))))
+                } else {
                     store.send(.textEditing(.slashPalette(.dismissed)))
                 }
-            )
-        ))
+            },
+            onDismissed: {
+                store.send(.textEditing(.slashPalette(.dismissed)))
+            }
+        )
     }
 
     /// Build the row list the slash popover renders from the current
@@ -226,7 +232,7 @@ struct TextNoteWiringView: View {
             store.send(.textEditing(.exitList))
         case .insertParagraph:
             store.send(.textEditing(.insertParagraph))
-        case .openSlashPalette(let caretRectInEditor):
+        case .openSlashPalette(let caretRectInStack):
             let selection = store.textEditing.selection
             // Empty selection — fall back to the document's last leaf
             // so the palette opens with a usable trigger location.
@@ -242,7 +248,7 @@ struct TextNoteWiringView: View {
                 // Empty document — no leaf to anchor to; no-op.
                 return
             }
-            slashPopoverAnchorRect = caretRectInEditor
+            slashPopoverAnchorRect = caretRectInStack
             store.send(.textEditing(.slashTyped(blockPath: path, offsetUTF16: offset)))
         }
     }
