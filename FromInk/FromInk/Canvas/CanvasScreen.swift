@@ -36,12 +36,28 @@ struct CanvasScreen: View {
     @State private var currentDrawing = PKDrawing()
     @State private var strokeCount: Int = 0
 
-    /// Loaded once from `NotePage.drawingData` on `.task` and passed to
+    /// Loaded once from the page's ink block on `.task` and passed to
     /// `CanvasView` as `initialDrawingData`. Persisted updates flow
-    /// out of the Coordinator directly via `NotebookClient.saveDrawing`,
-    /// so this state is read-only after the initial load.
+    /// out of the Coordinator directly via
+    /// `NotebookClient.updateBlockDrawing`, so this state is read-only
+    /// after the initial load.
     @State private var loadedDrawingData: Data? = nil
     @State private var hasLoadedDrawing = false
+
+    /// The page's `.ink` `PageBlock` id — the save target after the
+    /// Phase 2a cutover. Resolved during `loadPageOnAppear`: the block
+    /// either exists (fresh pages seed it below; legacy pages get one
+    /// from the migration inside `fetchBlocksForPage`) or is inserted
+    /// here. Passed to `CanvasView`, which forwards it to the
+    /// Coordinator's save paths.
+    @State private var inkBlockID: UUID? = nil
+
+    /// One-shot guard for `bindCanonicalCanvasWidth` — the notebook's
+    /// canonical ink width binds to the first real canvas width this
+    /// device lays out (idempotent client-side too; the bind is a
+    /// no-op once `canonicalCanvasWidthIsBound`). Groundwork for the
+    /// EDD §6.4 cross-device render scale.
+    @State private var hasBoundCanonicalWidth = false
 
     /// Bridge to the `CanvasView.Coordinator`. Allows this view to
     /// persist the live `PKDrawing` from `.onDisappear` (page swipe or
@@ -470,6 +486,12 @@ struct CanvasScreen: View {
                     #if DEBUG
                     .sheet(isPresented: $showDebugSheet) { ExtractionDebugSheet() }
                     #endif
+                    // Canonical-width bind (EDD §6.4 groundwork) — needs
+                    // `geo`, so it rides the background layer inside the
+                    // GeometryReader rather than the outer lifecycle chain.
+                    .task(id: geo.size.width) {
+                        await bindCanonicalWidthIfNeeded(width: geo.size.width)
+                    }
 
                 canvasViewLayer
                     .ignoresSafeArea()
@@ -711,17 +733,31 @@ struct CanvasScreen: View {
         }
     }
 
+    /// Bind the notebook's canonical ink width to the first real canvas
+    /// width this device lays out (EDD §6.4 groundwork — Phase 2a). On
+    /// the authoring device the render scale stays 1.0; the bound width
+    /// is what a DIFFERENT viewport later divides by to scale ink.
+    /// One-shot per screen instance; the live client is idempotent too
+    /// (no-op once `canonicalCanvasWidthIsBound`), so preloaded sibling
+    /// pages racing this bind are harmless.
+    private func bindCanonicalWidthIfNeeded(width: CGFloat) async {
+        guard !hasBoundCanonicalWidth, width > 0 else { return }
+        hasBoundCanonicalWidth = true
+        try? await notebookClient.bindCanonicalCanvasWidth(notebookID, Double(width))
+    }
+
     /// Loads persisted ink + headers + links + history for the page on
     /// first `.task(id: pageID)` run. The drawing data is one-shot —
-    /// `CanvasView` wires it into `PKCanvasView` in `makeUIView`. Saves
-    /// flow back out of the Coordinator directly via
-    /// `NotebookClient.saveDrawing` on the 800 ms debounce.
+    /// `CanvasView` applies it to `PKCanvasView` once. Saves flow back
+    /// out of the Coordinator via `NotebookClient.updateBlockDrawing`
+    /// against `inkBlockID` (Phase 2a cutover — hybrid_page_edd §6
+    /// Phase 2: ink lives on the page's `.ink` block, and legacy
+    /// `NotePage.drawingData` migrates inside `fetchBlocksForPage`).
     private func loadPageOnAppear() async {
         guard !hasLoadedDrawing else { return }
         hasLoadedDrawing = true
         do {
             if let detail = try await notebookClient.fetchPage(pageID) {
-                loadedDrawingData = detail.drawingData
                 regions = detail.regions
                 // Legacy `headers` / `links` state stays empty —
                 // canvas rendering reads from `regions` only.
@@ -730,8 +766,23 @@ struct CanvasScreen: View {
                 headerPreviewImages = [:]
                 headerPreviewInsertionOrder = []
             }
+            // Block-first ink load. fetchBlocksForPage migrates any
+            // legacy page-level payload before returning, so a
+            // pre-cutover page arrives here already holding its ink
+            // block. A genuinely fresh page seeds one so the save
+            // paths always have a target.
+            let blocks = try await notebookClient.fetchBlocksForPage(pageID)
+            if let ink = blocks.first(where: { $0.kind == .ink }) {
+                inkBlockID = ink.id
+                loadedDrawingData = try await notebookClient.loadBlockDrawing(ink.id)
+            } else {
+                let seeded = try await notebookClient.insertBlock(pageID, .ink, nil)
+                inkBlockID = seeded.id
+                loadedDrawingData = nil
+            }
         } catch {
-            // Silent — empty page renders fine; next stroke save writes data.
+            // Silent — empty page renders fine; the ink block seed
+            // retries via the save-skip log path if it failed here.
         }
         await syncRoutedItemsAsync()
     }
@@ -818,6 +869,7 @@ struct CanvasScreen: View {
             penSettings: activeSettings,
             template: activeTemplate,
             pageID: pageID,
+            inkBlockID: inkBlockID,
             initialDrawingData: loadedDrawingData,
             notebookClient: notebookClient,
             bridge: canvasBridge,
