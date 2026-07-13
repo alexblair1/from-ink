@@ -110,10 +110,16 @@ struct AaFormatPopoverView: View {
                             RoundedRectangle(cornerRadius: model.inlineToggleCornerRadius, style: .continuous)
                                 .fill(toggle.isActive ? model.ink : Color.clear)
                         )
-                        .foregroundStyle(toggle.isActive ? model.paperOnInk : model.ink)
+                        .foregroundStyle(
+                            toggle.isEnabled
+                                ? (toggle.isActive ? model.paperOnInk : model.ink)
+                                : model.ink3
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!toggle.isEnabled)
+                .opacity(toggle.isEnabled ? 1 : model.comingSoonOpacity)
                 .accessibilityLabel(toggle.accessibilityLabel)
                 .accessibilityAddTraits(toggle.isActive ? [.isSelected] : [])
             }
@@ -170,11 +176,31 @@ extension AaFormatPopoverView {
         let icon: String
         let accessibilityLabel: String
         let isActive: Bool
+        /// False when the toggle is inert for the caret context —
+        /// inline formats inside code blocks / dividers (audit B7).
+        let isEnabled: Bool
         let onTap: () -> Void
+
+        init(
+            id: String,
+            icon: String,
+            accessibilityLabel: String,
+            isActive: Bool,
+            isEnabled: Bool = true,
+            onTap: @escaping () -> Void
+        ) {
+            self.id = id
+            self.icon = icon
+            self.accessibilityLabel = accessibilityLabel
+            self.isActive = isActive
+            self.isEnabled = isEnabled
+            self.onTap = onTap
+        }
 
         static func == (lhs: InlineToggle, rhs: InlineToggle) -> Bool {
             lhs.id == rhs.id && lhs.icon == rhs.icon
                 && lhs.accessibilityLabel == rhs.accessibilityLabel && lhs.isActive == rhs.isActive
+                && lhs.isEnabled == rhs.isEnabled
         }
     }
 
