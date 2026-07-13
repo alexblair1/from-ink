@@ -27,25 +27,30 @@ import SwiftData
     /// the legacy "blank" sentinel that the renderer never honored.
     var templateName: String = CanvasTemplate.none.rawValue
 
-    // Ink payload — externalStorage promotes to CKAsset on sync.
-    // **Legacy.** New code reads ink from `blocks` (PageBlock.drawingData).
-    // These fields retire when the CanvasScreen refactor lands (text
-    // experience EDD §22.5); no migration — schema bumps directly when
-    // the cutover commits.
+    // Ink payload — **MIGRATION-ONLY as of the Phase 2a cutover**
+    // (hybrid_page_edd §6 Phase 2). No production code WRITES this;
+    // the live `fetchBlocksForPage` reads it once to migrate the
+    // payload onto the page's `.ink` `PageBlock`, then nils it. The
+    // field retires from the schema in a follow-up commit once the
+    // cutover is verified on-device (direct schema edit — no
+    // migration machinery pre-CloudKit).
     @Attribute(.externalStorage)
     var drawingData: Data?
 
+    // NOT legacy: the page-card thumbnail the library grid renders.
+    // Kept fresh by the live `updateBlockDrawing`, which mirrors the
+    // ink block's thumbnail here (single-ink-block pages: identical
+    // picture; a composite card for interleaved pages is Phase 3+).
     @Attribute(.externalStorage)
     var thumbnailData: Data?
 
-    // OCR — legacy (see above). New OCR writes live on PageBlock.ocrText
-    // per ink block.
+    // OCR — migration-only (same lifecycle as `drawingData`; moves to
+    // PageBlock.ocrText on first read).
     var ocrText: String?
     var ocrUpdatedAt: Date?
 
-    // Typed text (populated when parent Notebook.notebookType == .textNote
-    // before the block model lands; the block-aware path writes through
-    // PageBlock.bodyData instead).
+    // Typed text — migration-only (pre-block textNote pages; moves to
+    // a `.text` PageBlock's bodyData on first read).
     var typedText: String?
 
     // ML cache — legacy. `extractedTextHash` (below) is the block-aware

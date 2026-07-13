@@ -72,6 +72,14 @@ final class CanvasViewBridge {
               let canvas = coordinator.canvas,
               let client = coordinator.notebookClient
         else { return nil }
+        guard let blockID = coordinator.inkBlockID else {
+            // Ink block not ensured yet — nothing persisted-to exists.
+            // Only reachable when a flush races the first ms of a fresh
+            // page's load; strokes (if any) are covered by the next
+            // lifecycle flush after the ensure lands.
+            canvasLog.error("flush skipped — ink block not ready for page \(coordinator.pageID.uuidString, privacy: .public)")
+            return nil
+        }
         let drawing = canvas.drawing   // value-type capture
         let count = drawing.strokes.count
         // Skip if nothing has changed since the last save AND there's
@@ -81,7 +89,7 @@ final class CanvasViewBridge {
         }
         coordinator.lastSavedStrokeCount = count
         return FlushSnapshot(
-            pageID: coordinator.pageID,
+            blockID: blockID,
             drawing: drawing,
             client: client
         )
@@ -90,18 +98,20 @@ final class CanvasViewBridge {
     /// Persists a flush snapshot. Encode + thumbnail + write run on a
     /// background Task; the snapshot owns its values so the canvas and
     /// coordinator can be deallocated mid-save without consequence.
+    /// Writes through `updateBlockDrawing` (Phase 2a cutover) — the
+    /// live client mirrors the thumbnail to the page card.
     static func persist(_ snapshot: FlushSnapshot) async {
         let data = snapshot.drawing.dataRepresentation()
         let thumbnail = await ThumbnailRenderer.render(drawing: snapshot.drawing)
         do {
-            try await snapshot.client.saveDrawing(snapshot.pageID, data, thumbnail)
+            try await snapshot.client.updateBlockDrawing(snapshot.blockID, data, thumbnail)
         } catch {
-            canvasLog.error("flush saveDrawing failed for page \(snapshot.pageID.uuidString, privacy: .public): \(error.localizedDescription)")
+            canvasLog.error("flush updateBlockDrawing failed for block \(snapshot.blockID.uuidString, privacy: .public): \(error.localizedDescription)")
         }
     }
 
     struct FlushSnapshot: Sendable {
-        let pageID: UUID
+        let blockID: UUID
         let drawing: PKDrawing
         let client: NotebookClient
     }
@@ -113,15 +123,19 @@ struct CanvasView: UIViewRepresentable {
     var template: CanvasTemplate = .none
     /// Fixed page height in points — device-independent so every iPad sees the same writing surface.
     var pageHeight: CGFloat = CanvasView.standardPageHeight
-    /// Persisted page identity. Drives the persistence path:
-    /// `notebookClient.saveDrawing(pageID, ...)` fires on lifecycle events
-    /// (page swipe, notebook close, app background) and on a stroke-count
-    /// safety checkpoint — NOT on every stroke. Defaults to a fresh UUID
-    /// for legacy/preview callers that aren't backed by a real page yet.
+    /// Persisted page identity — logging + region persistence context.
+    /// Defaults to a fresh UUID for legacy/preview callers that aren't
+    /// backed by a real page yet.
     var pageID: UUID = UUID()
-    /// Initial ink loaded from `NotePage.drawingData`. Applied to the `PKCanvasView`
-    /// once during `makeUIView` BEFORE the delegate is attached, so the load itself
-    /// doesn't kick off any save. `nil` = brand-new page.
+    /// The page's `.ink` `PageBlock` — the persistence TARGET (Phase 2a
+    /// cutover): lifecycle flushes and the stroke-count safety
+    /// checkpoint write via `notebookClient.updateBlockDrawing(inkBlockID,
+    /// ...)`. Arrives late (CanvasScreen ensures the block on its async
+    /// load); saves are skipped with a log until it lands.
+    var inkBlockID: UUID? = nil
+    /// Initial ink loaded from the ink block's `drawingData`. Applied to
+    /// the `PKCanvasView` once BEFORE the delegate is attached, so the
+    /// load itself doesn't kick off any save. `nil` = brand-new page.
     var initialDrawingData: Data? = nil
     /// Persistence client. The Coordinator captures this for `flush()` —
     /// `PKDrawing` never crosses the dependency surface (the Coordinator
@@ -185,6 +199,7 @@ struct CanvasView: UIViewRepresentable {
         applyInitialDrawingIfNeeded(canvas: canvas, coordinator: context.coordinator)
         canvas.delegate = context.coordinator
         context.coordinator.pageID = pageID
+        context.coordinator.inkBlockID = inkBlockID
         context.coordinator.notebookClient = notebookClient
         // Save-on-lifecycle: parents call `bridge.flush()` from `.onDisappear`
         // and scenePhase background. The bridge holds a weak ref to the
@@ -286,6 +301,7 @@ struct CanvasView: UIViewRepresentable {
         // Sync persistence inputs in case pageID or client changed
         // (TabView reuse can rebind these without reinstantiating).
         context.coordinator.pageID = pageID
+        context.coordinator.inkBlockID = inkBlockID
         context.coordinator.notebookClient = notebookClient
         // Apply persisted drawing once the async fetch resolves. The
         // first render typically has `initialDrawingData = nil`; this
@@ -351,6 +367,14 @@ struct CanvasView: UIViewRepresentable {
         // Save-on-lifecycle: parents call `flush()` from `.onDisappear` and
         // scenePhase background; safety checkpoint fires every N strokes.
         var pageID: UUID = UUID()
+        /// The page's `.ink` `PageBlock` — the save TARGET after the
+        /// Phase 2a cutover (hybrid_page_edd §6 Phase 2): ink persists
+        /// through `updateBlockDrawing`, never the legacy
+        /// `NotePage.drawingData`. Set (possibly late — the ensure runs
+        /// on `CanvasScreen`'s async load) via `updateUIView`. Saves
+        /// that fire before it lands are skipped with a log; the next
+        /// checkpoint/flush covers the strokes.
+        var inkBlockID: UUID?
         var notebookClient: NotebookClient?
         weak var canvas: PKCanvasView?
 
@@ -483,16 +507,22 @@ struct CanvasView: UIViewRepresentable {
         private func maybeSafetyCheckpoint(drawing: PKDrawing, strokeCount: Int) {
             let delta = strokeCount - lastSavedStrokeCount
             guard delta >= Coordinator.safetySaveStrokeInterval else { return }
-            lastSavedStrokeCount = strokeCount
-            let id = pageID
             guard let client = notebookClient else { return }
+            guard let blockID = inkBlockID else {
+                // Block not ensured yet (races only the first ms of a
+                // fresh page) — don't move the checkpoint watermark, so
+                // the next didChange retries.
+                canvasLog.error("safety checkpoint skipped — ink block not ready for page \(self.pageID.uuidString, privacy: .public)")
+                return
+            }
+            lastSavedStrokeCount = strokeCount
             Task { @MainActor in
                 let data = drawing.dataRepresentation()
                 let thumbnail = await ThumbnailRenderer.render(drawing: drawing)
                 do {
-                    try await client.saveDrawing(id, data, thumbnail)
+                    try await client.updateBlockDrawing(blockID, data, thumbnail)
                 } catch {
-                    canvasLog.error("safety saveDrawing failed for page \(id.uuidString, privacy: .public): \(error.localizedDescription)")
+                    canvasLog.error("safety updateBlockDrawing failed for block \(blockID.uuidString, privacy: .public): \(error.localizedDescription)")
                 }
             }
         }
