@@ -94,7 +94,7 @@ per-block embedding multiplies the surfaces.
 | B4 | **fixed** (this branch) | Ordinal digits localize via `orderedListMarkerText(_:locale:)` (Arabic-Indic, Devanagari, …); marker gutter mirrors for RTL via `markerOriginX(isRTL:)` reading the view's live layout direction. Head-indents were already direction-relative (NSParagraphStyle) | layout manager |
 | B5 | **fixed** (this branch) | All chrome + content colors tokenized: `BlockChromeColors` (blockquote bg/bar, code bg, divider rule, list marker) injected into the layout manager; link + 4 highlight tokens replace the `systemBlue`/`systemYellow…` literals. Ten new `ink/*` color sets with baked alphas + dark variants | `ColorTokens`, `BlockChromeColors` |
 | B6 | **fixed** (this branch) | `keyCommands` HUD titles now come from `AppStrings.AccessoryBar`, reusing the accessory-bar vocabulary (⌘⌥1/2/3 read Title/Heading/Subheading, matching the Aa popover); new `slashMenu` key | `BlockTreeTextView.buildKeyCommands` |
-| B7 | UX-minor | Inline toggles silently no-op in code blocks while chips still look tappable | `applyInlineToggleAtCaret` |
+| B7 | **fixed** (2026-07-13) | Inline-format chips (accessory bar B/I/U + all four Aa-popover toggles) now render disabled — `ink3`, reduced opacity, `.disabled` — when the caret is in a code block or divider, where the toggle is deliberately inert | `buildAccessoryBarModel` / `aaPopoverModel` |
 | B8 | UX-minor | Slash palette always opens with Heading 1 highlighted; no context awareness | `SlashCommandPaletteFeature.openRequested` |
 
 Correction recorded from the audit: the accessory bar **is** wired — installed as
@@ -143,8 +143,13 @@ The iPhone gap is B1 only, not bar wiring.
 
 ### Test-coverage gaps to close alongside
 
-- Native-typing undo (especially undo of Enter)
-- Composition-commit structural edits
-- Persist-failure retry policy
-- Double-seed race (A5)
-- Dynamic Type / RTL snapshot variants
+- ~~Native-typing undo (especially undo of Enter)~~ — closed 2026-07-13
+  (`test_undoOfNativeEnter_recoversViaAlignmentGuard`: end-to-end through
+  `textViewDidChange`, storage reverted without `shouldChangeTextIn`)
+- ~~Composition-commit structural edits~~ — closed 2026-07-13
+  (`test_markedTextCommitWithNewline_recoversViaAlignmentGuard`: marked text active,
+  pendings cleared, newline commit recovered by the alignment guard)
+- ~~Persist-failure retry policy~~ — closed with A4
+- ~~Double-seed race (A5)~~ — closed with A5 (now in `NotePageFeatureTests`)
+- Dynamic Type / RTL snapshot variants — open (snapshot-suite work; see the 2x/3x
+  auto-record hazard before recording)

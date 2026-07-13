@@ -2354,6 +2354,13 @@ struct TextKitEditorView: UIViewRepresentable {
             }
             let active = TextKitEditorView.activeInlineFormats(in: textView, paragraphIndex: paragraphIndex)
             let blockKind = TextKitEditorView.activeParagraphKind(in: textView, paragraphIndex: paragraphIndex)
+            // Inline formats are deliberately inert inside code blocks
+            // and dividers (`applyInlineToggle` no-ops there) — the
+            // chips must read disabled rather than look tappable
+            // (readiness audit B7). `nil` kind (unset caret) stays
+            // enabled: the toggle resolves against the caret's real
+            // paragraph by the time it applies.
+            let inlineFormatsEnabled = blockKind != .codeBlock && blockKind != .divider
             typealias Bar = AccessoryBarView
             let aa = Bar.Button(
                 id: "aa", content: .text("Aa"),
@@ -2365,14 +2372,17 @@ struct TextKitEditorView: UIViewRepresentable {
                 Bar.Button(id: "bold", content: .symbol("bold"),
                            accessibilityLabel: AppStrings.AccessoryBar.bold,
                            isActive: active.contains(.bold),
+                           isEnabled: inlineFormatsEnabled,
                            onTap: command(.toggleBold)),
                 Bar.Button(id: "italic", content: .symbol("italic"),
                            accessibilityLabel: AppStrings.AccessoryBar.italic,
                            isActive: active.contains(.italic),
+                           isEnabled: inlineFormatsEnabled,
                            onTap: command(.toggleItalic)),
                 Bar.Button(id: "underline", content: .symbol("underline"),
                            accessibilityLabel: AppStrings.AccessoryBar.underline,
                            isActive: active.contains(.underline),
+                           isEnabled: inlineFormatsEnabled,
                            onTap: command(.toggleUnderline)),
                 Bar.Button(id: "bulleted", content: .symbol("list.bullet"),
                            accessibilityLabel: AppStrings.AccessoryBar.bulletedList,
@@ -2444,11 +2454,15 @@ struct TextKitEditorView: UIViewRepresentable {
                 Pop.Row(id: id, icon: icon, title: title, isActive: isActive,
                         onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
+            // Inline formats are inert in code blocks / dividers —
+            // toggles read disabled there (audit B7), matching the bar.
+            let inlineFormatsEnabled = blockKind != .codeBlock && blockKind != .divider
             func toggle(
                 _ id: String, _ icon: String, _ label: String,
                 _ cmd: EditorCommand, _ isActive: Bool
             ) -> Pop.InlineToggle {
                 Pop.InlineToggle(id: id, icon: icon, accessibilityLabel: label, isActive: isActive,
+                                 isEnabled: inlineFormatsEnabled,
                                  onTap: { [weak self] in self?.applyFromPopover(cmd) })
             }
             // "Body" covers paragraph + list items + blockquote — the

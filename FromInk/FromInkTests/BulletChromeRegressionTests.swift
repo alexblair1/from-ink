@@ -912,5 +912,76 @@ final class BulletChromeRegressionTests: XCTestCase {
             "formatBold(_:) selector must apply bold via onEditorCommand"
         )
     }
+
+    // MARK: - Bypass-edit recovery end-to-end (audit A1 coverage gaps)
+
+    /// UNDO OF NATIVE ENTER, end-to-end through `textViewDidChange`.
+    /// UIKit's native-typing undo mutates storage WITHOUT calling
+    /// `shouldChangeTextIn`, so no structural edit is captured and the
+    /// index goes stale — the exact corruption shape the alignment
+    /// guard exists for. The rebuilt document must be structurally
+    /// correct (fresh identity is the accepted churn).
+    func test_undoOfNativeEnter_recoversViaAlignmentGuard() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, mirror) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+
+        // User presses Enter, then types "World" — both through the
+        // real delegate flow.
+        for (range, text) in [(NSRange(location: 5, length: 0), "\n"),
+                              (NSRange(location: 6, length: 0), "World")] {
+            XCTAssertTrue(coordinator.textView(textView, shouldChangeTextIn: range, replacementText: text))
+            textView.textStorage.replaceCharacters(in: range, with: NSAttributedString(string: text))
+            textView.selectedRange = NSRange(location: range.location + (text as NSString).length, length: 0)
+            coordinator.textViewDidChange(textView)
+        }
+        XCTAssertEqual(mirror.document.blocks.count, 2, "Enter split into two paragraphs")
+
+        // Native UNDO: storage reverts WITHOUT shouldChangeTextIn.
+        textView.textStorage.replaceCharacters(
+            in: NSRange(location: 5, length: 6), with: NSAttributedString(string: "")
+        )
+        textView.selectedRange = NSRange(location: 5, length: 0)
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(mirror.document.blocks.count, 1, "Alignment guard rebuilt a correct single paragraph")
+        XCTAssertEqual(mirror.document.plainText, "Hello", "No corruption — the undone text is gone")
+    }
+
+    /// COMPOSITION COMMIT WITH A NEWLINE. While marked text is active,
+    /// `shouldChangeTextIn` deliberately captures nothing (the input
+    /// system owns the buffer) — so a commit that lands a structural
+    /// character arrives with no pending edit and only the alignment
+    /// guard stands between the sync and a corrupted document.
+    func test_markedTextCommitWithNewline_recoversViaAlignmentGuard() {
+        let doc = RichTextDocument(blocks: [
+            Block(kind: .paragraph(inline: [Inline(text: "Hello")]))
+        ])
+        let (textView, coordinator, mirror) = makeEditorRig(document: doc)
+        textView.selectedRange = NSRange(location: 5, length: 0)
+
+        // Composition begins — the delegate must clear pendings and
+        // let the input system own the buffer.
+        textView.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0))
+        XCTAssertNotNil(textView.markedTextRange)
+        XCTAssertTrue(coordinator.textView(
+            textView, shouldChangeTextIn: NSRange(location: 5, length: 1), replacementText: "\n"
+        ), "Marked-text guard lets the input system act unconditionally")
+
+        // Commit: marked text resolves to committed text containing a
+        // newline — applied by the input system, never via
+        // shouldChangeTextIn. (setMarkedText inserted \"k\" at 5.)
+        textView.unmarkText()
+        textView.textStorage.replaceCharacters(
+            in: NSRange(location: 5, length: 1), with: NSAttributedString(string: "!\nWorld")
+        )
+        textView.selectedRange = NSRange(location: 12, length: 0)
+        coordinator.textViewDidChange(textView)
+
+        XCTAssertEqual(mirror.document.blocks.count, 2, "Commit's newline split recovered by the guard")
+        XCTAssertEqual(mirror.document.plainText, "Hello!\nWorld")
+    }
 }
 #endif

@@ -51,8 +51,8 @@ struct AccessoryBarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(button.isComingSoon)
-        .opacity(button.isComingSoon ? model.comingSoonOpacity : 1)
+        .disabled(button.isComingSoon || !button.isEnabled)
+        .opacity(button.isComingSoon || !button.isEnabled ? model.comingSoonOpacity : 1)
         .accessibilityLabel(button.accessibilityLabel)
         .accessibilityAddTraits(button.isActive ? [.isSelected] : [])
     }
@@ -72,7 +72,7 @@ struct AccessoryBarView: View {
     }
 
     private func foreground(_ button: Button) -> Color {
-        if button.isComingSoon { return model.ink3 }
+        if button.isComingSoon || !button.isEnabled { return model.ink3 }
         return button.isActive ? model.paperOnInk : model.ink
     }
 }
@@ -90,6 +90,11 @@ extension AccessoryBarView {
         let accessibilityLabel: String
         let isActive: Bool
         let isComingSoon: Bool
+        /// False when the command is inert for the CURRENT caret
+        /// context — e.g. inline formats inside a code block or
+        /// divider, which the editor deliberately no-ops (audit B7:
+        /// the chip must not LOOK tappable when tapping does nothing).
+        let isEnabled: Bool
         let onTap: () -> Void
 
         init(
@@ -98,6 +103,7 @@ extension AccessoryBarView {
             accessibilityLabel: String,
             isActive: Bool = false,
             isComingSoon: Bool = false,
+            isEnabled: Bool = true,
             onTap: @escaping () -> Void
         ) {
             self.id = id
@@ -105,6 +111,7 @@ extension AccessoryBarView {
             self.accessibilityLabel = accessibilityLabel
             self.isActive = isActive
             self.isComingSoon = isComingSoon
+            self.isEnabled = isEnabled
             self.onTap = onTap
         }
 
@@ -112,6 +119,7 @@ extension AccessoryBarView {
             lhs.id == rhs.id && lhs.content == rhs.content
                 && lhs.accessibilityLabel == rhs.accessibilityLabel
                 && lhs.isActive == rhs.isActive && lhs.isComingSoon == rhs.isComingSoon
+                && lhs.isEnabled == rhs.isEnabled
         }
     }
 
