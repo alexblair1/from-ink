@@ -1,15 +1,12 @@
 import Foundation
 
 /// Full value-type projection of `NotePage` for the canvas open path —
-/// includes `drawingData`, OCR text, and the page's headers/links/history
-/// snapshots. Reducers pass `drawingData` through to `CanvasView` as
-/// `Data?` and never construct a `PKDrawing` themselves; the `Coordinator`
-/// owns that translation at the UIKit boundary.
+/// the page's headers/links/history/region snapshots. Block PAYLOADS
+/// (ink, text, OCR) are not carried here: the canvas loads them via
+/// `fetchBlocksForPage` + `loadBlockDrawing` (hybrid_page_edd §6
+/// Phase 2a).
 struct NotePageDetailSnapshot: Equatable, Sendable {
     let page: NotePageSnapshot
-    let drawingData: Data?
-    let ocrText: String?
-    let typedText: String?
     let headers: [NoteHeaderSnapshot]
     let links: [NoteLinkSnapshot]
     let history: [NoteHistoryEntrySnapshot]
@@ -24,9 +21,6 @@ struct NotePageDetailSnapshot: Equatable, Sendable {
 extension NotePageDetailSnapshot {
     init(model: NotePage) {
         self.page = NotePageSnapshot(model: model)
-        self.drawingData = model.drawingData
-        self.ocrText = model.ocrText
-        self.typedText = model.typedText
         self.headers = (model.headers ?? [])
             .sorted { $0.sortOrder < $1.sortOrder }
             .map(NoteHeaderSnapshot.init(model:))

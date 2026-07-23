@@ -1,12 +1,14 @@
 import Foundation
 
 /// Lightweight value-type projection of `NotePage` for list views (page
-/// navigator, search results). Excludes `drawingData` — opening a page
-/// for editing uses `NotePageDetailSnapshot` instead.
+/// navigator, search results). Excludes block payloads — opening a page
+/// for editing loads blocks via `fetchBlocksForPage`.
 ///
-/// `ocrTextExcerpt` is the first ~200 characters of `NotePage.ocrText`,
-/// suitable for displaying a search hit preview without loading the full
-/// recognized text.
+/// `ocrTextExcerpt` is the first ~200 characters of the page's
+/// block-aware `extractedText` aggregate (text plainText ∪ ink OCR ∪
+/// voice transcripts, in block order) — a search-hit preview without
+/// loading full payloads. The name predates the block model; it now
+/// covers more than OCR.
 struct NotePageSnapshot: Equatable, Identifiable, Sendable {
     let id: UUID
     let notebookID: UUID
@@ -39,7 +41,7 @@ extension NotePageSnapshot {
         self.modifiedAt = model.modifiedAt
         self.templateName = model.templateName
         self.thumbnailData = model.thumbnailData
-        self.ocrTextExcerpt = model.ocrText.map { String($0.prefix(200)) }
+        self.ocrTextExcerpt = model.extractedText.map { String($0.prefix(200)) }
         self.headerCount = model.headers?.count ?? 0
         self.linkCount = model.links?.count ?? 0
     }

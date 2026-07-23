@@ -137,7 +137,10 @@ The iPhone gap is B1 only, not bar wiring.
 4. **Hybrid foundation** — `NotePageFeature` + `PageBlockStackView` + ink lifecycle as its own
    planned phase; the seams in §C are the open design questions.
 5. **Mac scope decision** — read-only Mac is shippable v1; full authoring is a separate
-   workstream, not a bug to fix. *(D5 note: Scribble disabled in v1 — Pencil authors ink,
+   workstream, not a bug to fix.
+6. **Legacy `NotePage` payload fields** — retired 2026-07-22 (direct schema edit, no
+   migration per the project rule; `saveDrawing`/`updateOCR`/`updateTypedText` client
+   functions deleted with them). *(D5 note: Scribble disabled in v1 — Pencil authors ink,
    not typed text. Revisit when hybrid pages land; proper support means routing Scribble
    edits through the index-maintenance path.)*
 

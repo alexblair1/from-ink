@@ -27,31 +27,18 @@ import SwiftData
     /// the legacy "blank" sentinel that the renderer never honored.
     var templateName: String = CanvasTemplate.none.rawValue
 
-    // Ink payload — **MIGRATION-ONLY as of the Phase 2a cutover**
-    // (hybrid_page_edd §6 Phase 2). No production code WRITES this;
-    // the live `fetchBlocksForPage` reads it once to migrate the
-    // payload onto the page's `.ink` `PageBlock`, then nils it. The
-    // field retires from the schema in a follow-up commit once the
-    // cutover is verified on-device (direct schema edit — no
-    // migration machinery pre-CloudKit).
-    @Attribute(.externalStorage)
-    var drawingData: Data?
+    // Page payloads live on `blocks` (hybrid_page_edd §6 Phase 2 —
+    // ink on PageBlock.drawingData, typed text on PageBlock.bodyData,
+    // OCR on PageBlock.ocrText). The legacy page-level payload fields
+    // were retired 2026-07-22 as a direct schema edit (no migration,
+    // per the pre-CloudKit rule — reinstall if the store won't open).
 
-    // NOT legacy: the page-card thumbnail the library grid renders.
-    // Kept fresh by the live `updateBlockDrawing`, which mirrors the
-    // ink block's thumbnail here (single-ink-block pages: identical
-    // picture; a composite card for interleaved pages is Phase 3+).
+    // The page-card thumbnail the library grid renders. Kept fresh by
+    // the live `updateBlockDrawing`, which mirrors the ink block's
+    // thumbnail here (single-ink-block pages: identical picture; a
+    // composite card for interleaved pages is Phase 3+).
     @Attribute(.externalStorage)
     var thumbnailData: Data?
-
-    // OCR — migration-only (same lifecycle as `drawingData`; moves to
-    // PageBlock.ocrText on first read).
-    var ocrText: String?
-    var ocrUpdatedAt: Date?
-
-    // Typed text — migration-only (pre-block textNote pages; moves to
-    // a `.text` PageBlock's bodyData on first read).
-    var typedText: String?
 
     // ML cache — legacy. `extractedTextHash` (below) is the block-aware
     // replacement, derived from the per-block content-hash manifest.
