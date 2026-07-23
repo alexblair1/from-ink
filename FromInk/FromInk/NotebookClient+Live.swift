@@ -417,47 +417,6 @@ extension NotebookClient {
                 }
             },
 
-            // MARK: - Page content (high frequency)
-            saveDrawing: { pageID, drawingData, thumbnailData in
-                try await MainActor.run {
-                    let ctx = modelContext.context()
-                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
-                        throw NotebookClientError.pageNotFound(pageID)
-                    }
-                    page.drawingData = drawingData
-                    if let thumbnailData {
-                        page.thumbnailData = thumbnailData
-                    }
-                    let now = calendarContext.now()
-                    page.modifiedAt = now
-                    page.notebook?.modifiedAt = now
-                    try ctx.save()
-                }
-            },
-            updateOCR: { pageID, text in
-                try await MainActor.run {
-                    let ctx = modelContext.context()
-                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
-                        throw NotebookClientError.pageNotFound(pageID)
-                    }
-                    page.ocrText = text
-                    page.ocrUpdatedAt = calendarContext.now()
-                    try ctx.save()
-                }
-            },
-            updateTypedText: { pageID, text in
-                try await MainActor.run {
-                    let ctx = modelContext.context()
-                    guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
-                        throw NotebookClientError.pageNotFound(pageID)
-                    }
-                    page.typedText = text
-                    let now = calendarContext.now()
-                    page.modifiedAt = now
-                    page.notebook?.modifiedAt = now
-                    try ctx.save()
-                }
-            },
 
             // MARK: - Headers
             addHeader: { pageID, rect, ocrText in
@@ -656,13 +615,6 @@ extension NotebookClient {
                     guard let page = try fetchPageModel(id: pageID, ctx: ctx) else {
                         throw NotebookClientError.pageNotFound(pageID)
                     }
-                    // Phase 2a cutover (hybrid_page_edd §4): legacy
-                    // page-level payloads migrate into blocks on first
-                    // read — read legacy → write block → clear legacy.
-                    // Idempotent: cleared legacy fields can't migrate
-                    // twice, and existing blocks of a kind suppress
-                    // migration of that kind.
-                    try migrateLegacyPayloads(page: page, ctx: ctx, now: calendarContext.now())
                     return (page.blocks ?? [])
                         .sorted { $0.sortIndex < $1.sortIndex }
                         .map { PageBlockSnapshot(model: $0, loadDrawingData: false) }
@@ -1017,80 +969,6 @@ private func fetchBlockModel(id: UUID, ctx: ModelContext) throws -> PageBlock? {
     return try ctx.fetch(descriptor).first
 }
 
-/// Phase 2a cutover (hybrid_page_edd §4): move legacy page-level
-/// payloads into `PageBlock`s on first read.
-///
-///   - `drawingData` (+ `ocrText`/`ocrUpdatedAt`) → one `.ink` block.
-///     The page-level `thumbnailData` is COPIED, not moved — it stays
-///     the page-card projection the library grid reads.
-///   - `typedText` → one `.text` block whose body is a single-paragraph
-///     `RichTextDocument` (pre-block textNote pages).
-///
-/// Idempotent by construction: legacy fields are cleared after the
-/// move, and an existing block of a kind suppresses migration of that
-/// kind (a page that already has an ink block keeps it; stale legacy
-/// bytes are dropped rather than duplicated). `modifiedAt` is NOT
-/// touched — migration isn't a user edit and must not resort the
-/// library grid.
-///
-/// The legacy fields themselves are retired from the schema in a
-/// follow-up commit once the cutover is verified on-device (per the
-/// no-migrations-until-CloudKit rule, that's a direct schema edit).
-@MainActor
-private func migrateLegacyPayloads(page: NotePage, ctx: ModelContext, now: Date) throws {
-    let existing = page.blocks ?? []
-    var nextSortIndex = (existing.map(\.sortIndex).max() ?? -1) + 1
-    var mutated = false
-
-    if let drawingData = page.drawingData {
-        if !existing.contains(where: { $0.kind == .ink }) {
-            let block = PageBlock(
-                page: page,
-                sortIndex: nextSortIndex,
-                kind: .ink,
-                heightPoints: PageBlock.emptyHeightPoints(for: .ink),
-                createdAt: now
-            )
-            block.drawingData = drawingData
-            block.thumbnailData = page.thumbnailData
-            block.ocrText = page.ocrText
-            block.ocrUpdatedAt = page.ocrUpdatedAt
-            block.contentHash = PageBlock.sha256(page.ocrText ?? "")
-            ctx.insert(block)
-            nextSortIndex += 1
-        }
-        page.drawingData = nil
-        page.ocrText = nil
-        page.ocrUpdatedAt = nil
-        mutated = true
-    }
-
-    if let typedText = page.typedText {
-        if !typedText.isEmpty, !existing.contains(where: { $0.kind == .text }) {
-            let document = RichTextDocument(blocks: [
-                Block(kind: .paragraph(inline: [Inline(text: typedText)]))
-            ])
-            let block = PageBlock(
-                page: page,
-                sortIndex: nextSortIndex,
-                kind: .text,
-                heightPoints: PageBlock.emptyHeightPoints(for: .text),
-                createdAt: now
-            )
-            block.bodyData = try PageBlockSnapshot.encodeBody(document)
-            block.plainText = document.plainText
-            block.contentHash = PageBlock.sha256(document.plainText)
-            ctx.insert(block)
-            nextSortIndex += 1
-        }
-        page.typedText = nil
-        mutated = true
-    }
-
-    if mutated {
-        try ctx.save()
-    }
-}
 
 @MainActor
 private func fetchFolderModel(id: UUID, ctx: ModelContext) throws -> Folder? {

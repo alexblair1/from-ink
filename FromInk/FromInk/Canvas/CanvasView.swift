@@ -6,8 +6,8 @@ private let canvasLog = Logger(subsystem: "com.fromink.app", category: "Canvas")
 
 /// Writes a corrupt `PKDrawing` blob to
 /// `Application Support/CorruptDrawings/{pageID}-{timestamp}.pkdata` so
-/// the original bytes survive even when the next save overwrites
-/// `NotePage.drawingData` with an empty PKDrawing. The corrupt blobs
+/// the original bytes survive even when the next save overwrites the
+/// ink block's `drawingData` with an empty PKDrawing. The corrupt blobs
 /// are deliberately leaked here (no cleanup) — they're rare and a
 /// human investigator running into one will want every byte intact.
 private func preserveCorruptDrawingBlob(_ data: Data, pageID: UUID) {

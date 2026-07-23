@@ -89,15 +89,6 @@ struct NotebookClient: Sendable {
     var setPageTemplate: @Sendable (_ pageID: UUID, _ templateName: String) async throws -> NotePageSnapshot
 
     // MARK: - Page content (high frequency)
-    /// Persists pre-encoded ink data. The Coordinator owns the
-    /// `PKDrawing.dataRepresentation()` translation before crossing this
-    /// boundary — `PKDrawing` is intentionally absent from the dependency
-    /// surface (per CLAUDE.md "Canvas + TCA boundary"). Updates
-    /// `NotePage.modifiedAt` and bubbles to `Notebook.modifiedAt`.
-    var saveDrawing: @Sendable (_ pageID: UUID, _ drawingData: Data, _ thumbnailData: Data?) async throws -> Void
-    var updateOCR: @Sendable (_ pageID: UUID, _ text: String) async throws -> Void
-    var updateTypedText: @Sendable (_ pageID: UUID, _ text: String) async throws -> Void
-
     // MARK: - Headers / Links / History
     var addHeader: @Sendable (_ pageID: UUID, _ rect: CGRect, _ ocrText: String) async throws -> NoteHeaderSnapshot
     var updateHeaderOCR: @Sendable (_ headerID: UUID, _ ocrText: String) async throws -> Void
@@ -156,10 +147,10 @@ struct NotebookClient: Sendable {
 
     // MARK: - Page blocks (text experience EDD §5)
     //
-    // Block-level CRUD for the hybrid text + ink + voice page model.
-    // These coexist with the legacy `saveDrawing` / `updateOCR` /
-    // `updateTypedText` methods above during the rollout window; the
-    // CanvasScreen refactor retires the legacy path.
+    // Block-level CRUD for the hybrid text + ink + voice page model —
+    // the ONLY payload path since the Phase 2a cutover (the legacy
+    // page-level saveDrawing/updateOCR/updateTypedText retired
+    // 2026-07-22 along with their NotePage fields).
     //
     // Every mutating method bumps the parent page's `modifiedAt` and
     // calls `NotePage.recomputeExtractedAggregates()` so search /
@@ -440,9 +431,6 @@ extension NotebookClient: DependencyKey {
         reindexPages: { _, _ in throw CancellationError() },
         transferPage: { _, _, _ in throw CancellationError() },
         setPageTemplate: { _, _ in throw CancellationError() },
-        saveDrawing: { _, _, _ in throw CancellationError() },
-        updateOCR: { _, _ in throw CancellationError() },
-        updateTypedText: { _, _ in throw CancellationError() },
         addHeader: { _, _, _ in throw CancellationError() },
         updateHeaderOCR: { _, _ in throw CancellationError() },
         deleteHeader: { _ in throw CancellationError() },
